@@ -2,8 +2,13 @@
 //!
 //! The `EditorEvent` and `Movement` types live in `core::input` (see
 //! ADR 0005). This module only contains the crossterm-specific glue.
+//!
+//! Clipboard-aware shortcuts (Ctrl+C/X/V) are NOT translated here — the
+//! OS clipboard is a frontend concern, so they are handled directly in
+//! [`crate::app::App::run`]. This module only emits plain
+//! `EditorEvent`s.
 
-use core::{EditorEvent, Movement};
+use core::{Buffer, EditorEvent, Movement, Selection};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::app::App;
@@ -17,13 +22,14 @@ pub fn translate_key(key: KeyEvent) -> Option<EditorEvent> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // Ctrl-modified keys first.
+    // Ctrl-modified keys first. Clipboard shortcuts (C / X / V) are
+    // handled separately — see [`classify_clipboard_key`].
     if ctrl && !shift {
         return match key.code {
             KeyCode::Char('s') => Some(EditorEvent::Save),
             KeyCode::Char('z') => Some(EditorEvent::Undo),
             KeyCode::Char('y') => Some(EditorEvent::Redo),
-            KeyCode::Char('q') | KeyCode::Char('c') => Some(EditorEvent::Quit),
+            KeyCode::Char('q') => Some(EditorEvent::Quit),
             _ => None,
         };
     }
@@ -46,6 +52,46 @@ pub fn translate_key(key: KeyEvent) -> Option<EditorEvent> {
         KeyCode::PageUp => Some(movement(Movement::DocumentStart, select)),
         KeyCode::PageDown => Some(movement(Movement::DocumentEnd, select)),
         _ => None,
+    }
+}
+
+/// A side-effect-producing clipboard action that needs OS access and
+/// therefore can't be a plain `EditorEvent`. The caller
+/// ([`crate::app::App::run`]) reads the actual clipboard via arboard
+/// when it sees one of these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipboardAction {
+    /// Ctrl+C: copy the selection text to the OS clipboard.
+    Copy(String),
+    /// Ctrl+X: copy the selection text to the OS clipboard, then delete
+    /// the selection from the buffer.
+    Cut(String),
+}
+
+/// If the key event is a clipboard shortcut (Ctrl+C / Ctrl+X) and the
+/// current selection is non-empty, return the corresponding
+/// [`ClipboardAction`]. Otherwise `None`.
+pub fn classify_clipboard_key(key: KeyEvent, buffer: &dyn Buffer) -> Option<ClipboardAction> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        return None;
+    }
+    let target = match key.code {
+        KeyCode::Char('c') => 'c',
+        KeyCode::Char('x') => 'x',
+        _ => return None,
+    };
+    let sel: Selection = buffer.selection();
+    if sel.is_collapsed() {
+        return None;
+    }
+    let text = buffer.slice(sel.range())?;
+    if target == 'c' {
+        Some(ClipboardAction::Copy(text))
+    } else {
+        Some(ClipboardAction::Cut(text))
     }
 }
 
@@ -249,5 +295,88 @@ mod tests {
             &app,
         );
         assert!(ev.is_none());
+    }
+
+    // ----- clipboard key classification -----
+
+    use core::Selection;
+
+    fn buf_with(text: &str) -> core::PieceTableBuffer {
+        core::PieceTableBuffer::from_bytes(text.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn ctrl_c_with_selection_returns_copy_action() {
+        let mut buf = buf_with("hello world");
+        buf.set_selection(Selection {
+            anchor: 0,
+            head: 5,
+        });
+        let ev = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(
+            classify_clipboard_key(ev, &buf),
+            Some(ClipboardAction::Copy("hello".to_string()))
+        );
+    }
+
+    #[test]
+    fn ctrl_x_with_selection_returns_cut_action() {
+        let mut buf = buf_with("hello world");
+        buf.set_selection(Selection {
+            anchor: 0,
+            head: 5,
+        });
+        let ev = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(
+            classify_clipboard_key(ev, &buf),
+            Some(ClipboardAction::Cut("hello".to_string()))
+        );
+    }
+
+    #[test]
+    fn ctrl_c_without_selection_returns_none() {
+        let buf = buf_with("hello");
+        let ev = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(classify_clipboard_key(ev, &buf), None);
+    }
+
+    #[test]
+    fn plain_c_does_not_match_clipboard_shortcut() {
+        let mut buf = buf_with("hello");
+        buf.set_selection(Selection {
+            anchor: 0,
+            head: 5,
+        });
+        let ev = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(classify_clipboard_key(ev, &buf), None);
+    }
+
+    #[test]
+    fn ctrl_shift_c_is_not_clipboard_shortcut() {
+        let mut buf = buf_with("hello");
+        buf.set_selection(Selection {
+            anchor: 0,
+            head: 5,
+        });
+        let ev = KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(classify_clipboard_key(ev, &buf), None);
+    }
+
+    #[test]
+    fn ctrl_v_is_handled_separately_not_by_classify() {
+        // Ctrl+V is not a Copy/Cut action — it triggers a paste, which
+        // happens via EditorEvent::Paste after the OS clipboard is
+        // read in the event loop. classify_clipboard_key returns
+        // None for it.
+        let mut buf = buf_with("hello");
+        buf.set_selection(Selection {
+            anchor: 0,
+            head: 5,
+        });
+        let ev = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert_eq!(classify_clipboard_key(ev, &buf), None);
     }
 }

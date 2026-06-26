@@ -715,6 +715,20 @@ impl Buffer for PieceTableBuffer {
         Some(start..end)
     }
 
+    fn slice(&self, range: Range<BytePos>) -> Option<String> {
+        match self.get_slice(range) {
+            Some(Cow::Borrowed(b)) => match std::str::from_utf8(b) {
+                Ok(s) => Some(s.to_owned()),
+                Err(_) => Some(String::from_utf8_lossy(b).into_owned()),
+            },
+            Some(Cow::Owned(b)) => match String::from_utf8(b) {
+                Ok(s) => Some(s),
+                Err(e) => Some(String::from_utf8_lossy(&e.into_bytes()).into_owned()),
+            },
+            None => None,
+        }
+    }
+
     fn pos_to_linecol(&self, byte_pos: BytePos) -> Option<(usize, usize)> {
         if byte_pos > self.total_len() {
             return None;
@@ -1706,5 +1720,53 @@ mod tests {
         assert!(buf.is_dirty(), "undo should mark buffer dirty");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ----- Buffer::slice -----
+
+    #[test]
+    fn slice_returns_text_in_range() {
+        let buf = PieceTableBuffer::from_bytes(b"hello world".to_vec());
+        assert_eq!(buf.slice(0..5).as_deref(), Some("hello"));
+        assert_eq!(buf.slice(6..11).as_deref(), Some("world"));
+        assert_eq!(buf.slice(0..11).as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn slice_empty_range_returns_empty_string() {
+        let buf = PieceTableBuffer::from_bytes(b"hello".to_vec());
+        assert_eq!(buf.slice(2..2).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn slice_out_of_bounds_returns_none() {
+        let buf = PieceTableBuffer::from_bytes(b"hi".to_vec());
+        assert_eq!(buf.slice(0..5), None);
+        assert_eq!(buf.slice(5..10), None);
+    }
+
+    #[test]
+    fn slice_spans_multiple_pieces_after_edits() {
+        // Insert in the middle then slice across the boundary — exercises
+        // the multi-piece stitch path in `get_slice`.
+        let mut buf = PieceTableBuffer::from_bytes(b"abcdef".to_vec());
+        buf.insert(3, "XYZ").unwrap();
+        assert_eq!(reconstruct_str(&buf), "abcXYZdef");
+        assert_eq!(buf.slice(0..buf.len()).as_deref(), Some("abcXYZdef"));
+        assert_eq!(buf.slice(2..5).as_deref(), Some("cXY"));
+    }
+
+    #[test]
+    fn slice_handles_utf8_lossily_on_invalid_input() {
+        // Insert invalid UTF-8 directly into the delta by building a
+        // buffer from raw bytes (from_bytes uses From<Vec<u8>>; loss
+        // happens only at slice boundaries, not at construction).
+        let buf = PieceTableBuffer::from_bytes(vec![b'h', b'i', 0xFF, b'!']);
+        // The slice goes through `String::from_utf8_lossy`, so invalid
+        // bytes become the U+FFFD replacement char.
+        let s = buf.slice(0..buf.len()).unwrap();
+        assert!(s.starts_with("hi"));
+        assert!(s.ends_with('!'));
+        assert!(s.contains('\u{FFFD}'));
     }
 }

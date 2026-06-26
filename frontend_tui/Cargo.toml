@@ -10,6 +10,10 @@ description = "Terminal frontend for the_editor (ratatui + crossterm)."
 core = { path = "../core" }
 ratatui = "0.29"
 crossterm = "0.28"
+# arboard gives us cross-platform OS clipboard access (X11/Wayland on
+# Linux, Cocoa on macOS, Win32 on Windows). crossterm 0.28 dropped its
+# own clipboard module, so this is the standard replacement.
+arboard = "3"
 
 [lints]
 workspace = true

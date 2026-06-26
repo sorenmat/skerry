@@ -13,12 +13,19 @@ use crate::BytePos;
 /// An input event the editor acts on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorEvent {
-    /// Insert a character at the cursor position.
+    /// Insert a character at the cursor position. If the selection is
+    /// non-empty, the selection is replaced by the inserted character.
     Insert(char),
-    /// Delete the character to the left of the cursor (Backspace).
+    /// Delete the character to the left of the cursor (Backspace). If
+    /// the selection is non-empty, the entire selection is deleted
+    /// instead — same as `DeleteSelection`.
     DeleteLeft,
-    /// Delete the character at the cursor (Delete key).
+    /// Delete the character at the cursor (Delete key). If the selection
+    /// is non-empty, the entire selection is deleted instead.
     DeleteRight,
+    /// Delete the current selection. No-op when the selection is
+    /// collapsed (cursor only).
+    DeleteSelection,
     /// Move the cursor. Selection is collapsed to the new position.
     Move(Movement),
     /// Extend the selection by moving one end of it.
@@ -29,6 +36,10 @@ pub enum EditorEvent {
     /// Extend the selection to an absolute byte position, leaving the
     /// anchor where it was. Used by mouse drag.
     SelectExtendTo { pos: BytePos },
+    /// Insert `text` at the cursor position. If the selection is
+    /// non-empty, the selection is replaced by `text`. Used for paste;
+    /// the frontend reads the OS clipboard and produces this event.
+    Paste(String),
     /// Save the buffer.
     Save,
     /// Undo the most recent edit.

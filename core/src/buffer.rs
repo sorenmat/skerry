@@ -84,6 +84,16 @@ pub trait Buffer {
     /// Returns `None` if `line` is out of range.
     fn line_byte_range(&self, line: usize) -> Option<Range<BytePos>>;
 
+    /// Slice of the document as a (lossy) UTF-8 `String`. `range` is a
+    /// byte range; it must be on UTF-8 boundaries (i.e. between chars).
+    /// Returns `None` if `range` is out of bounds.
+    ///
+    /// Used by copy/cut to hand the selected text to the OS clipboard
+    /// without having to walk the buffer line-by-line. Implementations
+    /// should aim for O(|range|); the Piece Table does this by stitching
+    /// together only the pieces the range spans.
+    fn slice(&self, range: Range<BytePos>) -> Option<String>;
+
     // === Position conversion (UTF-8 byte ↔ line/column) ===
 
     /// Convert a byte offset to a `(line, column)` pair.

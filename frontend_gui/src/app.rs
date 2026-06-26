@@ -25,14 +25,50 @@ impl EditorApp {
     }
 
     /// Pull input events from egui and apply them to the buffer.
+///
+/// Clipboard shortcuts (Cmd/Ctrl+C, X, V) are intercepted here instead
+/// of going through `translate_event` because they need OS clipboard
+/// access that doesn't fit into a single `EditorEvent`. We still go
+/// through `handle_event` for the buffer side (delete-selection on cut,
+/// paste-text on paste) — only the clipboard read/write is local to
+/// the frontend.
     pub fn handle_input(&mut self, ctx: &Context) {
+        let mut clipboard_events: Vec<crate::event::ClipboardAction> = Vec::new();
         ctx.input(|i| {
             for event in &i.events {
+                if let Some(clip) =
+                    crate::event::classify_clipboard_event(event, &*self.buffer)
+                {
+                    clipboard_events.push(clip);
+                    continue;
+                }
                 if let Some(editor_event) = crate::event::translate_event(event) {
                     self.handle_event(editor_event);
                 }
             }
         });
+        for action in clipboard_events {
+            self.apply_clipboard_action(ctx, action);
+        }
+    }
+
+    /// Execute a clipboard action that was classified earlier (during
+    /// `handle_input`). At this point egui's input lock is released so
+    /// we can call `ctx.output_mut`.
+    fn apply_clipboard_action(
+        &mut self,
+        ctx: &Context,
+        action: crate::event::ClipboardAction,
+    ) {
+        match action {
+            crate::event::ClipboardAction::Copy(text) => {
+                ctx.copy_text(text);
+            }
+            crate::event::ClipboardAction::Cut(text) => {
+                ctx.copy_text(text);
+                self.handle_event(EditorEvent::DeleteSelection);
+            }
+        }
     }
 
     /// Apply an `EditorEvent` to the buffer / app state. Same logic as
@@ -41,6 +77,10 @@ impl EditorApp {
     pub fn handle_event(&mut self, event: EditorEvent) {
         match event {
             EditorEvent::Insert(ch) => {
+                // Selection-aware: a non-collapsed selection is replaced
+                // by the inserted character (matches every editor since
+                // 1995).
+                self.delete_selection_if_any();
                 let pos = self.buffer.cursor();
                 let s = ch.to_string();
                 match self.buffer.insert(pos, &s) {
@@ -53,6 +93,9 @@ impl EditorApp {
                 }
             }
             EditorEvent::DeleteLeft => {
+                if self.delete_selection_if_any() {
+                    return;
+                }
                 let pos = self.buffer.cursor();
                 if pos > 0 {
                     match self.buffer.delete((pos - 1)..pos) {
@@ -65,6 +108,9 @@ impl EditorApp {
                 }
             }
             EditorEvent::DeleteRight => {
+                if self.delete_selection_if_any() {
+                    return;
+                }
                 let pos = self.buffer.cursor();
                 if pos < self.buffer.len() {
                     match self.buffer.delete(pos..(pos + 1)) {
@@ -75,6 +121,9 @@ impl EditorApp {
                         Err(e) => self.status_message = Some(format!("delete error: {e}")),
                     }
                 }
+            }
+            EditorEvent::DeleteSelection => {
+                self.delete_selection_if_any();
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
@@ -104,6 +153,20 @@ impl EditorApp {
                     head: clamped,
                 });
             }
+            EditorEvent::Paste(text) => {
+                // Selection-aware paste: replace the selection if any,
+                // otherwise insert at cursor.
+                self.delete_selection_if_any();
+                let pos = self.buffer.cursor();
+                match self.buffer.insert(pos, &text) {
+                    Ok(new_pos) => {
+                        self.buffer.set_cursor(new_pos);
+                        self.buffer.set_selection(Selection::collapsed(new_pos));
+                        self.status_message = None;
+                    }
+                    Err(e) => self.status_message = Some(format!("paste error: {e}")),
+                }
+            }
             EditorEvent::Save => match self.buffer.save() {
                 Ok(()) => self.status_message = Some("Saved.".to_string()),
                 Err(e) => self.status_message = Some(format!("Save error: {e}")),
@@ -120,6 +183,28 @@ impl EditorApp {
             }
             EditorEvent::Quit => {
                 self.should_quit = true;
+            }
+        }
+    }
+
+    /// If the selection is non-empty, delete it and collapse the cursor
+    /// to the start of the deleted range. Returns `true` when a deletion
+    /// actually happened.
+    fn delete_selection_if_any(&mut self) -> bool {
+        let sel = self.buffer.selection();
+        if sel.is_collapsed() {
+            return false;
+        }
+        let range = sel.range();
+        match self.buffer.delete(range) {
+            Ok(new_pos) => {
+                self.buffer.set_cursor(new_pos);
+                self.buffer.set_selection(Selection::collapsed(new_pos));
+                true
+            }
+            Err(e) => {
+                self.status_message = Some(format!("delete error: {e}"));
+                false
             }
         }
     }
@@ -326,5 +411,77 @@ mod tests {
         }
         assert_eq!(app.buffer.to_bytes(), b"a".to_vec());
         assert!(app.should_quit);
+    }
+
+    // ----- selection-aware editing -----
+
+    #[test]
+    fn insert_replaces_selection() {
+        // Selecting "world" then typing '!' should produce "hello!"
+        let mut app = app_with("hello world");
+        app.buffer.set_selection(Selection {
+            anchor: 6,
+            head: 11,
+        });
+        app.handle_event(EditorEvent::Insert('!'));
+        assert_eq!(app.buffer.to_bytes(), b"hello !".to_vec());
+        assert_eq!(app.buffer.cursor(), 7);
+        assert!(app.buffer.selection().is_collapsed());
+    }
+
+    #[test]
+    fn delete_left_with_selection_deletes_selection() {
+        // Selecting "world" then pressing Backspace should delete "world".
+        let mut app = app_with("hello world");
+        app.buffer.set_selection(Selection {
+            anchor: 6,
+            head: 11,
+        });
+        app.handle_event(EditorEvent::DeleteLeft);
+        assert_eq!(app.buffer.to_bytes(), b"hello ".to_vec());
+        assert_eq!(app.buffer.cursor(), 6);
+    }
+
+    #[test]
+    fn delete_right_with_selection_deletes_selection() {
+        let mut app = app_with("hello world");
+        app.buffer.set_selection(Selection {
+            anchor: 6,
+            head: 11,
+        });
+        app.handle_event(EditorEvent::DeleteRight);
+        assert_eq!(app.buffer.to_bytes(), b"hello ".to_vec());
+        assert_eq!(app.buffer.cursor(), 6);
+    }
+
+    #[test]
+    fn delete_selection_noop_when_collapsed() {
+        let mut app = app_with("hello");
+        app.buffer.set_cursor(2);
+        app.buffer.set_selection(Selection::collapsed(2));
+        app.handle_event(EditorEvent::DeleteSelection);
+        assert_eq!(app.buffer.to_bytes(), b"hello".to_vec());
+        assert_eq!(app.buffer.cursor(), 2);
+    }
+
+    #[test]
+    fn paste_replaces_selection() {
+        let mut app = app_with("hello world");
+        app.buffer.set_selection(Selection {
+            anchor: 6,
+            head: 11,
+        });
+        app.handle_event(EditorEvent::Paste("Rust".to_string()));
+        assert_eq!(app.buffer.to_bytes(), b"hello Rust".to_vec());
+        assert_eq!(app.buffer.cursor(), 10);
+    }
+
+    #[test]
+    fn paste_with_no_selection_inserts_at_cursor() {
+        let mut app = app_with("hello world");
+        app.buffer.set_cursor(6);
+        app.buffer.set_selection(Selection::collapsed(6));
+        app.handle_event(EditorEvent::Paste("beautiful ".to_string()));
+        assert_eq!(app.buffer.to_bytes(), b"hello beautiful world".to_vec());
     }
 }
