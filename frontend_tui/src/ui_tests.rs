@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use core::{Buffer, PieceTableBuffer};
+    use core::{Buffer, Document, PieceTableBuffer};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -73,5 +73,57 @@ mod tests {
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
         assert!(out.contains("Saved."), "expected status message: {out:?}");
+    }
+
+    #[test]
+    fn header_shows_active_doc_position_with_multiple_docs() {
+        // Three unsaved docs → header should show "(1/3)", "(2/3)", "(3/3)"
+        // depending on which is active. Position is 1-indexed.
+        let docs: Vec<Document> = ["alpha", "beta", "gamma"]
+            .iter()
+            .map(|c| {
+                let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
+                    c.as_bytes().to_vec(),
+                ));
+                Document::new(buf)
+            })
+            .collect();
+        let mut app = App::new_with_documents(docs);
+
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(
+            out.contains("(1/3)"),
+            "expected '(1/3)' in header at active=0: {out:?}"
+        );
+
+        // Cycle to the middle doc.
+        app.handle_event(core::EditorEvent::NextDoc);
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(
+            out.contains("(2/3)"),
+            "expected '(2/3)' in header at active=1: {out:?}"
+        );
+    }
+
+    #[test]
+    fn header_hides_position_when_only_one_doc() {
+        // With a single doc, showing "(1/1)" is noise. The header
+        // should just show the doc name without a position suffix.
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(b"".to_vec()));
+        let mut app = App::new(buf);
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(
+            !out.contains("(1/1)"),
+            "single-doc header should not show a position counter: {out:?}"
+        );
     }
 }

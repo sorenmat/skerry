@@ -84,11 +84,20 @@ fn render_find_bar(app: &App) -> Line<'static> {
 }
 
 fn render_header(app: &App) -> Line<'static> {
-    let path = app.active_buffer().source_path()
+    let path = app
+        .active_buffer()
+        .source_path()
         .and_then(|p| p.to_str())
         .unwrap_or("[No Name]");
     let dirty = if app.is_dirty() { " [+]" } else { "" };
-    Line::from(format!(" {path}{dirty}"))
+    // Only show "(N/M)" when M > 1 — single-doc sessions don't need
+    // the noise; matches browser/editor tab-bar convention.
+    let pos = if app.doc_count() > 1 {
+        format!("  ({}/{})", app.active() + 1, app.doc_count())
+    } else {
+        String::new()
+    };
+    Line::from(format!(" {path}{dirty}{pos}"))
 }
 
 fn render_status(app: &App) -> Line<'static> {

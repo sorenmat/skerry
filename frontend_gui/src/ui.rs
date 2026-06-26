@@ -26,11 +26,21 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     // Extract everything as owned data so panel closures don't all
     // borrow `app` mutably at once.
     let header_text = {
-        let path = app.active_buffer().source_path()
+        let path = app
+            .active_buffer()
+            .source_path()
             .and_then(|p| p.to_str())
             .unwrap_or("[No Name]");
         let dirty = if app.is_dirty() { " [+]" } else { "" };
-        format!(" {path}{dirty}")
+        // Only show "(N/M)" when M > 1 — single-doc sessions don't
+        // need the noise, and the convention in browser/editor tab bars
+        // is to omit the counter when there's only one tab.
+        let pos = if app.doc_count() > 1 {
+            format!("  ({}/{})", app.active() + 1, app.doc_count())
+        } else {
+            String::new()
+        };
+        format!(" {path}{dirty}{pos}")
     };
     let (status_message, status_pos) = {
         let msg = app.status_message.clone().unwrap_or_default();
