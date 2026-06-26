@@ -4,6 +4,7 @@
 //! `docs/adr/` for the architectural decisions that shaped this crate.
 
 mod buffer;
+mod document;
 mod errors;
 mod input;
 mod piece_table;
@@ -12,6 +13,7 @@ mod undo;
 mod view;
 
 pub use buffer::{Buffer, BytePos, Selection};
+pub use document::Document;
 pub use errors::{EditError, SaveError};
 pub use input::{EditorEvent, Movement};
 pub use piece_table::{Piece, PieceSource, PieceTableBuffer};
