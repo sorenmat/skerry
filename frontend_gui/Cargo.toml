@@ -1,0 +1,15 @@
+[package]
+name = "frontend_gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GUI frontend for the_editor (egui + eframe, swappable renderer)."
+
+[dependencies]
+core = { path = "../core" }
+egui = "0.30"
+eframe = "0.30"
+
+[lints]
+workspace = true

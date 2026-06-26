@@ -1,0 +1,13 @@
+[package]
+name = "core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "UI-agnostic text manipulation engine for the_editor."
+
+[dependencies]
+memmap2 = "0.9"
+
+[lints]
+workspace = true
