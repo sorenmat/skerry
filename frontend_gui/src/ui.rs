@@ -177,7 +177,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                     visuals.weak_text_color(),
                 );
 
-                let text_x = (rect.left() + prefix_chars as f32 * char_width).round();
+                let text_x = (rect.left() + prefix_chars as f32 * char_width
+            - app.scroll_x_cols as f32 * char_width)
+            .round();
 
                 // Compute selection-in-this-line once. If there's no
                 // selection, `seg` stays at the default (None) and we
@@ -286,7 +288,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
 
             // Mouse handling: convert pointer position to byte position
             // and dispatch SetCursor (click) or SelectExtendTo (drag).
-            let text_x = rect.left() + prefix_chars as f32 * char_width;
+            // text_x is the SCREEN position of the text origin (gutter
+            // right-edge minus horizontal scroll). pixel_to_byte_pos
+            // uses it to map pointer.x → char_col.
+            let text_x = rect.left() + prefix_chars as f32 * char_width
+                - app.scroll_x_cols as f32 * char_width;
             if response.clicked() || response.drag_started() || response.dragged() {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if let Some(byte_pos) = pixel_to_byte_pos(
@@ -305,6 +311,21 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                             app.handle_event(EditorEvent::SetCursor { pos: byte_pos });
                         }
                     }
+                }
+            }
+
+            // Horizontal scroll: Shift+scroll wheel scrolls left/right
+            // instead of up/down. egui's ScrollArea already eats the
+            // wheel for vertical scroll; we hijack the modifier.
+            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+            if scroll_delta != egui::Vec2::ZERO {
+                let shift = ui.input(|i| i.modifiers.shift);
+                if shift {
+                    // Shift+wheel: horizontal scroll. Convert pixel
+                    // delta to column delta using char_width.
+                    let cols_delta = (scroll_delta.y / char_width).round() as i32;
+                    let new_cols = (app.scroll_x_cols as i32 + cols_delta).max(0) as usize;
+                    app.scroll_x_cols = new_cols;
                 }
             }
         });

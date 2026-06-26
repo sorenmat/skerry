@@ -84,6 +84,8 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         Key::Enter => Some(EditorEvent::Insert('\n')),
         Key::Tab => Some(EditorEvent::Insert('\t')),
         Key::Escape => Some(EditorEvent::Quit),
+        Key::ArrowLeft if shift => Some(EditorEvent::ScrollLeft),
+        Key::ArrowRight if shift => Some(EditorEvent::ScrollRight),
         Key::ArrowLeft => Some(movement(Movement::Left, select)),
         Key::ArrowRight => Some(movement(Movement::Right, select)),
         Key::ArrowUp => Some(movement(Movement::Up, select)),
@@ -245,9 +247,29 @@ mod tests {
 
     #[test]
     fn shift_arrow_extends_selection() {
+        // Shift+Up / Shift+Down still extend selection.
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowUp, true, shift())),
+            Some(EditorEvent::SelectExtend(Movement::Up))
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowDown, true, shift())),
+            Some(EditorEvent::SelectExtend(Movement::Down))
+        );
+    }
+
+    #[test]
+    fn shift_left_right_scrolls_horizontally() {
+        // Shift+Left / Shift+Right now scroll horizontally rather
+        // than extending the selection (which was ambiguous anyway —
+        // Ctrl+Left/Right already does word-wise movement).
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowLeft, true, shift())),
+            Some(EditorEvent::ScrollLeft)
+        );
         assert_eq!(
             translate_event(&key_event(Key::ArrowRight, true, shift())),
-            Some(EditorEvent::SelectExtend(Movement::Right))
+            Some(EditorEvent::ScrollRight)
         );
     }
 

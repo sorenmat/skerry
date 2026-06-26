@@ -17,6 +17,10 @@ pub struct EditorApp {
     /// frame by the renderer; used by PageUp/PageDown to compute a
     /// reasonable page size when there's no other source of truth.
     pub viewport_lines: usize,
+    /// Horizontal scroll offset in columns. Lines longer than the
+    /// viewport get clipped on the left when scroll_x_cols > 0. The
+    /// renderer converts this to pixels using `char_width`.
+    pub scroll_x_cols: usize,
 }
 
 impl EditorApp {
@@ -26,6 +30,7 @@ impl EditorApp {
             should_quit: false,
             status_message: None,
             viewport_lines: 20,
+            scroll_x_cols: 0,
         }
     }
 
@@ -182,6 +187,12 @@ impl EditorApp {
             }
             EditorEvent::MoveLineDown => {
                 self.move_current_line(1);
+            }
+            EditorEvent::ScrollLeft => {
+                self.scroll_x_cols = self.scroll_x_cols.saturating_sub(1);
+            }
+            EditorEvent::ScrollRight => {
+                self.scroll_x_cols = self.scroll_x_cols.saturating_add(1);
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);

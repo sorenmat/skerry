@@ -19,6 +19,9 @@ pub struct App {
     pub viewport_top_line: usize,
     /// Last rendered viewport height in lines (set during `render`).
     pub viewport_height: u16,
+    /// Horizontal scroll offset in cells. Lines longer than the
+    /// viewport get clipped on the left when scroll_x > 0.
+    pub scroll_x: u16,
 }
 
 impl App {
@@ -30,6 +33,7 @@ impl App {
             status_message: None,
             viewport_top_line: 0,
             viewport_height: 0,
+            scroll_x: 0,
         }
     }
 
@@ -247,6 +251,12 @@ impl App {
             }
             EditorEvent::MoveLineDown => {
                 self.move_current_line(1);
+            }
+            EditorEvent::ScrollLeft => {
+                self.scroll_x = self.scroll_x.saturating_sub(1);
+            }
+            EditorEvent::ScrollRight => {
+                self.scroll_x = self.scroll_x.saturating_add(1);
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
@@ -780,9 +790,11 @@ impl App {
         }
 
         let line_text = self.buffer.line_text(doc_line)?.into_owned();
+        // Account for horizontal scroll: the rendered text starts at
+        // char `scroll_x` of the full line.
+        let scroll_x = self.scroll_x as usize;
         let text_col = (col - prefix_chars) as usize;
-        let char_count = line_text.chars().count();
-        let char_col = text_col.min(char_count);
+        let char_col = (text_col + scroll_x).min(line_text.chars().count());
         let byte_col = core::char_col_to_byte_col(&line_text, char_col);
 
         Some(line_byte_start + byte_col)

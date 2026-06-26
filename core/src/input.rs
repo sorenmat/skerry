@@ -42,6 +42,10 @@ pub enum EditorEvent {
     MoveLineUp,
     /// Move the current line down by one (Alt+Down).
     MoveLineDown,
+    /// Scroll the viewport one column to the left (Shift+Left).
+    ScrollLeft,
+    /// Scroll the viewport one column to the right (Shift+Right).
+    ScrollRight,
     /// Move the cursor. Selection is collapsed to the new position.
     Move(Movement),
     /// Extend the selection by moving one end of it.

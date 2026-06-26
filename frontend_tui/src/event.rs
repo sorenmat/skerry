@@ -58,6 +58,8 @@ pub fn translate_key(key: KeyEvent) -> Option<EditorEvent> {
         KeyCode::Enter => Some(EditorEvent::Insert('\n')),
         KeyCode::Tab => Some(EditorEvent::Insert('\t')),
         KeyCode::Esc => Some(EditorEvent::Quit),
+        KeyCode::Left if shift => Some(EditorEvent::ScrollLeft),
+        KeyCode::Right if shift => Some(EditorEvent::ScrollRight),
         KeyCode::Left => Some(movement(Movement::Left, select)),
         KeyCode::Right => Some(movement(Movement::Right, select)),
         KeyCode::Up => Some(movement(Movement::Up, select)),
@@ -189,9 +191,26 @@ mod tests {
 
     #[test]
     fn shift_arrows_extend_selection() {
+        // Shift+Up/Down still extend selection.
+        assert_eq!(
+            translate_key(key_shift(KeyCode::Up)),
+            Some(EditorEvent::SelectExtend(Movement::Up))
+        );
+        assert_eq!(
+            translate_key(key_shift(KeyCode::Down)),
+            Some(EditorEvent::SelectExtend(Movement::Down))
+        );
+    }
+
+    #[test]
+    fn shift_left_right_scrolls_horizontally() {
+        assert_eq!(
+            translate_key(key_shift(KeyCode::Left)),
+            Some(EditorEvent::ScrollLeft)
+        );
         assert_eq!(
             translate_key(key_shift(KeyCode::Right)),
-            Some(EditorEvent::SelectExtend(Movement::Right))
+            Some(EditorEvent::ScrollRight)
         );
     }
 

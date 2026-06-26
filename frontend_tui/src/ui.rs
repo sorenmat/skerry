@@ -116,8 +116,13 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
             .as_ref()
             .and_then(|sr| selection_in_line(line_byte_range.clone(), sr.clone()));
 
-        // Truncate the line to the available width.
-        let truncated: String = line_text.chars().take(avail).collect();
+        // Apply horizontal scroll: skip `scroll_x` chars from the start of
+        // each line, then truncate to the available width.
+        let scroll_x = app.scroll_x as usize;
+        let truncated: String = line_text.chars().skip(scroll_x).take(avail).collect();
+        // Convert scroll_x (chars) into a byte offset within this
+        // line so selection math can work in bytes.
+        let scroll_bytes = core::char_col_to_byte_col(&line_text, scroll_x);
 
         let mut spans: Vec<Span<'static>> = vec![Span::styled(prefix, gutter_style)];
         push_line_spans(
@@ -127,6 +132,7 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
             &line_text,
             selected_in_line,
             selection_style,
+            scroll_bytes,
         );
         lines.push(Line::from(spans));
     }
@@ -142,6 +148,11 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
 /// Push spans for one line's text content, applying selection styling
 /// to the selected byte range (mapped back to char positions for the
 /// truncated visible text).
+///
+/// `scroll_bytes` is the byte offset within the FULL line where the
+/// visible (truncated) window starts. Selection byte offsets are
+/// relative to the full line; we shift them by `scroll_bytes` to get
+/// offsets within the truncated string.
 fn push_line_spans(
     spans: &mut Vec<Span<'static>>,
     truncated: &str,
@@ -149,8 +160,8 @@ fn push_line_spans(
     full_line_text: &str,
     selected_in_line: Option<std::ops::Range<usize>>,
     selection_style: Style,
+    scroll_bytes: usize,
 ) {
-    // Byte offsets of the truncated portion relative to full_line_text.
     let trunc_byte_len = truncated.len();
     let line_byte_start = line_byte_range.start;
 
@@ -159,23 +170,52 @@ fn push_line_spans(
         return;
     };
 
-    // Convert absolute byte offsets to within-line byte offsets.
-    let sel_byte_lo = sel.start - line_byte_start;
-    let sel_byte_hi = sel.end - line_byte_start;
+    // Absolute selection byte offsets within this line.
+    let sel_byte_lo_full = sel.start - line_byte_start;
+    let sel_byte_hi_full = sel.end - line_byte_start;
 
-    // Clamp to the truncated region (which may be a prefix of the line).
-    if sel_byte_lo >= trunc_byte_len {
+    // Translate to within-truncated. Anything to the left of
+    // `scroll_bytes` is off-screen; anything to the right of
+    // `scroll_bytes + trunc_byte_len` is off-screen.
+    if sel_byte_lo_full < scroll_bytes {
+        // Selection extends into the off-screen left part. The visible
+        // portion of the selection runs from byte 0 of truncated up to
+        // sel_byte_hi_full - scroll_bytes.
+        let sel_byte_hi_in_trunc = sel_byte_hi_full.saturating_sub(scroll_bytes);
+        if sel_byte_hi_in_trunc == 0 {
+            // Selection is entirely off-screen left.
+            spans.push(Span::raw(truncated.to_string()));
+            return;
+        }
+        let char_count = truncated.chars().count();
+        let char_sel_hi =
+            core::byte_to_char_col(truncated, sel_byte_hi_in_trunc.min(trunc_byte_len));
+        let char_sel_hi_clamped = char_sel_hi.min(char_count);
+        let selected = truncated
+            .chars()
+            .take(char_sel_hi_clamped)
+            .collect::<String>();
+        if !selected.is_empty() {
+            spans.push(Span::styled(selected, selection_style));
+        }
+        let after = truncated.chars().skip(char_sel_hi_clamped).collect::<String>();
+        if !after.is_empty() {
+            spans.push(Span::raw(after));
+        }
+        return;
+    }
+
+    // sel_byte_lo_full >= scroll_bytes: selection starts in the visible region.
+    let sel_byte_lo_in_trunc = sel_byte_lo_full - scroll_bytes;
+    if sel_byte_lo_in_trunc >= trunc_byte_len {
         // Selection starts past what's visible.
         spans.push(Span::raw(truncated.to_string()));
         return;
     }
-    let sel_byte_hi_clamped = sel_byte_hi.min(trunc_byte_len);
+    let sel_byte_hi_clamped = sel_byte_hi_full.saturating_sub(scroll_bytes).min(trunc_byte_len);
 
-    // Walk the truncated text by char positions, splitting at the
-    // selection boundary. We have byte offsets; convert via
-    // char_to_byte / byte_to_char on the truncated string.
     let char_count = truncated.chars().count();
-    let char_sel_lo = core::byte_to_char_col(truncated, sel_byte_lo);
+    let char_sel_lo = core::byte_to_char_col(truncated, sel_byte_lo_in_trunc);
     let char_sel_hi = core::byte_to_char_col(truncated, sel_byte_hi_clamped);
     let _ = full_line_text; // currently unused; reserved for future byte-accurate sel
 
@@ -227,9 +267,20 @@ fn compute_cursor_screen_pos(app: &App, area: Rect) -> Option<Position> {
         .map(|c| c.into_owned())
         .unwrap_or_default();
     let char_col = core::byte_to_char_col(&line_text, cursor_byte_col);
+    let scroll_x = app.scroll_x as usize;
+    // If the cursor is scrolled off the left edge, hide it.
+    let visible_char_col = char_col.saturating_sub(scroll_x);
+    // Char width is 1 cell in a monospace terminal — caller is
+    // ratatui which draws one char per cell.
+    let cursor_x = if visible_char_col == char_col - scroll_x && char_col >= scroll_x {
+        prefix_chars + visible_char_col
+    } else {
+        // Off-screen left.
+        prefix_chars
+    };
 
     Some(Position::new(
-        area.x + (prefix_chars + char_col) as u16,
+        area.x + cursor_x as u16,
         area.y + row_in_view as u16,
     ))
 }
