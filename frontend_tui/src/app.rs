@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use core::{Buffer, BytePos, EditorEvent, Movement, Selection};
+use core::{Buffer, BytePos, EditorEvent, Movement, Search, Selection};
 use crossterm::event::{self as cxevent, Event};
 use ratatui::Terminal;
 
@@ -22,6 +22,8 @@ pub struct App {
     /// Horizontal scroll offset in cells. Lines longer than the
     /// viewport get clipped on the left when scroll_x > 0.
     pub scroll_x: u16,
+    /// Find state: query, match list, current match, bar visibility.
+    pub search: Search,
 }
 
 impl App {
@@ -34,6 +36,7 @@ impl App {
             viewport_top_line: 0,
             viewport_height: 0,
             scroll_x: 0,
+            search: Search::new(),
         }
     }
 
@@ -80,7 +83,9 @@ impl App {
                             self.apply_clipboard_action(&mut clipboard, action);
                             continue;
                         }
-                        if let Some(editor_event) = crate::event::translate_key(key) {
+                        if let Some(editor_event) =
+                            crate::event::translate_key(key, Some(self))
+                        {
                             self.handle_event(editor_event);
                         }
                     }
@@ -257,6 +262,32 @@ impl App {
             }
             EditorEvent::ScrollRight => {
                 self.scroll_x = self.scroll_x.saturating_add(1);
+            }
+            EditorEvent::FindOpen => {
+                self.search.bar_open = true;
+            }
+            EditorEvent::FindClose => {
+                self.search.bar_open = false;
+            }
+            EditorEvent::FindQueryChanged(q) => {
+                self.search.query = q;
+                self.search.refresh(&self.buffer.to_bytes());
+                if let Some(pos) = self.search.current_match() {
+                    self.buffer.set_cursor(pos);
+                    self.buffer.set_selection(Selection::collapsed(pos));
+                }
+            }
+            EditorEvent::FindNext => {
+                if let Some(pos) = self.search.next_after(self.buffer.cursor()) {
+                    self.buffer.set_cursor(pos);
+                    self.buffer.set_selection(Selection::collapsed(pos));
+                }
+            }
+            EditorEvent::FindPrev => {
+                if let Some(pos) = self.search.prev_before(self.buffer.cursor()) {
+                    self.buffer.set_cursor(pos);
+                    self.buffer.set_selection(Selection::collapsed(pos));
+                }
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
@@ -1066,6 +1097,60 @@ mod tests {
         app.buffer.set_selection(Selection::collapsed(6));
         app.handle_event(EditorEvent::Paste("beautiful ".to_string()));
         assert_eq!(app.buffer.to_bytes(), b"hello beautiful world".to_vec());
+    }
+
+    // ----- Find -----
+
+    #[test]
+    fn find_open_sets_bar_open() {
+        let mut app = app_with("hello world");
+        assert!(!app.search.bar_open);
+        app.handle_event(EditorEvent::FindOpen);
+        assert!(app.search.bar_open);
+        app.handle_event(EditorEvent::FindClose);
+        assert!(!app.search.bar_open);
+    }
+
+    #[test]
+    fn find_query_changed_runs_search() {
+        let mut app = app_with("the quick brown fox");
+        app.handle_event(EditorEvent::FindQueryChanged("brown".to_string()));
+        assert_eq!(app.search.matches, vec![10]);
+        assert_eq!(app.search.current, Some(0));
+        assert_eq!(app.buffer.cursor(), 10);
+    }
+
+    #[test]
+    fn find_next_moves_cursor_through_matches() {
+        let mut app = app_with("abc abc abc");
+        app.handle_event(EditorEvent::FindQueryChanged("abc".to_string()));
+        assert_eq!(app.buffer.cursor(), 0);
+        app.handle_event(EditorEvent::FindNext);
+        assert_eq!(app.buffer.cursor(), 4);
+        app.handle_event(EditorEvent::FindNext);
+        assert_eq!(app.buffer.cursor(), 8);
+        app.handle_event(EditorEvent::FindNext);
+        // Wraps to first.
+        assert_eq!(app.buffer.cursor(), 0);
+    }
+
+    #[test]
+    fn find_prev_moves_backwards() {
+        let mut app = app_with("abc abc abc");
+        app.handle_event(EditorEvent::FindQueryChanged("abc".to_string()));
+        app.handle_event(EditorEvent::FindPrev);
+        // Wraps to last match.
+        assert_eq!(app.buffer.cursor(), 8);
+        app.handle_event(EditorEvent::FindPrev);
+        assert_eq!(app.buffer.cursor(), 4);
+    }
+
+    #[test]
+    fn find_with_no_matches_leaves_current_none() {
+        let mut app = app_with("hello world");
+        app.handle_event(EditorEvent::FindQueryChanged("xyz".to_string()));
+        assert!(app.search.matches.is_empty());
+        assert!(app.search.current.is_none());
     }
 
     // ----- PageUp / PageDown -----

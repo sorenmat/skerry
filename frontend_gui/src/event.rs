@@ -56,6 +56,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::Z => Some(EditorEvent::Undo),
             Key::Y => Some(EditorEvent::Redo),
             Key::Q => Some(EditorEvent::Quit),
+            Key::F => Some(EditorEvent::FindOpen),
             Key::K => Some(EditorEvent::DeleteLine),
             Key::D => Some(EditorEvent::DuplicateLine),
             Key::Backspace => Some(EditorEvent::DeleteWordLeft),

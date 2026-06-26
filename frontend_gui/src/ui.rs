@@ -60,6 +60,51 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
         );
     });
 
+    // Find bar — appears above the status bar when open.
+    if app.search.bar_open {
+        egui::TopBottomPanel::bottom("find_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(" Find: ").strong().monospace());
+                let mut query = app.search.query.clone();
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut query)
+                        .hint_text("type to search")
+                        .desired_width(300.0),
+                );
+                if response.changed() {
+                    app.handle_event(EditorEvent::FindQueryChanged(query));
+                }
+                // Auto-focus the text input so the user can type
+                // immediately. Only focus on first appearance to
+                // avoid stealing focus every frame.
+                if response.gained_focus()
+                    || (app.search.query.is_empty() && !response.has_focus())
+                {
+                    response.request_focus();
+                }
+                let total = app.search.matches.len();
+                let current = app.search.current.map(|i| i + 1).unwrap_or(0);
+                ui.label(
+                    egui::RichText::new(if total == 0 && !app.search.query.is_empty() {
+                        " (no matches)".to_string()
+                    } else {
+                        format!(" {current}/{total} ")
+                    })
+                    .monospace(),
+                );
+                if ui.button("Next").clicked() {
+                    app.handle_event(EditorEvent::FindNext);
+                }
+                if ui.button("Prev").clicked() {
+                    app.handle_event(EditorEvent::FindPrev);
+                }
+                if ui.button("Close").clicked() {
+                    app.handle_event(EditorEvent::FindClose);
+                }
+            });
+        });
+    }
+
     egui::CentralPanel::default().show(ctx, |ui| {
         render_text(ui, app);
     });

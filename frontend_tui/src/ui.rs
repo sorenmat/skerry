@@ -30,14 +30,18 @@ use crate::app::App;
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
-    // Three vertical chunks: header, content, status.
+    // Four vertical chunks: header, content, status, optional find bar.
+    let mut constraints = vec![
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ];
+    if app.search.bar_open {
+        constraints.push(Constraint::Length(1));
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ])
+        .constraints(constraints)
         .split(area);
 
     let header = render_header(app);
@@ -50,10 +54,33 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let status = render_status(app);
     f.render_widget(Paragraph::new(status), chunks[2]);
 
-    // Position the terminal cursor over the buffer cursor.
-    if let Some(pos) = compute_cursor_screen_pos(app, chunks[1]) {
+    if app.search.bar_open {
+        let find_line = render_find_bar(app);
+        f.render_widget(Paragraph::new(find_line), chunks[3]);
+    }
+
+    // Position the terminal cursor over the buffer cursor OR the
+    // find bar's text input.
+    if app.search.bar_open {
+        // Cursor at end of query in the find bar.
+        let query_prefix_chars = " Find: ".chars().count() as u16;
+        let cursor_x = chunks[3].x + query_prefix_chars + app.search.query.chars().count() as u16;
+        f.set_cursor_position(Position::new(cursor_x, chunks[3].y));
+    } else if let Some(pos) = compute_cursor_screen_pos(app, chunks[1]) {
         f.set_cursor_position(pos);
     }
+}
+
+fn render_find_bar(app: &App) -> Line<'static> {
+    let total = app.search.matches.len();
+    let current = app.search.current.map(|i| i + 1).unwrap_or(0);
+    let count = if total == 0 && !app.search.query.is_empty() {
+        " (no matches)".to_string()
+    } else {
+        format!(" {current}/{total}")
+    };
+    let line = format!("/{}", app.search.query);
+    Line::from(format!(" Find: {line}{count} "))
 }
 
 fn render_header(app: &App) -> Line<'static> {

@@ -46,6 +46,18 @@ pub enum EditorEvent {
     ScrollLeft,
     /// Scroll the viewport one column to the right (Shift+Right).
     ScrollRight,
+    /// Open the find bar. No-op if it's already open.
+    FindOpen,
+    /// Close the find bar.
+    FindClose,
+    /// Replace the current find query and re-run the search. The
+    /// match list is rebuilt incrementally as the user types.
+    FindQueryChanged(String),
+    /// Move to the next match AFTER the cursor. Wraps around at the
+    /// end of the buffer. No-op if no matches.
+    FindNext,
+    /// Move to the previous match BEFORE the cursor. Wraps around.
+    FindPrev,
     /// Move the cursor. Selection is collapsed to the new position.
     Move(Movement),
     /// Extend the selection by moving one end of it.

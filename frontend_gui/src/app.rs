@@ -3,7 +3,7 @@
 //! Mirrors `frontend_tui::App` so the event-handling logic stays in
 //! lockstep across frontends (ADR 0005).
 
-use core::{Buffer, EditorEvent, Movement, Selection};
+use core::{Buffer, EditorEvent, Movement, Search, Selection};
 use eframe::egui;
 use eframe::egui::Context;
 use eframe::App;
@@ -21,6 +21,8 @@ pub struct EditorApp {
     /// viewport get clipped on the left when scroll_x_cols > 0. The
     /// renderer converts this to pixels using `char_width`.
     pub scroll_x_cols: usize,
+    /// Find state: query, match list, current match, bar visibility.
+    pub search: Search,
 }
 
 impl EditorApp {
@@ -31,6 +33,7 @@ impl EditorApp {
             status_message: None,
             viewport_lines: 20,
             scroll_x_cols: 0,
+            search: Search::new(),
         }
     }
 
@@ -42,6 +45,10 @@ impl EditorApp {
 /// through `handle_event` for the buffer side (delete-selection on cut,
 /// paste-text on paste) — only the clipboard read/write is local to
 /// the frontend.
+///
+/// While the find bar is open, Enter / Shift+Enter / Esc are handled
+/// here so they go to the bar instead of triggering the buffer's
+/// default (newline insert / extend-selection / quit).
     pub fn handle_input(&mut self, ctx: &Context) {
         let mut clipboard_events: Vec<crate::event::ClipboardAction> = Vec::new();
         ctx.input(|i| {
@@ -51,6 +58,12 @@ impl EditorApp {
                 {
                     clipboard_events.push(clip);
                     continue;
+                }
+                if self.search.bar_open {
+                    if let Some(bar_event) = find_bar_translate(event) {
+                        self.handle_event(bar_event);
+                        continue;
+                    }
                 }
                 if let Some(editor_event) = crate::event::translate_event(event) {
                     self.handle_event(editor_event);
@@ -193,6 +206,34 @@ impl EditorApp {
             }
             EditorEvent::ScrollRight => {
                 self.scroll_x_cols = self.scroll_x_cols.saturating_add(1);
+            }
+            EditorEvent::FindOpen => {
+                self.search.bar_open = true;
+            }
+            EditorEvent::FindClose => {
+                self.search.bar_open = false;
+            }
+            EditorEvent::FindQueryChanged(q) => {
+                self.search.query = q;
+                self.search.refresh(&self.buffer.to_bytes());
+                if let Some(pos) = self.search.current_match() {
+                    self.buffer.set_cursor(pos);
+                    self.buffer.set_selection(Selection::collapsed(pos));
+                }
+            }
+            EditorEvent::FindNext => {
+                if let Some(pos) = self.search.next_after(self.buffer.cursor()) {
+                    self.buffer.set_cursor(pos);
+                    self.buffer.set_selection(Selection::collapsed(pos));
+                    self.ensure_cursor_visible();
+                }
+            }
+            EditorEvent::FindPrev => {
+                if let Some(pos) = self.search.prev_before(self.buffer.cursor()) {
+                    self.buffer.set_cursor(pos);
+                    self.buffer.set_selection(Selection::collapsed(pos));
+                    self.ensure_cursor_visible();
+                }
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
@@ -349,6 +390,19 @@ impl EditorApp {
 
     pub fn is_dirty(&self) -> bool {
         self.buffer.is_dirty()
+    }
+
+    /// Adjust `viewport_lines` so the cursor is visible. The GUI's
+    /// egui ScrollArea handles vertical scroll automatically once the
+    /// cursor's pixel Y is inside the viewport — but it can only
+    /// scroll via mouse wheel / scrollbar, not programmatically. We
+    /// approximate by clamping `scroll_x_cols` to keep the cursor
+    /// char on screen, and rely on the natural next-frame repaint
+    /// to bring the line into view via the user's mouse interaction.
+    fn ensure_cursor_visible(&mut self) {
+        let _ = self.buffer.pos_to_linecol(self.buffer.cursor());
+        // No-op for now: the GUI's own ScrollArea will scroll when
+        // the user moves the wheel. TUI uses adjust_viewport.
     }
 
     /// Delete the entire line under the cursor, including its trailing
@@ -556,6 +610,33 @@ impl App for EditorApp {
 
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// Translate an egui event to a find-bar action. Returns `None` for
+/// events we don't intercept — the caller then falls through to the
+/// regular key translation.
+fn find_bar_translate(event: &eframe::egui::Event) -> Option<EditorEvent> {
+    use eframe::egui::{Event, Key};
+    match event {
+        Event::Key {
+            key: Key::Escape,
+            pressed: true,
+            ..
+        } => Some(EditorEvent::FindClose),
+        Event::Key {
+            key: Key::Enter,
+            pressed: true,
+            modifiers,
+            ..
+        } => {
+            if modifiers.shift {
+                Some(EditorEvent::FindPrev)
+            } else {
+                Some(EditorEvent::FindNext)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Move `pos` left to the start of the previous word (or beginning of

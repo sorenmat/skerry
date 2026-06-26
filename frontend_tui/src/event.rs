@@ -18,7 +18,45 @@ use crate::app::App;
 /// Returns `None` for keys we don't bind to anything (e.g. function keys,
 /// modifier-only presses). The caller decides whether `None` is "ignore"
 /// or "unhandled".
-pub fn translate_key(key: KeyEvent) -> Option<EditorEvent> {
+///
+/// When the find bar is open, Enter / Esc / printable chars go to the
+/// bar instead of the buffer. The caller passes the current App so
+/// we can append to the live query.
+pub fn translate_key(key: KeyEvent, app: Option<&App>) -> Option<EditorEvent> {
+    if let Some(app) = app {
+        if app.search.bar_open {
+            return find_bar_translate(key, app);
+        }
+    }
+    translate_buffer_key(key)
+}
+
+fn find_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
+    match key.code {
+        KeyCode::Esc => Some(EditorEvent::FindClose),
+        KeyCode::Enter => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                Some(EditorEvent::FindPrev)
+            } else {
+                Some(EditorEvent::FindNext)
+            }
+        }
+        KeyCode::Backspace => {
+            // Pop the last char off the query.
+            let mut q = app.search.query.clone();
+            q.pop();
+            Some(EditorEvent::FindQueryChanged(q))
+        }
+        KeyCode::Char(c) => {
+            let mut q = app.search.query.clone();
+            q.push(c);
+            Some(EditorEvent::FindQueryChanged(q))
+        }
+        _ => None,
+    }
+}
+
+fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
@@ -30,6 +68,7 @@ pub fn translate_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('z') => Some(EditorEvent::Undo),
             KeyCode::Char('y') => Some(EditorEvent::Redo),
             KeyCode::Char('q') => Some(EditorEvent::Quit),
+            KeyCode::Char('f') => Some(EditorEvent::FindOpen),
             KeyCode::Char('k') => Some(EditorEvent::DeleteLine),
             KeyCode::Char('d') => Some(EditorEvent::DuplicateLine),
             KeyCode::Backspace => Some(EditorEvent::DeleteWordLeft),
@@ -163,41 +202,41 @@ mod tests {
 
     #[test]
     fn printable_char_inserts() {
-        assert_eq!(translate_key(key(KeyCode::Char('a'))), Some(EditorEvent::Insert('a')));
+        assert_eq!(translate_key(key(KeyCode::Char('a')), None), Some(EditorEvent::Insert('a')));
     }
 
     #[test]
     fn enter_inserts_newline() {
-        assert_eq!(translate_key(key(KeyCode::Enter)), Some(EditorEvent::Insert('\n')));
+        assert_eq!(translate_key(key(KeyCode::Enter), None), Some(EditorEvent::Insert('\n')));
     }
 
     #[test]
     fn backspace_deletes_left() {
-        assert_eq!(translate_key(key(KeyCode::Backspace)), Some(EditorEvent::DeleteLeft));
+        assert_eq!(translate_key(key(KeyCode::Backspace), None), Some(EditorEvent::DeleteLeft));
     }
 
     #[test]
     fn delete_deletes_right() {
-        assert_eq!(translate_key(key(KeyCode::Delete)), Some(EditorEvent::DeleteRight));
+        assert_eq!(translate_key(key(KeyCode::Delete), None), Some(EditorEvent::DeleteRight));
     }
 
     #[test]
     fn arrows_move() {
-        assert_eq!(translate_key(key(KeyCode::Left)), Some(EditorEvent::Move(Movement::Left)));
-        assert_eq!(translate_key(key(KeyCode::Right)), Some(EditorEvent::Move(Movement::Right)));
-        assert_eq!(translate_key(key(KeyCode::Up)), Some(EditorEvent::Move(Movement::Up)));
-        assert_eq!(translate_key(key(KeyCode::Down)), Some(EditorEvent::Move(Movement::Down)));
+        assert_eq!(translate_key(key(KeyCode::Left), None), Some(EditorEvent::Move(Movement::Left)));
+        assert_eq!(translate_key(key(KeyCode::Right), None), Some(EditorEvent::Move(Movement::Right)));
+        assert_eq!(translate_key(key(KeyCode::Up), None), Some(EditorEvent::Move(Movement::Up)));
+        assert_eq!(translate_key(key(KeyCode::Down), None), Some(EditorEvent::Move(Movement::Down)));
     }
 
     #[test]
     fn shift_arrows_extend_selection() {
         // Shift+Up/Down still extend selection.
         assert_eq!(
-            translate_key(key_shift(KeyCode::Up)),
+            translate_key(key_shift(KeyCode::Up), None),
             Some(EditorEvent::SelectExtend(Movement::Up))
         );
         assert_eq!(
-            translate_key(key_shift(KeyCode::Down)),
+            translate_key(key_shift(KeyCode::Down), None),
             Some(EditorEvent::SelectExtend(Movement::Down))
         );
     }
@@ -205,43 +244,43 @@ mod tests {
     #[test]
     fn shift_left_right_scrolls_horizontally() {
         assert_eq!(
-            translate_key(key_shift(KeyCode::Left)),
+            translate_key(key_shift(KeyCode::Left), None),
             Some(EditorEvent::ScrollLeft)
         );
         assert_eq!(
-            translate_key(key_shift(KeyCode::Right)),
+            translate_key(key_shift(KeyCode::Right), None),
             Some(EditorEvent::ScrollRight)
         );
     }
 
     #[test]
     fn ctrl_s_saves() {
-        assert_eq!(translate_key(key_ctrl('s')), Some(EditorEvent::Save));
+        assert_eq!(translate_key(key_ctrl('s'), None), Some(EditorEvent::Save));
     }
 
     #[test]
     fn ctrl_q_quits() {
-        assert_eq!(translate_key(key_ctrl('q')), Some(EditorEvent::Quit));
+        assert_eq!(translate_key(key_ctrl('q'), None), Some(EditorEvent::Quit));
     }
 
     #[test]
     fn ctrl_z_undoes() {
-        assert_eq!(translate_key(key_ctrl('z')), Some(EditorEvent::Undo));
+        assert_eq!(translate_key(key_ctrl('z'), None), Some(EditorEvent::Undo));
     }
 
     #[test]
     fn ctrl_y_redoes() {
-        assert_eq!(translate_key(key_ctrl('y')), Some(EditorEvent::Redo));
+        assert_eq!(translate_key(key_ctrl('y'), None), Some(EditorEvent::Redo));
     }
 
     #[test]
     fn esc_quits() {
-        assert_eq!(translate_key(key(KeyCode::Esc)), Some(EditorEvent::Quit));
+        assert_eq!(translate_key(key(KeyCode::Esc), None), Some(EditorEvent::Quit));
     }
 
     #[test]
     fn unmapped_key_returns_none() {
-        assert_eq!(translate_key(key(KeyCode::F(1))), None);
+        assert_eq!(translate_key(key(KeyCode::F(1)), None), None);
     }
 
     // ----- mouse event translation -----

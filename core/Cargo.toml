@@ -8,6 +8,10 @@ description = "UI-agnostic text manipulation engine for the_editor."
 
 [dependencies]
 memmap2 = "0.9"
+# memchr's memmem provides SIMD-accelerated substring search for
+# the Find feature. The lighter `memchr` crate (no regex, no allocator)
+# is enough — we only need the find_iter primitive.
+memchr = "2"
 
 [lints]
 workspace = true

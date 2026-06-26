@@ -7,6 +7,7 @@ mod buffer;
 mod errors;
 mod input;
 mod piece_table;
+pub mod search;
 mod undo;
 mod view;
 
@@ -14,4 +15,5 @@ pub use buffer::{Buffer, BytePos, Selection};
 pub use errors::{EditError, SaveError};
 pub use input::{EditorEvent, Movement};
 pub use piece_table::{Piece, PieceSource, PieceTableBuffer};
+pub use search::Search;
 pub use view::{byte_to_char_col, char_col_to_byte_col, format_position, selection_in_line};
