@@ -56,6 +56,8 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::Z => Some(EditorEvent::Undo),
             Key::Y => Some(EditorEvent::Redo),
             Key::Q => Some(EditorEvent::Quit),
+            Key::ArrowLeft => Some(movement(Movement::WordLeft, false)),
+            Key::ArrowRight => Some(movement(Movement::WordRight, false)),
             // C / X / V fall through to clipboard handling.
             _ => None,
         };
@@ -75,8 +77,8 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         Key::ArrowDown => Some(movement(Movement::Down, select)),
         Key::Home => Some(movement(Movement::LineStart, select)),
         Key::End => Some(movement(Movement::LineEnd, select)),
-        Key::PageUp => Some(movement(Movement::DocumentStart, select)),
-        Key::PageDown => Some(movement(Movement::DocumentEnd, select)),
+        Key::PageUp => Some(movement(Movement::PageUp, select)),
+        Key::PageDown => Some(movement(Movement::PageDown, select)),
         _ => None,
     }
 }

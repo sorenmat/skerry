@@ -57,6 +57,13 @@ pub enum Movement {
     Right,
     Up,
     Down,
+    /// Move the cursor up by approximately one viewport page.
+    /// Implementations compute the page size from the current viewport.
+    PageUp,
+    /// Move the cursor down by approximately one viewport page.
+    PageDown,
+    WordLeft,
+    WordRight,
     LineStart,
     LineEnd,
     DocumentStart,
@@ -83,6 +90,10 @@ mod tests {
             Movement::Right,
             Movement::Up,
             Movement::Down,
+            Movement::PageUp,
+            Movement::PageDown,
+            Movement::WordLeft,
+            Movement::WordRight,
             Movement::LineStart,
             Movement::LineEnd,
             Movement::DocumentStart,

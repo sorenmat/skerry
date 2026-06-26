@@ -30,6 +30,8 @@ pub fn translate_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('z') => Some(EditorEvent::Undo),
             KeyCode::Char('y') => Some(EditorEvent::Redo),
             KeyCode::Char('q') => Some(EditorEvent::Quit),
+            KeyCode::Left => Some(movement(Movement::WordLeft, false)),
+            KeyCode::Right => Some(movement(Movement::WordRight, false)),
             _ => None,
         };
     }
@@ -49,8 +51,8 @@ pub fn translate_key(key: KeyEvent) -> Option<EditorEvent> {
         KeyCode::Down => Some(movement(Movement::Down, select)),
         KeyCode::Home => Some(movement(Movement::LineStart, select)),
         KeyCode::End => Some(movement(Movement::LineEnd, select)),
-        KeyCode::PageUp => Some(movement(Movement::DocumentStart, select)),
-        KeyCode::PageDown => Some(movement(Movement::DocumentEnd, select)),
+        KeyCode::PageUp => Some(movement(Movement::PageUp, select)),
+        KeyCode::PageDown => Some(movement(Movement::PageDown, select)),
         _ => None,
     }
 }

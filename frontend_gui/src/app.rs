@@ -13,6 +13,10 @@ pub struct EditorApp {
     pub buffer: Box<dyn Buffer>,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    /// Number of lines that fit in the current viewport. Updated each
+    /// frame by the renderer; used by PageUp/PageDown to compute a
+    /// reasonable page size when there's no other source of truth.
+    pub viewport_lines: usize,
 }
 
 impl EditorApp {
@@ -21,6 +25,7 @@ impl EditorApp {
             buffer,
             should_quit: false,
             status_message: None,
+            viewport_lines: 20,
         }
     }
 
@@ -243,6 +248,25 @@ impl EditorApp {
                         .unwrap_or(pos)
                 }
             }
+            Movement::PageUp => {
+                let (line, col) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+                let page = self.viewport_lines.max(1);
+                let target = line.saturating_sub(page);
+                self.buffer
+                    .linecol_to_pos(target, col)
+                    .unwrap_or(pos)
+            }
+            Movement::PageDown => {
+                let (line, col) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+                let page = self.viewport_lines.max(1);
+                let last = self.buffer.line_count().saturating_sub(1);
+                let target = (line + page).min(last);
+                self.buffer
+                    .linecol_to_pos(target, col)
+                    .unwrap_or(pos)
+            }
+            Movement::WordLeft => skip_word_left(&*self.buffer, pos),
+            Movement::WordRight => skip_word_right(&*self.buffer, pos),
             Movement::LineStart => {
                 let (line, _) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
                 self.buffer.linecol_to_pos(line, 0).unwrap_or(0)
@@ -283,6 +307,89 @@ impl App for EditorApp {
             self.request_close(ctx);
         }
     }
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Move `pos` left to the start of the previous word (or beginning of
+/// the line if no word boundary exists to the left).
+fn skip_word_left(buffer: &dyn Buffer, pos: usize) -> usize {
+    if pos == 0 {
+        return 0;
+    }
+    let (line, _) = buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+    let line_text = match buffer.line_text(line) {
+        Some(cow) => cow.into_owned(),
+        None => return pos.saturating_sub(1),
+    };
+    let line_byte_start = buffer.line_byte_range(line).map(|r| r.start).unwrap_or(0);
+    let char_col = core::byte_to_char_col(&line_text, pos - line_byte_start);
+    let chars: Vec<char> = line_text.chars().collect();
+    let mut i = char_col.min(chars.len());
+    if i == 0 {
+        return line_byte_start;
+    }
+    if is_word_char(chars[i - 1]) {
+        while i > 0 && is_word_char(chars[i - 1]) {
+            i -= 1;
+        }
+    } else {
+        while i > 0 && !is_word_char(chars[i - 1]) {
+            i -= 1;
+        }
+        while i > 0 && is_word_char(chars[i - 1]) {
+            i -= 1;
+        }
+    }
+    line_byte_start + core::char_col_to_byte_col(&line_text, i)
+}
+
+/// Move `pos` right to the next word boundary. Matches Ctrl+Right in
+/// most editors: if currently in a word, advance to end of it; if
+/// currently in whitespace, advance to start of the next word. Word
+/// boundaries are char-class transitions between word chars
+/// (alphanumeric + `_`) and non-word chars. Crosses line boundaries.
+fn skip_word_right(buffer: &dyn Buffer, pos: usize) -> usize {
+    let len = buffer.len();
+    if pos >= len {
+        return len;
+    }
+    let (line, _) = buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+    let line_text = match buffer.line_text(line) {
+        Some(cow) => cow.into_owned(),
+        None => return (pos + 1).min(len),
+    };
+    let line_byte_start = buffer.line_byte_range(line).map(|r| r.start).unwrap_or(0);
+    let line_byte_end = buffer
+        .line_byte_range(line)
+        .map(|r| r.end)
+        .unwrap_or(len);
+    let char_col = core::byte_to_char_col(&line_text, pos - line_byte_start);
+    let chars: Vec<char> = line_text.chars().collect();
+    let mut i = char_col.min(chars.len());
+
+    // In-word: eat to end of word. In-whitespace: skip ws to start of
+    // next word.
+    if i < chars.len() && is_word_char(chars[i]) {
+        while i < chars.len() && is_word_char(chars[i]) {
+            i += 1;
+        }
+    } else {
+        while i < chars.len() && !is_word_char(chars[i]) {
+            i += 1;
+        }
+    }
+
+    let new_byte = line_byte_start + core::char_col_to_byte_col(&line_text, i);
+    if new_byte >= line_byte_end && line + 1 < buffer.line_count() {
+        return buffer
+            .line_byte_range(line + 1)
+            .map(|r| r.start)
+            .unwrap_or(len);
+    }
+    new_byte.min(len)
 }
 
 #[cfg(test)]
@@ -483,5 +590,57 @@ mod tests {
         app.buffer.set_selection(Selection::collapsed(6));
         app.handle_event(EditorEvent::Paste("beautiful ".to_string()));
         assert_eq!(app.buffer.to_bytes(), b"hello beautiful world".to_vec());
+    }
+
+    // ----- PageUp / PageDown / Word movement -----
+
+    fn make_multi_line_app() -> EditorApp {
+        let content: String = (0..10).map(|i| format!("line{i}\n")).collect();
+        let content = content.trim_end_matches('\n').to_string();
+        let buf: Box<dyn Buffer> =
+            Box::new(PieceTableBuffer::from_bytes(content.into_bytes()));
+        EditorApp::new(buf)
+    }
+
+    #[test]
+    fn page_up_and_down_move_cursor_by_viewport() {
+        let mut app = make_multi_line_app();
+        app.viewport_lines = 5;
+        app.buffer.set_cursor(app.buffer.linecol_to_pos(9, 2).unwrap());
+        app.handle_event(EditorEvent::Move(Movement::PageUp));
+        assert_eq!(
+            app.buffer.pos_to_linecol(app.buffer.cursor()),
+            Some((4, 2))
+        );
+        app.handle_event(EditorEvent::Move(Movement::PageDown));
+        app.handle_event(EditorEvent::Move(Movement::PageDown));
+        assert_eq!(
+            app.buffer.pos_to_linecol(app.buffer.cursor()),
+            Some((9, 2))
+        );
+    }
+
+    #[test]
+    fn word_right_walks_word_boundaries() {
+        let mut app = app_with("hello   world foo");
+        app.buffer.set_cursor(0);
+        app.handle_event(EditorEvent::Move(Movement::WordRight));
+        assert_eq!(app.buffer.cursor(), 5);
+        app.handle_event(EditorEvent::Move(Movement::WordRight));
+        assert_eq!(app.buffer.cursor(), 8);
+        app.handle_event(EditorEvent::Move(Movement::WordRight));
+        assert_eq!(app.buffer.cursor(), 13);
+        app.handle_event(EditorEvent::Move(Movement::WordRight));
+        assert_eq!(app.buffer.cursor(), 14);
+    }
+
+    #[test]
+    fn word_left_walks_word_boundaries() {
+        let mut app = app_with("hello   world");
+        app.buffer.set_cursor(13);
+        app.handle_event(EditorEvent::Move(Movement::WordLeft));
+        assert_eq!(app.buffer.cursor(), 8);
+        app.handle_event(EditorEvent::Move(Movement::WordLeft));
+        assert_eq!(app.buffer.cursor(), 0);
     }
 }

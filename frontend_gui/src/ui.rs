@@ -126,6 +126,16 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
             let rect = response.rect;
             let painter = ui.painter_at(rect);
 
+            // Tell the app how many lines fit in the visible viewport
+            // so PageUp/PageDown can scroll by a real page instead of a
+            // guessed default. Use the response rect height (visible
+            // area only) divided by line height.
+            let visible_height = ui.available_height().min(rect.height());
+            let visible_lines = (visible_height / line_height).floor() as usize;
+            if visible_lines > 0 {
+                app.viewport_lines = visible_lines;
+            }
+
             // Draw cursor line background first (under everything).
             if cursor_line < total_lines {
                 let y = (rect.top() + cursor_line as f32 * line_height).round();
