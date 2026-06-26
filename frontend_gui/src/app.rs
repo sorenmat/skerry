@@ -130,6 +130,59 @@ impl EditorApp {
             EditorEvent::DeleteSelection => {
                 self.delete_selection_if_any();
             }
+            EditorEvent::DeleteWordLeft => {
+                if self.delete_selection_if_any() {
+                    return;
+                }
+                let pos = self.buffer.cursor();
+                if pos == 0 {
+                    return;
+                }
+                let target = skip_word_left(&*self.buffer, pos);
+                if target == pos {
+                    return;
+                }
+                match self.buffer.delete(target..pos) {
+                    Ok(new_pos) => {
+                        self.buffer.set_cursor(new_pos);
+                        self.buffer.set_selection(Selection::collapsed(new_pos));
+                    }
+                    Err(e) => self.status_message = Some(format!("delete error: {e}")),
+                }
+            }
+            EditorEvent::DeleteWordRight => {
+                if self.delete_selection_if_any() {
+                    return;
+                }
+                let pos = self.buffer.cursor();
+                let len = self.buffer.len();
+                if pos >= len {
+                    return;
+                }
+                let target = skip_word_right(&*self.buffer, pos);
+                if target == pos {
+                    return;
+                }
+                match self.buffer.delete(pos..target) {
+                    Ok(new_pos) => {
+                        self.buffer.set_cursor(new_pos);
+                        self.buffer.set_selection(Selection::collapsed(new_pos));
+                    }
+                    Err(e) => self.status_message = Some(format!("delete error: {e}")),
+                }
+            }
+            EditorEvent::DeleteLine => {
+                self.delete_current_line();
+            }
+            EditorEvent::DuplicateLine => {
+                self.duplicate_current_line();
+            }
+            EditorEvent::MoveLineUp => {
+                self.move_current_line(-1);
+            }
+            EditorEvent::MoveLineDown => {
+                self.move_current_line(1);
+            }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
                 self.buffer.set_cursor(new_pos);
@@ -285,6 +338,187 @@ impl EditorApp {
 
     pub fn is_dirty(&self) -> bool {
         self.buffer.is_dirty()
+    }
+
+    /// Delete the entire line under the cursor, including its trailing
+    /// newline (so the next line collapses up).
+    fn delete_current_line(&mut self) {
+        let cursor_pos = self.buffer.cursor();
+        let (line, _) = self
+            .buffer
+            .pos_to_linecol(cursor_pos)
+            .unwrap_or((0, 0));
+        let Some(line_range) = self.buffer.line_byte_range(line) else {
+            return;
+        };
+        let line_count = self.buffer.line_count();
+        if line + 1 < line_count {
+            let next_line_start = self
+                .buffer
+                .line_byte_range(line + 1)
+                .map(|r| r.start)
+                .unwrap_or(line_range.end);
+            match self.buffer.delete(line_range.start..next_line_start) {
+                Ok(np) => {
+                    self.buffer.set_cursor(np);
+                    self.buffer.set_selection(Selection::collapsed(np));
+                }
+                Err(e) => self.status_message = Some(format!("delete error: {e}")),
+            }
+        } else if line > 0 {
+            let prev_end = self
+                .buffer
+                .line_byte_range(line - 1)
+                .map(|r| r.end)
+                .unwrap_or(line_range.start);
+            match self.buffer.delete(prev_end..line_range.end) {
+                Ok(np) => {
+                    self.buffer.set_cursor(np);
+                    self.buffer.set_selection(Selection::collapsed(np));
+                }
+                Err(e) => self.status_message = Some(format!("delete error: {e}")),
+            }
+        } else if let Err(e) = self.buffer.delete(0..line_range.end) {
+            self.status_message = Some(format!("delete error: {e}"));
+        } else {
+            self.buffer.set_cursor(0);
+            self.buffer.set_selection(Selection::collapsed(0));
+        }
+        let _ = line_count;
+    }
+
+    fn duplicate_current_line(&mut self) {
+        let cursor_pos = self.buffer.cursor();
+        let (line, _) = self
+            .buffer
+            .pos_to_linecol(cursor_pos)
+            .unwrap_or((0, 0));
+        let Some(line_range) = self.buffer.line_byte_range(line) else {
+            return;
+        };
+        let line_count = self.buffer.line_count();
+        let line_text = self
+            .buffer
+            .slice(line_range.clone())
+            .unwrap_or_default();
+        let line_ends_with_newline = line_text.ends_with('\n');
+        if line + 1 < line_count {
+            let insert_pos = self
+                .buffer
+                .line_byte_range(line + 1)
+                .map(|r| r.start)
+                .unwrap_or(line_range.end);
+            let to_insert = if line_ends_with_newline {
+                line_text.clone()
+            } else {
+                format!("{line_text}\n")
+            };
+            match self.buffer.insert(insert_pos, &to_insert) {
+                Ok(np) => {
+                    let new_line_start = np - to_insert.len()
+                        + if line_ends_with_newline { 1 } else { 0 };
+                    self.buffer.set_cursor(new_line_start);
+                    self.buffer
+                        .set_selection(Selection::collapsed(new_line_start));
+                }
+                Err(e) => self.status_message = Some(format!("insert error: {e}")),
+            }
+        } else {
+            let len = self.buffer.len();
+            let to_insert = if line_ends_with_newline {
+                line_text.clone()
+            } else {
+                format!("\n{line_text}")
+            };
+            match self.buffer.insert(len, &to_insert) {
+                Ok(np) => {
+                    let new_line_start = if line_ends_with_newline {
+                        np - line_text.len()
+                    } else {
+                        np + 1
+                    };
+                    self.buffer.set_cursor(new_line_start);
+                    self.buffer
+                        .set_selection(Selection::collapsed(new_line_start));
+                }
+                Err(e) => self.status_message = Some(format!("insert error: {e}")),
+            }
+        }
+        let _ = line_count;
+    }
+
+    fn move_current_line(&mut self, delta: i32) {
+        let cursor_pos = self.buffer.cursor();
+        let (line, _) = self
+            .buffer
+            .pos_to_linecol(cursor_pos)
+            .unwrap_or((0, 0));
+        let line_count = self.buffer.line_count();
+        let target_line = if delta < 0 {
+            if line == 0 {
+                return;
+            }
+            line - 1
+        } else {
+            if line + 1 >= line_count {
+                return;
+            }
+            line + 1
+        };
+        let Some(my_range_excl_nl) = self.buffer.line_byte_range(line) else {
+            return;
+        };
+        let Some(other_range_excl_nl) = self.buffer.line_byte_range(target_line) else {
+            return;
+        };
+        // Compute byte ranges that INCLUDE the trailing newline so the
+        // swap preserves line structure.
+        let line_with_nl = |excl: std::ops::Range<usize>, l: usize| -> std::ops::Range<usize> {
+            let start = excl.start;
+            let end = if l + 1 < line_count {
+                self.buffer
+                    .line_byte_range(l + 1)
+                    .map(|r| r.start)
+                    .unwrap_or(excl.end)
+            } else {
+                self.buffer.len()
+            };
+            start..end
+        };
+        let my_range = line_with_nl(my_range_excl_nl, line);
+        let other_range = line_with_nl(other_range_excl_nl, target_line);
+        let my_text = self.buffer.slice(my_range.clone()).unwrap_or_default();
+        let other_text = self
+            .buffer
+            .slice(other_range.clone())
+            .unwrap_or_default();
+        // Adjacent lines — delete their union in one shot (the
+        // newline between them is part of one of the ranges, so no
+        // content between them is lost). Then reinsert in swapped
+        // order at delete_start. The text that ends up at the LOWER
+        // position goes at delete_start first; the higher-position
+        // text goes after it.
+        let delete_start = my_range.start.min(other_range.start);
+        let delete_end = my_range.end.max(other_range.end);
+        let _ = self.buffer.delete_silent(delete_start..delete_end);
+        let (lower_text, higher_text) = if delta < 0 {
+            // Move up: my line lands at the lower slot.
+            (my_text.as_str(), other_text.as_str())
+        } else {
+            // Move down: other line stays at the lower slot.
+            (other_text.as_str(), my_text.as_str())
+        };
+        let _ = self.buffer.insert_silent(delete_start, lower_text);
+        let _ = self
+            .buffer
+            .insert_silent(delete_start + lower_text.len(), higher_text);
+        let new_pos = self
+            .buffer
+            .linecol_to_pos(line, 0)
+            .unwrap_or(cursor_pos);
+        self.buffer.set_cursor(new_pos);
+        self.buffer.set_selection(Selection::collapsed(new_pos));
+        let _ = line_count;
     }
 
     /// Helper: ask the OS to close the window. eframe 0.30 has no
@@ -642,5 +876,49 @@ mod tests {
         assert_eq!(app.buffer.cursor(), 8);
         app.handle_event(EditorEvent::Move(Movement::WordLeft));
         assert_eq!(app.buffer.cursor(), 0);
+    }
+
+    // ----- Word delete -----
+
+    #[test]
+    fn delete_word_left_removes_word() {
+        let mut app = app_with("hello world");
+        app.buffer.set_cursor(11);
+        app.handle_event(EditorEvent::DeleteWordLeft);
+        assert_eq!(app.buffer.to_bytes(), b"hello ".to_vec());
+    }
+
+    #[test]
+    fn delete_word_right_removes_word() {
+        let mut app = app_with("hello world");
+        app.buffer.set_cursor(6);
+        app.handle_event(EditorEvent::DeleteWordRight);
+        assert_eq!(app.buffer.to_bytes(), b"hello ".to_vec());
+    }
+
+    // ----- Line ops -----
+
+    #[test]
+    fn delete_line_removes_entire_line_and_newline() {
+        let mut app = app_with("alpha\nbeta\ngamma");
+        app.buffer.set_cursor(8);
+        app.handle_event(EditorEvent::DeleteLine);
+        assert_eq!(app.buffer.to_bytes(), b"alpha\ngamma".to_vec());
+    }
+
+    #[test]
+    fn duplicate_line_inserts_copy_below() {
+        let mut app = app_with("alpha\nbeta\ngamma");
+        app.buffer.set_cursor(8);
+        app.handle_event(EditorEvent::DuplicateLine);
+        assert_eq!(app.buffer.to_bytes(), b"alpha\nbeta\nbeta\ngamma".to_vec());
+    }
+
+    #[test]
+    fn move_line_down_swaps_with_next() {
+        let mut app = app_with("alpha\nbeta\ngamma");
+        app.buffer.set_cursor(2);
+        app.handle_event(EditorEvent::MoveLineDown);
+        assert_eq!(app.buffer.to_bytes(), b"beta\nalpha\ngamma".to_vec());
     }
 }

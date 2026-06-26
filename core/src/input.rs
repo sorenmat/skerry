@@ -26,6 +26,22 @@ pub enum EditorEvent {
     /// Delete the current selection. No-op when the selection is
     /// collapsed (cursor only).
     DeleteSelection,
+    /// Delete the word to the left of the cursor (Ctrl+Backspace).
+    /// Uses the same word boundary definition as `Movement::WordLeft`.
+    DeleteWordLeft,
+    /// Delete the word to the right of the cursor (Ctrl+Delete).
+    DeleteWordRight,
+    /// Delete the current line (Ctrl+K or Ctrl+Shift+K). The trailing
+    /// newline is removed too, so two lines collapse into one.
+    DeleteLine,
+    /// Duplicate the current line (Ctrl+D or Ctrl+Shift+D). The cursor
+    /// moves to the start of the new copy.
+    DuplicateLine,
+    /// Move the current line up by one (Alt+Up). Swaps with the
+    /// previous line.
+    MoveLineUp,
+    /// Move the current line down by one (Alt+Down).
+    MoveLineDown,
     /// Move the cursor. Selection is collapsed to the new position.
     Move(Movement),
     /// Extend the selection by moving one end of it.

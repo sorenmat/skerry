@@ -56,9 +56,22 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::Z => Some(EditorEvent::Undo),
             Key::Y => Some(EditorEvent::Redo),
             Key::Q => Some(EditorEvent::Quit),
+            Key::K => Some(EditorEvent::DeleteLine),
+            Key::D => Some(EditorEvent::DuplicateLine),
+            Key::Backspace => Some(EditorEvent::DeleteWordLeft),
+            Key::Delete => Some(EditorEvent::DeleteWordRight),
             Key::ArrowLeft => Some(movement(Movement::WordLeft, false)),
             Key::ArrowRight => Some(movement(Movement::WordRight, false)),
             // C / X / V fall through to clipboard handling.
+            _ => None,
+        };
+    }
+
+    // Alt-modified keys (line move).
+    if modifiers.alt && !primary && !modifiers.ctrl && !shift {
+        return match key {
+            Key::ArrowUp => Some(EditorEvent::MoveLineUp),
+            Key::ArrowDown => Some(EditorEvent::MoveLineDown),
             _ => None,
         };
     }

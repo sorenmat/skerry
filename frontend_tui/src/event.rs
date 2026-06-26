@@ -30,8 +30,21 @@ pub fn translate_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('z') => Some(EditorEvent::Undo),
             KeyCode::Char('y') => Some(EditorEvent::Redo),
             KeyCode::Char('q') => Some(EditorEvent::Quit),
+            KeyCode::Char('k') => Some(EditorEvent::DeleteLine),
+            KeyCode::Char('d') => Some(EditorEvent::DuplicateLine),
+            KeyCode::Backspace => Some(EditorEvent::DeleteWordLeft),
+            KeyCode::Delete => Some(EditorEvent::DeleteWordRight),
             KeyCode::Left => Some(movement(Movement::WordLeft, false)),
             KeyCode::Right => Some(movement(Movement::WordRight, false)),
+            _ => None,
+        };
+    }
+
+    // Alt-modified keys (line move).
+    if key.modifiers.contains(KeyModifiers::ALT) && !ctrl && !shift {
+        return match key.code {
+            KeyCode::Up => Some(EditorEvent::MoveLineUp),
+            KeyCode::Down => Some(EditorEvent::MoveLineDown),
             _ => None,
         };
     }

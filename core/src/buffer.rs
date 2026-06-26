@@ -132,6 +132,28 @@ pub trait Buffer {
     /// the start of the deleted range).
     fn delete(&mut self, range: Range<BytePos>) -> Result<BytePos, crate::EditError>;
 
+    /// Replace the byte range `range` with `text`. Equivalent to
+    /// `delete(range)` followed by `insert(text)`, but as a single
+    /// atomic operation (one undo entry instead of two).
+    ///
+    /// Returns the new cursor position (typically end of the inserted
+    /// `text`).
+    fn replace(
+        &mut self,
+        range: Range<BytePos>,
+        text: &str,
+    ) -> Result<BytePos, crate::EditError>;
+
+    /// Insert `text` at `byte_pos` WITHOUT recording an undo entry.
+    /// Used by line-level operations (move-line, duplicate-line) where
+    /// the operation is itself recorded as a single undo step; the
+    /// internal inserts should not pile up extra undo entries.
+    fn insert_silent(&mut self, byte_pos: BytePos, text: &str) -> Result<BytePos, crate::EditError>;
+
+    /// Delete `range` WITHOUT recording an undo entry. Pairs with
+    /// `insert_silent` for line-level ops.
+    fn delete_silent(&mut self, range: Range<BytePos>) -> Result<BytePos, crate::EditError>;
+
     // === Undo / redo (linear stack; text + cursor only) ===
 
     /// Undo the most recent edit group. Returns `false` if the undo stack is empty.

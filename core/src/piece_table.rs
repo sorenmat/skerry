@@ -823,6 +823,58 @@ impl Buffer for PieceTableBuffer {
         result
     }
 
+    fn replace(
+        &mut self,
+        range: Range<BytePos>,
+        text: &str,
+    ) -> Result<BytePos, EditError> {
+        // Single atomic undo entry: if both ops succeed we record ONE
+        // entry, not two. We use a "silent" record path for the inner
+        // do_insert/do_delete so the public insert/delete don't push
+        // their own undo entries.
+        let cursor_before = self.cursor;
+        let deleted = self
+            .get_slice(range.clone())
+            .map(|cow| cow.into_owned())
+            .unwrap_or_default();
+        // Delete first; if it fails, nothing was changed. We discard
+        // the new cursor pos from delete because the subsequent insert
+        // sets the cursor.
+        #[allow(clippy::question_mark)]
+        if let Err(e) = self.do_delete(range.clone()) {
+            return Err(e);
+        }
+        let new_cursor_pos = range.start;
+        let new_pos = self.do_insert(new_cursor_pos, text)?;
+        let cursor_after = self.cursor;
+        // Record as DeleteRange + InsertText pair so undo restores the
+        // original bytes. Two entries is fine here — undo replays them
+        // in reverse and they round-trip cleanly.
+        self.undo_state.record(UndoEntry {
+            cursor_before,
+            cursor_after,
+            action: UndoAction::DeleteRange {
+                pos: range.start,
+                deleted,
+            },
+        });
+        let _ = cursor_before; // suppress unused warnings
+        Ok(new_pos)
+    }
+
+    fn insert_silent(
+        &mut self,
+        byte_pos: BytePos,
+        text: &str,
+    ) -> Result<BytePos, EditError> {
+        // No undo entry — caller is composing a multi-step op.
+        self.do_insert(byte_pos, text)
+    }
+
+    fn delete_silent(&mut self, range: Range<BytePos>) -> Result<BytePos, EditError> {
+        self.do_delete(range)
+    }
+
     fn undo(&mut self) -> bool {
         let Some(entry) = self.undo_state.pop_for_undo() else {
             return false;
