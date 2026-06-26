@@ -71,10 +71,21 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('f') => Some(EditorEvent::FindOpen),
             KeyCode::Char('k') => Some(EditorEvent::DeleteLine),
             KeyCode::Char('d') => Some(EditorEvent::DuplicateLine),
+            KeyCode::Char('t') => Some(EditorEvent::NewDoc),
+            KeyCode::Char('w') => Some(EditorEvent::CloseDoc),
+            KeyCode::Tab => Some(EditorEvent::NextDoc),
             KeyCode::Backspace => Some(EditorEvent::DeleteWordLeft),
             KeyCode::Delete => Some(EditorEvent::DeleteWordRight),
             KeyCode::Left => Some(movement(Movement::WordLeft, false)),
             KeyCode::Right => Some(movement(Movement::WordRight, false)),
+            _ => None,
+        };
+    }
+
+    // Ctrl+Shift-modified keys. Tab cycles the other direction.
+    if ctrl && shift {
+        return match key.code {
+            KeyCode::Tab => Some(EditorEvent::PrevDoc),
             _ => None,
         };
     }
@@ -451,5 +462,53 @@ mod tests {
         });
         let ev = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert_eq!(classify_clipboard_key(ev, &buf), None);
+    }
+
+    // ----- multi-buffer key bindings -----
+
+    #[test]
+    fn ctrl_t_opens_new_doc() {
+        assert_eq!(
+            translate_key(key_ctrl('t'), None),
+            Some(EditorEvent::NewDoc)
+        );
+    }
+
+    #[test]
+    fn ctrl_w_closes_active_doc() {
+        assert_eq!(
+            translate_key(key_ctrl('w'), None),
+            Some(EditorEvent::CloseDoc)
+        );
+    }
+
+    #[test]
+    fn ctrl_tab_cycles_next_doc() {
+        assert_eq!(
+            translate_key(
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL),
+                None
+            ),
+            Some(EditorEvent::NextDoc)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_tab_cycles_prev_doc() {
+        assert_eq!(
+            translate_key(
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+                None
+            ),
+            Some(EditorEvent::PrevDoc)
+        );
+    }
+
+    #[test]
+    fn plain_tab_inserts_indent_not_doc_event() {
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None),
+            Some(EditorEvent::Insert('\t'))
+        );
     }
 }

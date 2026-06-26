@@ -1,18 +1,19 @@
 //! TUI frontend entry point.
 //!
-//! Usage: `the_editor_tui [PATH]` — opens PATH if given, otherwise opens
-//! an unsaved buffer. Saves go back to PATH if set (Ctrl+S); unsaved
-//! buffers with no path can't be saved (yet).
+//! Usage: `the_editor_tui [PATH...]` — opens one document per PATH
+//! argument. With no PATH, opens one unsaved buffer. Saves go back to
+//! the original PATH for each document (Ctrl+S); unsaved buffers with
+//! no path can't be saved (yet).
 //!
 //! Terminal state is restored via a Drop guard so that panics during the
 //! event loop don't leave the user's terminal in raw mode.
 
 use std::env;
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
-use core::{Buffer, PieceTableBuffer};
+use core::{Buffer, Document, PieceTableBuffer};
 
 mod app;
 mod event;
@@ -43,9 +44,9 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let path = parse_path_arg();
+    let paths = parse_path_args();
 
-    let buffer = load_buffer(path.as_ref())?;
+    let documents = load_documents(&paths)?;
 
     let _guard = TerminalGuard;
     let mut terminal = ratatui::init();
@@ -59,7 +60,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         eprintln!("warning: failed to enable mouse capture: {e}");
     }
 
-    let mut app = App::new(buffer);
+    let mut app = App::new_with_documents(documents);
     let result = app.run(&mut terminal);
 
     // Drop the terminal explicitly before the guard runs so the guard's
@@ -69,31 +70,29 @@ fn run() -> Result<(), Box<dyn Error>> {
     result
 }
 
-fn parse_path_arg() -> Option<PathBuf> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() > 1 {
-        Some(PathBuf::from(&args[1]))
-    } else {
-        None
-    }
+fn parse_path_args() -> Vec<PathBuf> {
+    env::args().skip(1).map(PathBuf::from).collect()
 }
 
-fn load_buffer(path: Option<&PathBuf>) -> Result<Box<dyn Buffer>, Box<dyn Error>> {
-    match path {
-        Some(p) if p.exists() => {
-            // from_path memory-maps the file — multi-GB logs never load
-            // into RAM as a whole. ADR 0002's payoff.
-            let buf = PieceTableBuffer::from_path(p.clone())?;
-            Ok(Box::new(buf))
-        }
-        Some(p) => {
-            // Path was given but the file does not exist yet — open a new
-            // buffer that will save to that path when the user hits Ctrl+S.
-            Ok(Box::new(PieceTableBuffer::from_bytes_with_path(
-                Vec::new(),
-                p.clone(),
-            )))
-        }
-        None => Ok(Box::new(PieceTableBuffer::new())),
+/// Load each path into its own [`Document`]. Existing files are
+/// memory-mapped via [`PieceTableBuffer::from_path`] (ADR 0002 — the
+/// multi-GB-file path); paths that don't exist yet get a fresh empty
+/// buffer that will save back to that path. With no paths, returns a
+/// single empty document so the editor still has somewhere to land.
+fn load_documents(paths: &[PathBuf]) -> Result<Vec<Document>, Box<dyn Error>> {
+    if paths.is_empty() {
+        return Ok(vec![Document::empty()]);
     }
+    paths.iter().map(|p| load_document(p.as_path())).collect()
+}
+
+fn load_document(path: &Path) -> Result<Document, Box<dyn Error>> {
+    let buffer: Box<dyn Buffer> = if path.exists() {
+        Box::new(PieceTableBuffer::from_path(path.to_path_buf())?)
+    } else {
+        // Path was given but the file does not exist yet — open a new
+        // buffer that will save to that path when the user hits Ctrl+S.
+        Box::new(PieceTableBuffer::from_bytes_with_path(Vec::new(), path.to_path_buf()))
+    };
+    Ok(Document::new(buffer))
 }

@@ -78,6 +78,23 @@ pub enum EditorEvent {
     Undo,
     /// Redo the most recently undone edit.
     Redo,
+    /// Open a new, empty, unsaved document and switch to it.
+    /// Default binding: Cmd/Ctrl+T.
+    NewDoc,
+    /// Close the active document. If it was the only document, the
+    /// editor quits. The active index moves to the neighbour on close;
+    /// if the closed document was last, the new last becomes active.
+    /// Default binding: Cmd/Ctrl+W.
+    ///
+    /// v1: closes unconditionally — does NOT prompt on dirty buffers.
+    /// A future stage will add a "save before close?" prompt.
+    CloseDoc,
+    /// Switch to the next document in the session, wrapping at the end.
+    /// Default binding: Cmd/Ctrl+Tab.
+    NextDoc,
+    /// Switch to the previous document in the session, wrapping at
+    /// the start. Default binding: Cmd/Ctrl+Shift+Tab.
+    PrevDoc,
     /// Quit the editor. Frontend may prompt to save dirty buffers.
     Quit,
 }
@@ -156,5 +173,16 @@ mod tests {
             EditorEvent::SelectExtendTo { pos } => assert_eq!(pos, 100),
             _ => panic!("expected SelectExtendTo"),
         }
+    }
+
+    #[test]
+    fn doc_event_variants_exist() {
+        // If you add another document-lifecycle event, mirror it here
+        // so the type-level exhaustiveness check catches handlers that
+        // forget to wire it up.
+        let _ = EditorEvent::NewDoc;
+        let _ = EditorEvent::CloseDoc;
+        let _ = EditorEvent::NextDoc;
+        let _ = EditorEvent::PrevDoc;
     }
 }

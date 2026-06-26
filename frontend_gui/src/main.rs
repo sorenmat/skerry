@@ -1,19 +1,20 @@
 //! GUI frontend entry point.
 //!
-//! Usage: `frontend_gui [PATH]` — opens PATH if given, otherwise an
-//! unsaved buffer. Same feature set as `frontend_tui` (ADR 0005).
+//! Usage: `frontend_gui [PATH...]` — opens one document per PATH
+//! argument. With no PATH, opens one unsaved buffer. Same feature
+//! set as `frontend_tui` (ADR 0005).
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use core::{Buffer, PieceTableBuffer};
+use core::{Buffer, Document, PieceTableBuffer};
 use eframe::egui;
 
 use frontend_gui::app::EditorApp;
 
 fn main() -> eframe::Result<()> {
-    let path = env::args().nth(1).map(PathBuf::from);
-    let buffer = load_buffer(path.as_ref());
+    let paths: Vec<PathBuf> = env::args().skip(1).map(PathBuf::from).collect();
+    let documents = load_documents(&paths);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -25,19 +26,30 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "the_editor",
         native_options,
-        Box::new(|_cc| Ok(Box::new(EditorApp::new(buffer)))),
+        Box::new(|_cc| Ok(Box::new(EditorApp::new_with_documents(documents)))),
     )
 }
 
-fn load_buffer(path: Option<&PathBuf>) -> Box<dyn Buffer> {
-    match path {
-        Some(p) if p.exists() => {
-            // from_path memory-maps the file — multi-GB logs never load
-            // into RAM as a whole. ADR 0002's payoff.
-            Box::new(PieceTableBuffer::from_path(p.clone())
-                .unwrap_or_else(|_| PieceTableBuffer::new()))
-        }
-        Some(p) => Box::new(PieceTableBuffer::from_bytes_with_path(Vec::new(), p.clone())),
-        None => Box::new(PieceTableBuffer::new()),
+/// Load each path into its own [`Document`]. Existing files are
+/// memory-mapped via [`PieceTableBuffer::from_path`] (ADR 0002 — the
+/// multi-GB-file path); paths that don't exist yet get a fresh empty
+/// buffer that will save back to that path. With no paths, returns a
+/// single empty document so the editor still has somewhere to land.
+fn load_documents(paths: &[PathBuf]) -> Vec<Document> {
+    if paths.is_empty() {
+        return vec![Document::empty()];
     }
+    paths.iter().map(|p| load_document(p.as_path())).collect()
+}
+
+fn load_document(path: &Path) -> Document {
+    let buffer: Box<dyn Buffer> = if path.exists() {
+        Box::new(
+            PieceTableBuffer::from_path(path.to_path_buf())
+                .unwrap_or_else(|_| PieceTableBuffer::new()),
+        )
+    } else {
+        Box::new(PieceTableBuffer::from_bytes_with_path(Vec::new(), path.to_path_buf()))
+    };
+    Document::new(buffer)
 }

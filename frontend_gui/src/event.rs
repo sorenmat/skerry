@@ -59,11 +59,22 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::F => Some(EditorEvent::FindOpen),
             Key::K => Some(EditorEvent::DeleteLine),
             Key::D => Some(EditorEvent::DuplicateLine),
+            Key::T => Some(EditorEvent::NewDoc),
+            Key::W => Some(EditorEvent::CloseDoc),
+            Key::Tab => Some(EditorEvent::NextDoc),
             Key::Backspace => Some(EditorEvent::DeleteWordLeft),
             Key::Delete => Some(EditorEvent::DeleteWordRight),
             Key::ArrowLeft => Some(movement(Movement::WordLeft, false)),
             Key::ArrowRight => Some(movement(Movement::WordRight, false)),
             // C / X / V fall through to clipboard handling.
+            _ => None,
+        };
+    }
+
+    // Ctrl+Shift-modified keys. Tab cycles the other direction.
+    if primary && shift {
+        return match key {
+            Key::Tab => Some(EditorEvent::PrevDoc),
             _ => None,
         };
     }
@@ -431,5 +442,54 @@ mod tests {
             head: 5,
         });
         assert!(classify_clipboard_event(&Event::Paste("x".into()), &buf).is_none());
+    }
+
+    // ----- multi-buffer key bindings -----
+
+    #[test]
+    fn primary_t_opens_new_doc() {
+        assert_eq!(
+            translate_event(&key_event(Key::T, true, primary())),
+            Some(EditorEvent::NewDoc)
+        );
+    }
+
+    #[test]
+    fn primary_w_closes_active_doc() {
+        assert_eq!(
+            translate_event(&key_event(Key::W, true, primary())),
+            Some(EditorEvent::CloseDoc)
+        );
+    }
+
+    #[test]
+    fn primary_tab_cycles_next_doc() {
+        assert_eq!(
+            translate_event(&key_event(Key::Tab, true, primary())),
+            Some(EditorEvent::NextDoc)
+        );
+    }
+
+    #[test]
+    fn primary_shift_tab_cycles_prev_doc() {
+        let mods = Modifiers {
+            ctrl: true,
+            command: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            translate_event(&key_event(Key::Tab, true, mods)),
+            Some(EditorEvent::PrevDoc)
+        );
+    }
+
+    #[test]
+    fn plain_tab_inserts_indent_not_doc_event() {
+        // Without primary modifier, Tab is still the indent key.
+        assert_eq!(
+            translate_event(&key_event(Key::Tab, true, no_mods())),
+            Some(EditorEvent::Insert('\t'))
+        );
     }
 }

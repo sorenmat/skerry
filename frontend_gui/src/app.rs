@@ -339,6 +339,25 @@ impl EditorApp {
                     self.status_message = Some("Redid.".to_string());
                 }
             }
+            EditorEvent::NewDoc => {
+                self.documents.push(Document::empty());
+                self.active = self.documents.len() - 1;
+                self.status_message = Some("New document.".to_string());
+            }
+            EditorEvent::CloseDoc => {
+                self.close_active_doc();
+            }
+            EditorEvent::NextDoc => {
+                if !self.documents.is_empty() {
+                    self.active = (self.active + 1) % self.documents.len();
+                }
+            }
+            EditorEvent::PrevDoc => {
+                if !self.documents.is_empty() {
+                    self.active =
+                        (self.active + self.documents.len() - 1) % self.documents.len();
+                }
+            }
             EditorEvent::Quit => {
                 self.should_quit = true;
             }
@@ -610,6 +629,26 @@ impl EditorApp {
     /// `Frame::close()`; we send a viewport command instead.
     pub fn request_close(&self, ctx: &Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Close the active document. If it was the only document, the
+    /// editor quits (`should_quit = true`). Otherwise the active
+    /// index moves to a neighbour — the document at the same index
+    /// after removal, or the new last if we closed the tail.
+    ///
+    /// v1: closes unconditionally — does NOT prompt on dirty buffers.
+    /// A future stage will add a "save before close?" prompt.
+    pub fn close_active_doc(&mut self) {
+        if self.documents.len() == 1 {
+            self.should_quit = true;
+            self.status_message = Some("Closed last document — quitting.".to_string());
+            return;
+        }
+        self.documents.remove(self.active);
+        if self.active >= self.documents.len() {
+            self.active = self.documents.len() - 1;
+        }
+        self.status_message = Some("Closed document.".to_string());
     }
 }
 
@@ -1033,5 +1072,105 @@ mod tests {
         app.active_buffer_mut().set_cursor(2);
         app.handle_event(EditorEvent::MoveLineDown);
         assert_eq!(app.active_buffer().to_bytes(), b"beta\nalpha\ngamma".to_vec());
+    }
+
+    // ----- multi-buffer / tabs -----
+
+    /// Helper: build an `EditorApp` from a list of buffer contents.
+    /// Each entry becomes one document, in order.
+    fn app_with_docs(contents: &[&str]) -> EditorApp {
+        let docs: Vec<Document> = contents
+            .iter()
+            .map(|c| {
+                let buf: Box<dyn Buffer> =
+                    Box::new(PieceTableBuffer::from_bytes(c.as_bytes().to_vec()));
+                Document::new(buf)
+            })
+            .collect();
+        EditorApp::new_with_documents(docs)
+    }
+
+    #[test]
+    fn new_doc_appends_empty_document_and_activates_it() {
+        let mut app = app_with_docs(&["alpha", "beta"]);
+        assert_eq!(app.doc_count(), 2);
+        assert_eq!(app.active(), 0);
+        app.handle_event(EditorEvent::NewDoc);
+        assert_eq!(app.doc_count(), 3);
+        assert_eq!(app.active(), 2);
+        // The new doc is empty and unsaved.
+        assert_eq!(app.active_buffer().to_bytes(), b"".to_vec());
+        assert!(!app.active_buffer().is_dirty()); // empty buffer is not dirty
+    }
+
+    #[test]
+    fn close_doc_with_multiple_docs_removes_active_and_picks_neighbour() {
+        let mut app = app_with_docs(&["alpha", "beta", "gamma"]);
+        assert_eq!(app.active(), 0);
+        app.handle_event(EditorEvent::CloseDoc);
+        assert_eq!(app.doc_count(), 2);
+        // Active stays at index 0 (the doc after the removed one slid down).
+        assert_eq!(app.active(), 0);
+        assert_eq!(app.active_buffer().to_bytes(), b"beta".to_vec());
+    }
+
+    #[test]
+    fn close_doc_at_tail_moves_active_to_new_last() {
+        let mut app = app_with_docs(&["alpha", "beta", "gamma"]);
+        app.active = 2;
+        app.handle_event(EditorEvent::CloseDoc);
+        assert_eq!(app.doc_count(), 2);
+        assert_eq!(app.active(), 1, "tail close should move active back");
+        assert_eq!(app.active_buffer().to_bytes(), b"beta".to_vec());
+    }
+
+    #[test]
+    fn close_last_doc_quits_editor() {
+        let mut app = app_with_docs(&["only"]);
+        assert!(!app.should_quit);
+        app.handle_event(EditorEvent::CloseDoc);
+        assert!(app.should_quit);
+        // The single document is NOT removed (the editor is quitting,
+        // not closing). This keeps the close path free of any
+        // post-close indexing surprises.
+        assert_eq!(app.doc_count(), 1);
+    }
+
+    #[test]
+    fn next_doc_wraps_around() {
+        let mut app = app_with_docs(&["a", "b", "c"]);
+        assert_eq!(app.active(), 0);
+        app.handle_event(EditorEvent::NextDoc);
+        assert_eq!(app.active(), 1);
+        app.handle_event(EditorEvent::NextDoc);
+        assert_eq!(app.active(), 2);
+        // Wraps.
+        app.handle_event(EditorEvent::NextDoc);
+        assert_eq!(app.active(), 0);
+    }
+
+    #[test]
+    fn prev_doc_wraps_around() {
+        let mut app = app_with_docs(&["a", "b", "c"]);
+        assert_eq!(app.active(), 0);
+        // Wraps to last.
+        app.handle_event(EditorEvent::PrevDoc);
+        assert_eq!(app.active(), 2);
+        app.handle_event(EditorEvent::PrevDoc);
+        assert_eq!(app.active(), 1);
+        app.handle_event(EditorEvent::PrevDoc);
+        assert_eq!(app.active(), 0);
+    }
+
+    #[test]
+    fn switching_docs_preserves_buffer_state() {
+        // Editing doc 0 must not touch doc 1.
+        let mut app = app_with_docs(&["hello", "world"]);
+        app.active_buffer_mut().insert(5, "!").unwrap();
+        assert_eq!(app.active_buffer().to_bytes(), b"hello!".to_vec());
+        app.handle_event(EditorEvent::NextDoc);
+        assert_eq!(app.active_buffer().to_bytes(), b"world".to_vec());
+        app.handle_event(EditorEvent::PrevDoc);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello!".to_vec());
     }
 }
