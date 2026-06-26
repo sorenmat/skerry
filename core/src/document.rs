@@ -14,6 +14,21 @@ use std::path::{Path, PathBuf};
 
 use crate::Buffer;
 
+/// Per-document view state that both frontends share.
+///
+/// Only fields that are meaningful to BOTH the TUI and the GUI live
+/// here. Renderer-specific bits (e.g. the TUI's vertical scroll
+/// position, the GUI's viewport line count) stay on the frontend
+/// `App` struct because only that frontend knows how to use them.
+#[derive(Clone, Debug, Default)]
+pub struct ViewState {
+    /// Horizontal scroll offset in character columns. 0 = the line
+    /// starts at the left edge of the content area. Lines longer
+    /// than the viewport get clipped on the left when `scroll_x_cols`
+    /// is positive. Both frontends read this.
+    pub scroll_x_cols: usize,
+}
+
 /// One document open in the session.
 ///
 /// Owns its [`Buffer`] exclusively. Closing a `Document` drops the
@@ -26,13 +41,21 @@ pub struct Document {
     /// implementations later (rope, in-memory only, etc.) without
     /// touching `Document`'s API.
     pub buffer: Box<dyn Buffer>,
+
+    /// Per-document view state shared across frontends. See
+    /// [`ViewState`] for what's in here and why.
+    pub view: ViewState,
 }
 
 impl Document {
     /// Wrap a buffer in a `Document`. The buffer's `source_path`
-    /// becomes the document's display path.
+    /// becomes the document's display path. View state starts at
+    /// defaults (no horizontal scroll).
     pub fn new(buffer: Box<dyn Buffer>) -> Self {
-        Self { buffer }
+        Self {
+            buffer,
+            view: ViewState::default(),
+        }
     }
 
     /// Create a fresh, empty, unsaved document.
@@ -78,10 +101,6 @@ impl Document {
 mod tests {
     use super::*;
     use crate::PieceTableBuffer;
-
-    fn buffer_with(text: &str) -> Box<dyn Buffer> {
-        Box::new(PieceTableBuffer::from_bytes(text.as_bytes().to_vec()))
-    }
 
     #[test]
     fn unsaved_document_has_no_path() {

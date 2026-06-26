@@ -3,38 +3,84 @@
 //! Mirrors `frontend_tui::App` so the event-handling logic stays in
 //! lockstep across frontends (ADR 0005).
 
-use core::{Buffer, EditorEvent, Movement, Search, Selection};
+use core::{Buffer, Document, EditorEvent, Movement, Search, Selection};
 use eframe::egui;
 use eframe::egui::Context;
 use eframe::App;
 
 /// The GUI editor application. eframe calls `update()` each frame.
 pub struct EditorApp {
-    pub buffer: Box<dyn Buffer>,
+    /// All open documents. `active` indexes into this Vec; all
+    /// events flow through `active_doc_mut()`.
+    pub documents: Vec<Document>,
+    /// Index of the currently focused document into `documents`.
+    pub active: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
     /// Number of lines that fit in the current viewport. Updated each
     /// frame by the renderer; used by PageUp/PageDown to compute a
     /// reasonable page size when there's no other source of truth.
+    /// Window-global, not per-document — it's a property of the
+    /// window's height, not of any single doc.
     pub viewport_lines: usize,
-    /// Horizontal scroll offset in columns. Lines longer than the
-    /// viewport get clipped on the left when scroll_x_cols > 0. The
-    /// renderer converts this to pixels using `char_width`.
-    pub scroll_x_cols: usize,
     /// Find state: query, match list, current match, bar visibility.
+    /// Operates on the active document's buffer.
     pub search: Search,
 }
 
 impl EditorApp {
+    /// Create an `EditorApp` around a single buffer. Wraps the buffer
+    /// in a one-element document list.
     pub fn new(buffer: Box<dyn Buffer>) -> Self {
+        Self::new_with_documents(vec![Document::new(buffer)])
+    }
+
+    /// Create an `EditorApp` around a pre-built list of documents.
+    /// The first document becomes active.
+    pub fn new_with_documents(documents: Vec<Document>) -> Self {
+        assert!(
+            !documents.is_empty(),
+            "EditorApp needs at least one document"
+        );
         Self {
-            buffer,
+            documents,
+            active: 0,
             should_quit: false,
             status_message: None,
             viewport_lines: 20,
-            scroll_x_cols: 0,
             search: Search::new(),
         }
+    }
+
+    /// Index of the currently focused document.
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
+    /// Reference to the active document.
+    pub fn active_doc(&self) -> &Document {
+        &self.documents[self.active]
+    }
+
+    /// Mutable reference to the active document. Use this when you
+    /// need to change per-document state (view, search, etc.).
+    pub fn active_doc_mut(&mut self) -> &mut Document {
+        &mut self.documents[self.active]
+    }
+
+    /// Shortcut for `self.active_doc().buffer` as `&dyn Buffer`.
+    pub fn active_buffer(&self) -> &dyn Buffer {
+        &*self.documents[self.active].buffer
+    }
+
+    /// Shortcut for `self.active_doc_mut().buffer` as `&mut dyn Buffer`.
+    pub fn active_buffer_mut(&mut self) -> &mut dyn Buffer {
+        &mut *self.documents[self.active].buffer
+    }
+
+    /// Number of currently open documents.
+    pub fn doc_count(&self) -> usize {
+        self.documents.len()
     }
 
     /// Pull input events from egui and apply them to the buffer.
@@ -54,7 +100,7 @@ impl EditorApp {
         ctx.input(|i| {
             for event in &i.events {
                 if let Some(clip) =
-                    crate::event::classify_clipboard_event(event, &*self.buffer)
+                    crate::event::classify_clipboard_event(event, self.active_buffer())
                 {
                     clipboard_events.push(clip);
                     continue;
@@ -104,12 +150,12 @@ impl EditorApp {
                 // by the inserted character (matches every editor since
                 // 1995).
                 self.delete_selection_if_any();
-                let pos = self.buffer.cursor();
+                let pos = self.active_buffer().cursor();
                 let s = ch.to_string();
-                match self.buffer.insert(pos, &s) {
+                match self.active_buffer_mut().insert(pos, &s) {
                     Ok(new_pos) => {
-                        self.buffer.set_cursor(new_pos);
-                        self.buffer.set_selection(Selection::collapsed(new_pos));
+                        self.active_buffer_mut().set_cursor(new_pos);
+                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
                         self.status_message = None;
                     }
                     Err(e) => self.status_message = Some(format!("insert error: {e}")),
@@ -119,12 +165,12 @@ impl EditorApp {
                 if self.delete_selection_if_any() {
                     return;
                 }
-                let pos = self.buffer.cursor();
+                let pos = self.active_buffer().cursor();
                 if pos > 0 {
-                    match self.buffer.delete((pos - 1)..pos) {
+                    match self.active_buffer_mut().delete((pos - 1)..pos) {
                         Ok(new_pos) => {
-                            self.buffer.set_cursor(new_pos);
-                            self.buffer.set_selection(Selection::collapsed(new_pos));
+                            self.active_buffer_mut().set_cursor(new_pos);
+                            self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
                         }
                         Err(e) => self.status_message = Some(format!("delete error: {e}")),
                     }
@@ -134,12 +180,12 @@ impl EditorApp {
                 if self.delete_selection_if_any() {
                     return;
                 }
-                let pos = self.buffer.cursor();
-                if pos < self.buffer.len() {
-                    match self.buffer.delete(pos..(pos + 1)) {
+                let pos = self.active_buffer().cursor();
+                if pos < self.active_buffer().len() {
+                    match self.active_buffer_mut().delete(pos..(pos + 1)) {
                         Ok(new_pos) => {
-                            self.buffer.set_cursor(new_pos);
-                            self.buffer.set_selection(Selection::collapsed(new_pos));
+                            self.active_buffer_mut().set_cursor(new_pos);
+                            self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
                         }
                         Err(e) => self.status_message = Some(format!("delete error: {e}")),
                     }
@@ -152,18 +198,18 @@ impl EditorApp {
                 if self.delete_selection_if_any() {
                     return;
                 }
-                let pos = self.buffer.cursor();
+                let pos = self.active_buffer().cursor();
                 if pos == 0 {
                     return;
                 }
-                let target = skip_word_left(&*self.buffer, pos);
+                let target = skip_word_left(self.active_buffer(), pos);
                 if target == pos {
                     return;
                 }
-                match self.buffer.delete(target..pos) {
+                match self.active_buffer_mut().delete(target..pos) {
                     Ok(new_pos) => {
-                        self.buffer.set_cursor(new_pos);
-                        self.buffer.set_selection(Selection::collapsed(new_pos));
+                        self.active_buffer_mut().set_cursor(new_pos);
+                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
                     }
                     Err(e) => self.status_message = Some(format!("delete error: {e}")),
                 }
@@ -172,19 +218,19 @@ impl EditorApp {
                 if self.delete_selection_if_any() {
                     return;
                 }
-                let pos = self.buffer.cursor();
-                let len = self.buffer.len();
+                let pos = self.active_buffer().cursor();
+                let len = self.active_buffer().len();
                 if pos >= len {
                     return;
                 }
-                let target = skip_word_right(&*self.buffer, pos);
+                let target = skip_word_right(self.active_buffer(), pos);
                 if target == pos {
                     return;
                 }
-                match self.buffer.delete(pos..target) {
+                match self.active_buffer_mut().delete(pos..target) {
                     Ok(new_pos) => {
-                        self.buffer.set_cursor(new_pos);
-                        self.buffer.set_selection(Selection::collapsed(new_pos));
+                        self.active_buffer_mut().set_cursor(new_pos);
+                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
                     }
                     Err(e) => self.status_message = Some(format!("delete error: {e}")),
                 }
@@ -202,10 +248,12 @@ impl EditorApp {
                 self.move_current_line(1);
             }
             EditorEvent::ScrollLeft => {
-                self.scroll_x_cols = self.scroll_x_cols.saturating_sub(1);
+                let new = self.active_doc().view.scroll_x_cols.saturating_sub(1);
+                self.active_doc_mut().view.scroll_x_cols = new;
             }
             EditorEvent::ScrollRight => {
-                self.scroll_x_cols = self.scroll_x_cols.saturating_add(1);
+                let new = self.active_doc().view.scroll_x_cols.saturating_add(1);
+                self.active_doc_mut().view.scroll_x_cols = new;
             }
             EditorEvent::FindOpen => {
                 self.search.bar_open = true;
@@ -215,50 +263,50 @@ impl EditorApp {
             }
             EditorEvent::FindQueryChanged(q) => {
                 self.search.query = q;
-                self.search.refresh(&self.buffer.to_bytes());
+                self.search.refresh(&self.active_buffer().to_bytes());
                 if let Some(pos) = self.search.current_match() {
-                    self.buffer.set_cursor(pos);
-                    self.buffer.set_selection(Selection::collapsed(pos));
+                    self.active_buffer_mut().set_cursor(pos);
+                    self.active_buffer_mut().set_selection(Selection::collapsed(pos));
                 }
             }
             EditorEvent::FindNext => {
-                if let Some(pos) = self.search.next_after(self.buffer.cursor()) {
-                    self.buffer.set_cursor(pos);
-                    self.buffer.set_selection(Selection::collapsed(pos));
+                if let Some(pos) = self.search.next_after(self.active_buffer().cursor()) {
+                    self.active_buffer_mut().set_cursor(pos);
+                    self.active_buffer_mut().set_selection(Selection::collapsed(pos));
                     self.ensure_cursor_visible();
                 }
             }
             EditorEvent::FindPrev => {
-                if let Some(pos) = self.search.prev_before(self.buffer.cursor()) {
-                    self.buffer.set_cursor(pos);
-                    self.buffer.set_selection(Selection::collapsed(pos));
+                if let Some(pos) = self.search.prev_before(self.active_buffer().cursor()) {
+                    self.active_buffer_mut().set_cursor(pos);
+                    self.active_buffer_mut().set_selection(Selection::collapsed(pos));
                     self.ensure_cursor_visible();
                 }
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
-                self.buffer.set_cursor(new_pos);
-                self.buffer.set_selection(Selection::collapsed(new_pos));
+                self.active_buffer_mut().set_cursor(new_pos);
+                self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
             }
             EditorEvent::SelectExtend(movement) => {
                 let new_pos = self.compute_target(movement);
-                let anchor = self.buffer.selection().anchor;
-                self.buffer.set_cursor(new_pos);
-                self.buffer.set_selection(Selection {
+                let anchor = self.active_buffer().selection().anchor;
+                self.active_buffer_mut().set_cursor(new_pos);
+                self.active_buffer_mut().set_selection(Selection {
                     anchor,
                     head: new_pos,
                 });
             }
             EditorEvent::SetCursor { pos } => {
-                let clamped = pos.min(self.buffer.len());
-                self.buffer.set_cursor(clamped);
-                self.buffer.set_selection(Selection::collapsed(clamped));
+                let clamped = pos.min(self.active_buffer().len());
+                self.active_buffer_mut().set_cursor(clamped);
+                self.active_buffer_mut().set_selection(Selection::collapsed(clamped));
             }
             EditorEvent::SelectExtendTo { pos } => {
-                let clamped = pos.min(self.buffer.len());
-                let anchor = self.buffer.selection().anchor;
-                self.buffer.set_cursor(clamped);
-                self.buffer.set_selection(Selection {
+                let clamped = pos.min(self.active_buffer().len());
+                let anchor = self.active_buffer().selection().anchor;
+                self.active_buffer_mut().set_cursor(clamped);
+                self.active_buffer_mut().set_selection(Selection {
                     anchor,
                     head: clamped,
                 });
@@ -267,27 +315,27 @@ impl EditorApp {
                 // Selection-aware paste: replace the selection if any,
                 // otherwise insert at cursor.
                 self.delete_selection_if_any();
-                let pos = self.buffer.cursor();
-                match self.buffer.insert(pos, &text) {
+                let pos = self.active_buffer().cursor();
+                match self.active_buffer_mut().insert(pos, &text) {
                     Ok(new_pos) => {
-                        self.buffer.set_cursor(new_pos);
-                        self.buffer.set_selection(Selection::collapsed(new_pos));
+                        self.active_buffer_mut().set_cursor(new_pos);
+                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
                         self.status_message = None;
                     }
                     Err(e) => self.status_message = Some(format!("paste error: {e}")),
                 }
             }
-            EditorEvent::Save => match self.buffer.save() {
+            EditorEvent::Save => match self.active_buffer_mut().save() {
                 Ok(()) => self.status_message = Some("Saved.".to_string()),
                 Err(e) => self.status_message = Some(format!("Save error: {e}")),
             },
             EditorEvent::Undo => {
-                if self.buffer.undo() {
+                if self.active_buffer_mut().undo() {
                     self.status_message = Some("Undid.".to_string());
                 }
             }
             EditorEvent::Redo => {
-                if self.buffer.redo() {
+                if self.active_buffer_mut().redo() {
                     self.status_message = Some("Redid.".to_string());
                 }
             }
@@ -301,15 +349,15 @@ impl EditorApp {
     /// to the start of the deleted range. Returns `true` when a deletion
     /// actually happened.
     fn delete_selection_if_any(&mut self) -> bool {
-        let sel = self.buffer.selection();
+        let sel = self.active_buffer().selection();
         if sel.is_collapsed() {
             return false;
         }
         let range = sel.range();
-        match self.buffer.delete(range) {
+        match self.active_buffer_mut().delete(range) {
             Ok(new_pos) => {
-                self.buffer.set_cursor(new_pos);
-                self.buffer.set_selection(Selection::collapsed(new_pos));
+                self.active_buffer_mut().set_cursor(new_pos);
+                self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
                 true
             }
             Err(e) => {
@@ -322,8 +370,8 @@ impl EditorApp {
     /// Compute the byte position a movement should land on. Identical
     /// to `frontend_tui::App::compute_target`.
     fn compute_target(&self, movement: Movement) -> usize {
-        let pos = self.buffer.cursor();
-        let len = self.buffer.len();
+        let pos = self.active_buffer().cursor();
+        let len = self.active_buffer().len();
         match movement {
             Movement::Left => pos.saturating_sub(1),
             Movement::Right => {
@@ -334,52 +382,47 @@ impl EditorApp {
                 }
             }
             Movement::Up => {
-                let (line, col) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                 if line == 0 {
                     0
                 } else {
-                    self.buffer
-                        .linecol_to_pos(line - 1, col)
+                    self.active_buffer().linecol_to_pos(line - 1, col)
                         .unwrap_or(pos)
                 }
             }
             Movement::Down => {
-                let (line, col) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
-                if line + 1 >= self.buffer.line_count() {
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                if line + 1 >= self.active_buffer().line_count() {
                     pos
                 } else {
-                    self.buffer
-                        .linecol_to_pos(line + 1, col)
+                    self.active_buffer().linecol_to_pos(line + 1, col)
                         .unwrap_or(pos)
                 }
             }
             Movement::PageUp => {
-                let (line, col) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                 let page = self.viewport_lines.max(1);
                 let target = line.saturating_sub(page);
-                self.buffer
-                    .linecol_to_pos(target, col)
+                self.active_buffer().linecol_to_pos(target, col)
                     .unwrap_or(pos)
             }
             Movement::PageDown => {
-                let (line, col) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                 let page = self.viewport_lines.max(1);
-                let last = self.buffer.line_count().saturating_sub(1);
+                let last = self.active_buffer().line_count().saturating_sub(1);
                 let target = (line + page).min(last);
-                self.buffer
-                    .linecol_to_pos(target, col)
+                self.active_buffer().linecol_to_pos(target, col)
                     .unwrap_or(pos)
             }
-            Movement::WordLeft => skip_word_left(&*self.buffer, pos),
-            Movement::WordRight => skip_word_right(&*self.buffer, pos),
+            Movement::WordLeft => skip_word_left(self.active_buffer(), pos),
+            Movement::WordRight => skip_word_right(self.active_buffer(), pos),
             Movement::LineStart => {
-                let (line, _) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
-                self.buffer.linecol_to_pos(line, 0).unwrap_or(0)
+                let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                self.active_buffer().linecol_to_pos(line, 0).unwrap_or(0)
             }
             Movement::LineEnd => {
-                let (line, _) = self.buffer.pos_to_linecol(pos).unwrap_or((0, 0));
-                self.buffer
-                    .line_byte_range(line)
+                let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                self.active_buffer().line_byte_range(line)
                     .map(|r| r.end)
                     .unwrap_or(len)
             }
@@ -389,7 +432,7 @@ impl EditorApp {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.buffer.is_dirty()
+        self.active_buffer().is_dirty()
     }
 
     /// Adjust `viewport_lines` so the cursor is visible. The GUI's
@@ -400,7 +443,7 @@ impl EditorApp {
     /// char on screen, and rely on the natural next-frame repaint
     /// to bring the line into view via the user's mouse interaction.
     fn ensure_cursor_visible(&mut self) {
-        let _ = self.buffer.pos_to_linecol(self.buffer.cursor());
+        let _ = self.active_buffer().pos_to_linecol(self.active_buffer().cursor());
         // No-op for now: the GUI's own ScrollArea will scroll when
         // the user moves the wheel. TUI uses adjust_viewport.
     }
@@ -408,69 +451,57 @@ impl EditorApp {
     /// Delete the entire line under the cursor, including its trailing
     /// newline (so the next line collapses up).
     fn delete_current_line(&mut self) {
-        let cursor_pos = self.buffer.cursor();
-        let (line, _) = self
-            .buffer
-            .pos_to_linecol(cursor_pos)
+        let cursor_pos = self.active_buffer().cursor();
+        let (line, _) = self.active_buffer().pos_to_linecol(cursor_pos)
             .unwrap_or((0, 0));
-        let Some(line_range) = self.buffer.line_byte_range(line) else {
+        let Some(line_range) = self.active_buffer().line_byte_range(line) else {
             return;
         };
-        let line_count = self.buffer.line_count();
+        let line_count = self.active_buffer().line_count();
         if line + 1 < line_count {
-            let next_line_start = self
-                .buffer
-                .line_byte_range(line + 1)
+            let next_line_start = self.active_buffer().line_byte_range(line + 1)
                 .map(|r| r.start)
                 .unwrap_or(line_range.end);
-            match self.buffer.delete(line_range.start..next_line_start) {
+            match self.active_buffer_mut().delete(line_range.start..next_line_start) {
                 Ok(np) => {
-                    self.buffer.set_cursor(np);
-                    self.buffer.set_selection(Selection::collapsed(np));
+                    self.active_buffer_mut().set_cursor(np);
+                    self.active_buffer_mut().set_selection(Selection::collapsed(np));
                 }
                 Err(e) => self.status_message = Some(format!("delete error: {e}")),
             }
         } else if line > 0 {
-            let prev_end = self
-                .buffer
-                .line_byte_range(line - 1)
+            let prev_end = self.active_buffer().line_byte_range(line - 1)
                 .map(|r| r.end)
                 .unwrap_or(line_range.start);
-            match self.buffer.delete(prev_end..line_range.end) {
+            match self.active_buffer_mut().delete(prev_end..line_range.end) {
                 Ok(np) => {
-                    self.buffer.set_cursor(np);
-                    self.buffer.set_selection(Selection::collapsed(np));
+                    self.active_buffer_mut().set_cursor(np);
+                    self.active_buffer_mut().set_selection(Selection::collapsed(np));
                 }
                 Err(e) => self.status_message = Some(format!("delete error: {e}")),
             }
-        } else if let Err(e) = self.buffer.delete(0..line_range.end) {
+        } else if let Err(e) = self.active_buffer_mut().delete(0..line_range.end) {
             self.status_message = Some(format!("delete error: {e}"));
         } else {
-            self.buffer.set_cursor(0);
-            self.buffer.set_selection(Selection::collapsed(0));
+            self.active_buffer_mut().set_cursor(0);
+            self.active_buffer_mut().set_selection(Selection::collapsed(0));
         }
         let _ = line_count;
     }
 
     fn duplicate_current_line(&mut self) {
-        let cursor_pos = self.buffer.cursor();
-        let (line, _) = self
-            .buffer
-            .pos_to_linecol(cursor_pos)
+        let cursor_pos = self.active_buffer().cursor();
+        let (line, _) = self.active_buffer().pos_to_linecol(cursor_pos)
             .unwrap_or((0, 0));
-        let Some(line_range) = self.buffer.line_byte_range(line) else {
+        let Some(line_range) = self.active_buffer().line_byte_range(line) else {
             return;
         };
-        let line_count = self.buffer.line_count();
-        let line_text = self
-            .buffer
-            .slice(line_range.clone())
+        let line_count = self.active_buffer().line_count();
+        let line_text = self.active_buffer().slice(line_range.clone())
             .unwrap_or_default();
         let line_ends_with_newline = line_text.ends_with('\n');
         if line + 1 < line_count {
-            let insert_pos = self
-                .buffer
-                .line_byte_range(line + 1)
+            let insert_pos = self.active_buffer().line_byte_range(line + 1)
                 .map(|r| r.start)
                 .unwrap_or(line_range.end);
             let to_insert = if line_ends_with_newline {
@@ -478,33 +509,31 @@ impl EditorApp {
             } else {
                 format!("{line_text}\n")
             };
-            match self.buffer.insert(insert_pos, &to_insert) {
+            match self.active_buffer_mut().insert(insert_pos, &to_insert) {
                 Ok(np) => {
                     let new_line_start = np - to_insert.len()
                         + if line_ends_with_newline { 1 } else { 0 };
-                    self.buffer.set_cursor(new_line_start);
-                    self.buffer
-                        .set_selection(Selection::collapsed(new_line_start));
+                    self.active_buffer_mut().set_cursor(new_line_start);
+                    self.active_buffer_mut().set_selection(Selection::collapsed(new_line_start));
                 }
                 Err(e) => self.status_message = Some(format!("insert error: {e}")),
             }
         } else {
-            let len = self.buffer.len();
+            let len = self.active_buffer().len();
             let to_insert = if line_ends_with_newline {
                 line_text.clone()
             } else {
                 format!("\n{line_text}")
             };
-            match self.buffer.insert(len, &to_insert) {
+            match self.active_buffer_mut().insert(len, &to_insert) {
                 Ok(np) => {
                     let new_line_start = if line_ends_with_newline {
                         np - line_text.len()
                     } else {
                         np + 1
                     };
-                    self.buffer.set_cursor(new_line_start);
-                    self.buffer
-                        .set_selection(Selection::collapsed(new_line_start));
+                    self.active_buffer_mut().set_cursor(new_line_start);
+                    self.active_buffer_mut().set_selection(Selection::collapsed(new_line_start));
                 }
                 Err(e) => self.status_message = Some(format!("insert error: {e}")),
             }
@@ -513,12 +542,10 @@ impl EditorApp {
     }
 
     fn move_current_line(&mut self, delta: i32) {
-        let cursor_pos = self.buffer.cursor();
-        let (line, _) = self
-            .buffer
-            .pos_to_linecol(cursor_pos)
+        let cursor_pos = self.active_buffer().cursor();
+        let (line, _) = self.active_buffer().pos_to_linecol(cursor_pos)
             .unwrap_or((0, 0));
-        let line_count = self.buffer.line_count();
+        let line_count = self.active_buffer().line_count();
         let target_line = if delta < 0 {
             if line == 0 {
                 return;
@@ -530,10 +557,10 @@ impl EditorApp {
             }
             line + 1
         };
-        let Some(my_range_excl_nl) = self.buffer.line_byte_range(line) else {
+        let Some(my_range_excl_nl) = self.active_buffer().line_byte_range(line) else {
             return;
         };
-        let Some(other_range_excl_nl) = self.buffer.line_byte_range(target_line) else {
+        let Some(other_range_excl_nl) = self.active_buffer().line_byte_range(target_line) else {
             return;
         };
         // Compute byte ranges that INCLUDE the trailing newline so the
@@ -541,21 +568,18 @@ impl EditorApp {
         let line_with_nl = |excl: std::ops::Range<usize>, l: usize| -> std::ops::Range<usize> {
             let start = excl.start;
             let end = if l + 1 < line_count {
-                self.buffer
-                    .line_byte_range(l + 1)
+                self.active_buffer().line_byte_range(l + 1)
                     .map(|r| r.start)
                     .unwrap_or(excl.end)
             } else {
-                self.buffer.len()
+                self.active_buffer().len()
             };
             start..end
         };
         let my_range = line_with_nl(my_range_excl_nl, line);
         let other_range = line_with_nl(other_range_excl_nl, target_line);
-        let my_text = self.buffer.slice(my_range.clone()).unwrap_or_default();
-        let other_text = self
-            .buffer
-            .slice(other_range.clone())
+        let my_text = self.active_buffer().slice(my_range.clone()).unwrap_or_default();
+        let other_text = self.active_buffer().slice(other_range.clone())
             .unwrap_or_default();
         // Adjacent lines — delete their union in one shot (the
         // newline between them is part of one of the ranges, so no
@@ -565,7 +589,7 @@ impl EditorApp {
         // text goes after it.
         let delete_start = my_range.start.min(other_range.start);
         let delete_end = my_range.end.max(other_range.end);
-        let _ = self.buffer.delete_silent(delete_start..delete_end);
+        let _ = self.active_buffer_mut().delete_silent(delete_start..delete_end);
         let (lower_text, higher_text) = if delta < 0 {
             // Move up: my line lands at the lower slot.
             (my_text.as_str(), other_text.as_str())
@@ -573,16 +597,12 @@ impl EditorApp {
             // Move down: other line stays at the lower slot.
             (other_text.as_str(), my_text.as_str())
         };
-        let _ = self.buffer.insert_silent(delete_start, lower_text);
-        let _ = self
-            .buffer
-            .insert_silent(delete_start + lower_text.len(), higher_text);
-        let new_pos = self
-            .buffer
-            .linecol_to_pos(line, 0)
+        let _ = self.active_buffer_mut().insert_silent(delete_start, lower_text);
+        let _ = self.active_buffer_mut().insert_silent(delete_start + lower_text.len(), higher_text);
+        let new_pos = self.active_buffer().linecol_to_pos(line, 0)
             .unwrap_or(cursor_pos);
-        self.buffer.set_cursor(new_pos);
-        self.buffer.set_selection(Selection::collapsed(new_pos));
+        self.active_buffer_mut().set_cursor(new_pos);
+        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
         let _ = line_count;
     }
 
@@ -734,56 +754,56 @@ mod tests {
         let mut app = app_with("");
         app.handle_event(EditorEvent::Insert('h'));
         app.handle_event(EditorEvent::Insert('i'));
-        assert_eq!(app.buffer.to_bytes(), b"hi".to_vec());
-        assert_eq!(app.buffer.cursor(), 2);
+        assert_eq!(app.active_buffer().to_bytes(), b"hi".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 2);
         assert!(app.is_dirty());
     }
 
     #[test]
     fn backspace_at_start_is_noop() {
         let mut app = app_with("abc");
-        app.buffer.set_cursor(0);
+        app.active_buffer_mut().set_cursor(0);
         app.handle_event(EditorEvent::DeleteLeft);
-        assert_eq!(app.buffer.to_bytes(), b"abc".to_vec());
-        assert_eq!(app.buffer.cursor(), 0);
+        assert_eq!(app.active_buffer().to_bytes(), b"abc".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 0);
     }
 
     #[test]
     fn delete_right_at_end_is_noop() {
         let mut app = app_with("abc");
-        app.buffer.set_cursor(3);
+        app.active_buffer_mut().set_cursor(3);
         app.handle_event(EditorEvent::DeleteRight);
-        assert_eq!(app.buffer.to_bytes(), b"abc".to_vec());
+        assert_eq!(app.active_buffer().to_bytes(), b"abc".to_vec());
     }
 
     #[test]
     fn arrow_left_right_moves_cursor() {
         let mut app = app_with("abc");
-        app.buffer.set_cursor(1);
+        app.active_buffer_mut().set_cursor(1);
         app.handle_event(EditorEvent::Move(Movement::Left));
-        assert_eq!(app.buffer.cursor(), 0);
+        assert_eq!(app.active_buffer().cursor(), 0);
         app.handle_event(EditorEvent::Move(Movement::Right));
-        assert_eq!(app.buffer.cursor(), 1);
+        assert_eq!(app.active_buffer().cursor(), 1);
     }
 
     #[test]
     fn home_and_end_via_movement() {
         let mut app = app_with("hello\nworld");
-        app.buffer.set_cursor(8);
+        app.active_buffer_mut().set_cursor(8);
         app.handle_event(EditorEvent::Move(Movement::LineStart));
-        assert_eq!(app.buffer.cursor(), 6);
+        assert_eq!(app.active_buffer().cursor(), 6);
         app.handle_event(EditorEvent::Move(Movement::LineEnd));
-        assert_eq!(app.buffer.cursor(), 11);
+        assert_eq!(app.active_buffer().cursor(), 11);
     }
 
     #[test]
     fn document_start_and_end() {
         let mut app = app_with("hello\nworld");
-        app.buffer.set_cursor(5);
+        app.active_buffer_mut().set_cursor(5);
         app.handle_event(EditorEvent::Move(Movement::DocumentStart));
-        assert_eq!(app.buffer.cursor(), 0);
+        assert_eq!(app.active_buffer().cursor(), 0);
         app.handle_event(EditorEvent::Move(Movement::DocumentEnd));
-        assert_eq!(app.buffer.cursor(), 11);
+        assert_eq!(app.active_buffer().cursor(), 11);
     }
 
     #[test]
@@ -816,10 +836,10 @@ mod tests {
     #[test]
     fn select_extend_moves_head_keeps_anchor() {
         let mut app = app_with("hello world");
-        app.buffer.set_cursor(2);
-        app.buffer.set_selection(Selection::collapsed(2));
+        app.active_buffer_mut().set_cursor(2);
+        app.active_buffer_mut().set_selection(Selection::collapsed(2));
         app.handle_event(EditorEvent::SelectExtend(Movement::Right));
-        let sel = app.buffer.selection();
+        let sel = app.active_buffer().selection();
         assert_eq!(sel.anchor, 2);
         assert_eq!(sel.head, 3);
     }
@@ -842,7 +862,7 @@ mod tests {
         ] {
             app.handle_event(ev);
         }
-        assert_eq!(app.buffer.to_bytes(), b"a".to_vec());
+        assert_eq!(app.active_buffer().to_bytes(), b"a".to_vec());
         assert!(app.should_quit);
     }
 
@@ -852,70 +872,70 @@ mod tests {
     fn insert_replaces_selection() {
         // Selecting "world" then typing '!' should produce "hello!"
         let mut app = app_with("hello world");
-        app.buffer.set_selection(Selection {
+        app.active_buffer_mut().set_selection(Selection {
             anchor: 6,
             head: 11,
         });
         app.handle_event(EditorEvent::Insert('!'));
-        assert_eq!(app.buffer.to_bytes(), b"hello !".to_vec());
-        assert_eq!(app.buffer.cursor(), 7);
-        assert!(app.buffer.selection().is_collapsed());
+        assert_eq!(app.active_buffer().to_bytes(), b"hello !".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 7);
+        assert!(app.active_buffer().selection().is_collapsed());
     }
 
     #[test]
     fn delete_left_with_selection_deletes_selection() {
         // Selecting "world" then pressing Backspace should delete "world".
         let mut app = app_with("hello world");
-        app.buffer.set_selection(Selection {
+        app.active_buffer_mut().set_selection(Selection {
             anchor: 6,
             head: 11,
         });
         app.handle_event(EditorEvent::DeleteLeft);
-        assert_eq!(app.buffer.to_bytes(), b"hello ".to_vec());
-        assert_eq!(app.buffer.cursor(), 6);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello ".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 6);
     }
 
     #[test]
     fn delete_right_with_selection_deletes_selection() {
         let mut app = app_with("hello world");
-        app.buffer.set_selection(Selection {
+        app.active_buffer_mut().set_selection(Selection {
             anchor: 6,
             head: 11,
         });
         app.handle_event(EditorEvent::DeleteRight);
-        assert_eq!(app.buffer.to_bytes(), b"hello ".to_vec());
-        assert_eq!(app.buffer.cursor(), 6);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello ".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 6);
     }
 
     #[test]
     fn delete_selection_noop_when_collapsed() {
         let mut app = app_with("hello");
-        app.buffer.set_cursor(2);
-        app.buffer.set_selection(Selection::collapsed(2));
+        app.active_buffer_mut().set_cursor(2);
+        app.active_buffer_mut().set_selection(Selection::collapsed(2));
         app.handle_event(EditorEvent::DeleteSelection);
-        assert_eq!(app.buffer.to_bytes(), b"hello".to_vec());
-        assert_eq!(app.buffer.cursor(), 2);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 2);
     }
 
     #[test]
     fn paste_replaces_selection() {
         let mut app = app_with("hello world");
-        app.buffer.set_selection(Selection {
+        app.active_buffer_mut().set_selection(Selection {
             anchor: 6,
             head: 11,
         });
         app.handle_event(EditorEvent::Paste("Rust".to_string()));
-        assert_eq!(app.buffer.to_bytes(), b"hello Rust".to_vec());
-        assert_eq!(app.buffer.cursor(), 10);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello Rust".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 10);
     }
 
     #[test]
     fn paste_with_no_selection_inserts_at_cursor() {
         let mut app = app_with("hello world");
-        app.buffer.set_cursor(6);
-        app.buffer.set_selection(Selection::collapsed(6));
+        app.active_buffer_mut().set_cursor(6);
+        app.active_buffer_mut().set_selection(Selection::collapsed(6));
         app.handle_event(EditorEvent::Paste("beautiful ".to_string()));
-        assert_eq!(app.buffer.to_bytes(), b"hello beautiful world".to_vec());
+        assert_eq!(app.active_buffer().to_bytes(), b"hello beautiful world".to_vec());
     }
 
     // ----- PageUp / PageDown / Word movement -----
@@ -932,16 +952,17 @@ mod tests {
     fn page_up_and_down_move_cursor_by_viewport() {
         let mut app = make_multi_line_app();
         app.viewport_lines = 5;
-        app.buffer.set_cursor(app.buffer.linecol_to_pos(9, 2).unwrap());
+        let pos = app.active_buffer().linecol_to_pos(9, 2).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
         app.handle_event(EditorEvent::Move(Movement::PageUp));
         assert_eq!(
-            app.buffer.pos_to_linecol(app.buffer.cursor()),
+            app.active_buffer().pos_to_linecol(app.active_buffer().cursor()),
             Some((4, 2))
         );
         app.handle_event(EditorEvent::Move(Movement::PageDown));
         app.handle_event(EditorEvent::Move(Movement::PageDown));
         assert_eq!(
-            app.buffer.pos_to_linecol(app.buffer.cursor()),
+            app.active_buffer().pos_to_linecol(app.active_buffer().cursor()),
             Some((9, 2))
         );
     }
@@ -949,25 +970,25 @@ mod tests {
     #[test]
     fn word_right_walks_word_boundaries() {
         let mut app = app_with("hello   world foo");
-        app.buffer.set_cursor(0);
+        app.active_buffer_mut().set_cursor(0);
         app.handle_event(EditorEvent::Move(Movement::WordRight));
-        assert_eq!(app.buffer.cursor(), 5);
+        assert_eq!(app.active_buffer().cursor(), 5);
         app.handle_event(EditorEvent::Move(Movement::WordRight));
-        assert_eq!(app.buffer.cursor(), 8);
+        assert_eq!(app.active_buffer().cursor(), 8);
         app.handle_event(EditorEvent::Move(Movement::WordRight));
-        assert_eq!(app.buffer.cursor(), 13);
+        assert_eq!(app.active_buffer().cursor(), 13);
         app.handle_event(EditorEvent::Move(Movement::WordRight));
-        assert_eq!(app.buffer.cursor(), 14);
+        assert_eq!(app.active_buffer().cursor(), 14);
     }
 
     #[test]
     fn word_left_walks_word_boundaries() {
         let mut app = app_with("hello   world");
-        app.buffer.set_cursor(13);
+        app.active_buffer_mut().set_cursor(13);
         app.handle_event(EditorEvent::Move(Movement::WordLeft));
-        assert_eq!(app.buffer.cursor(), 8);
+        assert_eq!(app.active_buffer().cursor(), 8);
         app.handle_event(EditorEvent::Move(Movement::WordLeft));
-        assert_eq!(app.buffer.cursor(), 0);
+        assert_eq!(app.active_buffer().cursor(), 0);
     }
 
     // ----- Word delete -----
@@ -975,17 +996,17 @@ mod tests {
     #[test]
     fn delete_word_left_removes_word() {
         let mut app = app_with("hello world");
-        app.buffer.set_cursor(11);
+        app.active_buffer_mut().set_cursor(11);
         app.handle_event(EditorEvent::DeleteWordLeft);
-        assert_eq!(app.buffer.to_bytes(), b"hello ".to_vec());
+        assert_eq!(app.active_buffer().to_bytes(), b"hello ".to_vec());
     }
 
     #[test]
     fn delete_word_right_removes_word() {
         let mut app = app_with("hello world");
-        app.buffer.set_cursor(6);
+        app.active_buffer_mut().set_cursor(6);
         app.handle_event(EditorEvent::DeleteWordRight);
-        assert_eq!(app.buffer.to_bytes(), b"hello ".to_vec());
+        assert_eq!(app.active_buffer().to_bytes(), b"hello ".to_vec());
     }
 
     // ----- Line ops -----
@@ -993,24 +1014,24 @@ mod tests {
     #[test]
     fn delete_line_removes_entire_line_and_newline() {
         let mut app = app_with("alpha\nbeta\ngamma");
-        app.buffer.set_cursor(8);
+        app.active_buffer_mut().set_cursor(8);
         app.handle_event(EditorEvent::DeleteLine);
-        assert_eq!(app.buffer.to_bytes(), b"alpha\ngamma".to_vec());
+        assert_eq!(app.active_buffer().to_bytes(), b"alpha\ngamma".to_vec());
     }
 
     #[test]
     fn duplicate_line_inserts_copy_below() {
         let mut app = app_with("alpha\nbeta\ngamma");
-        app.buffer.set_cursor(8);
+        app.active_buffer_mut().set_cursor(8);
         app.handle_event(EditorEvent::DuplicateLine);
-        assert_eq!(app.buffer.to_bytes(), b"alpha\nbeta\nbeta\ngamma".to_vec());
+        assert_eq!(app.active_buffer().to_bytes(), b"alpha\nbeta\nbeta\ngamma".to_vec());
     }
 
     #[test]
     fn move_line_down_swaps_with_next() {
         let mut app = app_with("alpha\nbeta\ngamma");
-        app.buffer.set_cursor(2);
+        app.active_buffer_mut().set_cursor(2);
         app.handle_event(EditorEvent::MoveLineDown);
-        assert_eq!(app.buffer.to_bytes(), b"beta\nalpha\ngamma".to_vec());
+        assert_eq!(app.active_buffer().to_bytes(), b"beta\nalpha\ngamma".to_vec());
     }
 }

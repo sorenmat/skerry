@@ -84,9 +84,7 @@ fn render_find_bar(app: &App) -> Line<'static> {
 }
 
 fn render_header(app: &App) -> Line<'static> {
-    let path = app
-        .buffer
-        .source_path()
+    let path = app.active_buffer().source_path()
         .and_then(|p| p.to_str())
         .unwrap_or("[No Name]");
     let dirty = if app.is_dirty() { " [+]" } else { "" };
@@ -95,17 +93,15 @@ fn render_header(app: &App) -> Line<'static> {
 
 fn render_status(app: &App) -> Line<'static> {
     let message = app.status_message.as_deref().unwrap_or("");
-    let cursor_pos = app.buffer.cursor();
-    let (line, col) = app
-        .buffer
-        .pos_to_linecol(cursor_pos)
+    let cursor_pos = app.active_buffer().cursor();
+    let (line, col) = app.active_buffer().pos_to_linecol(cursor_pos)
         .unwrap_or((0, 0));
-    let pos = core::format_position(line, col, app.buffer.line_count());
+    let pos = core::format_position(line, col, app.active_buffer().line_count());
     Line::from(format!(" {message}  |  {pos}"))
 }
 
 fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
-    let total_lines = app.buffer.line_count();
+    let total_lines = app.active_buffer().line_count();
     // Gutter: enough digits to fit the largest line number, minimum 2.
     let gutter_width = total_lines.to_string().len().max(2);
 
@@ -115,7 +111,7 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
         .add_modifier(Modifier::BOLD);
     let gutter_style = Style::default().fg(Color::DarkGray);
 
-    let selection = app.buffer.selection();
+    let selection = app.active_buffer().selection();
     let sel_range: Option<std::ops::Range<usize>> = if selection.is_collapsed() {
         None
     } else {
@@ -127,9 +123,7 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
     let end_line = (app.viewport_top_line + vh).min(total_lines);
 
     for line_idx in app.viewport_top_line..end_line {
-        let line_text = app
-            .buffer
-            .line_text(line_idx)
+        let line_text = app.active_buffer().line_text(line_idx)
             .map(|cow| cow.into_owned())
             .unwrap_or_default();
 
@@ -138,14 +132,14 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
         let avail = (viewport_width as usize).saturating_sub(prefix_chars);
 
         // Compute the selected sub-range within this line, if any.
-        let line_byte_range = app.buffer.line_byte_range(line_idx).unwrap_or(0..0);
+        let line_byte_range = app.active_buffer().line_byte_range(line_idx).unwrap_or(0..0);
         let selected_in_line = sel_range
             .as_ref()
             .and_then(|sr| selection_in_line(line_byte_range.clone(), sr.clone()));
 
         // Apply horizontal scroll: skip `scroll_x` chars from the start of
         // each line, then truncate to the available width.
-        let scroll_x = app.scroll_x as usize;
+        let scroll_x = app.active_doc().view.scroll_x_cols;
         let truncated: String = line_text.chars().skip(scroll_x).take(avail).collect();
         // Convert scroll_x (chars) into a byte offset within this
         // line so selection math can work in bytes.
@@ -272,8 +266,8 @@ fn push_line_spans(
 }
 
 fn compute_cursor_screen_pos(app: &App, area: Rect) -> Option<Position> {
-    let cursor_pos = app.buffer.cursor();
-    let (cursor_line, cursor_byte_col) = app.buffer.pos_to_linecol(cursor_pos)?;
+    let cursor_pos = app.active_buffer().cursor();
+    let (cursor_line, cursor_byte_col) = app.active_buffer().pos_to_linecol(cursor_pos)?;
     if cursor_line < app.viewport_top_line {
         return None;
     }
@@ -282,19 +276,17 @@ fn compute_cursor_screen_pos(app: &App, area: Rect) -> Option<Position> {
         return None;
     }
 
-    let total_lines = app.buffer.line_count();
+    let total_lines = app.active_buffer().line_count();
     let gutter_width = total_lines.to_string().len().max(2);
     let prefix = format!("{:>gutter_width$} │ ", cursor_line + 1);
     let prefix_chars = prefix.chars().count();
 
     // Convert byte column to char column for the cursor's line.
-    let line_text = app
-        .buffer
-        .line_text(cursor_line)
+    let line_text = app.active_buffer().line_text(cursor_line)
         .map(|c| c.into_owned())
         .unwrap_or_default();
     let char_col = core::byte_to_char_col(&line_text, cursor_byte_col);
-    let scroll_x = app.scroll_x as usize;
+    let scroll_x = app.active_doc().view.scroll_x_cols;
     // If the cursor is scrolled off the left edge, hide it.
     let visible_char_col = char_col.saturating_sub(scroll_x);
     // Char width is 1 cell in a monospace terminal — caller is

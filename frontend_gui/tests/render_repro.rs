@@ -29,26 +29,22 @@ fn reproduce_selection_bug() {
     // Selection matching the user's reported scenario:
     //   anchor at line 21 col 15 (1-indexed)
     //   head   at line 27 col 14 (1-indexed)
-    let anchor = app
-        .buffer
-        .linecol_to_pos(21 - 1, 15 - 1)
+    let anchor = app.active_buffer().linecol_to_pos(21 - 1, 15 - 1)
         .expect("anchor pos");
-    let head = app
-        .buffer
-        .linecol_to_pos(27 - 1, 14 - 1)
+    let head = app.active_buffer().linecol_to_pos(27 - 1, 14 - 1)
         .expect("head pos");
 
-    app.buffer.set_cursor(head);
-    app.buffer.set_selection(Selection { anchor, head });
+    app.active_buffer_mut().set_cursor(head);
+    app.active_buffer_mut().set_selection(Selection { anchor, head });
 
     eprintln!("=== STATE ===");
     eprintln!("anchor byte = {anchor}, head byte = {head}");
-    eprintln!("line 27 text = {:?}", app.buffer.line_text(26).map(|c| c.into_owned()));
-    eprintln!("selection = {:?}", app.buffer.selection());
+    eprintln!("line 27 text = {:?}", app.active_buffer().line_text(26).map(|c| c.into_owned()));
+    eprintln!("selection = {:?}", app.active_buffer().selection());
     eprintln!(
         "anchor (line,col) = {:?}, head (line,col) = {:?}",
-        app.buffer.pos_to_linecol(anchor),
-        app.buffer.pos_to_linecol(head),
+        app.active_buffer().pos_to_linecol(anchor),
+        app.active_buffer().pos_to_linecol(head),
     );
 
     let ctx = egui::Context::default();

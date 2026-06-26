@@ -26,9 +26,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     // Extract everything as owned data so panel closures don't all
     // borrow `app` mutably at once.
     let header_text = {
-        let path = app
-            .buffer
-            .source_path()
+        let path = app.active_buffer().source_path()
             .and_then(|p| p.to_str())
             .unwrap_or("[No Name]");
         let dirty = if app.is_dirty() { " [+]" } else { "" };
@@ -36,12 +34,10 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     };
     let (status_message, status_pos) = {
         let msg = app.status_message.clone().unwrap_or_default();
-        let cursor_pos = app.buffer.cursor();
-        let (line, col) = app
-            .buffer
-            .pos_to_linecol(cursor_pos)
+        let cursor_pos = app.active_buffer().cursor();
+        let (line, col) = app.active_buffer().pos_to_linecol(cursor_pos)
             .unwrap_or((0, 0));
-        let pos = format_position(line, col, app.buffer.line_count());
+        let pos = format_position(line, col, app.active_buffer().line_count());
         (msg, pos)
     };
 
@@ -111,7 +107,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
 }
 
 fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
-    let total_lines = app.buffer.line_count();
+    let total_lines = app.active_buffer().line_count();
     let gutter_width = total_lines.to_string().len().max(2);
     let font_id = egui::FontId::monospace(FONT_SIZE);
 
@@ -143,13 +139,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     let width_of = |s: &str| -> f32 { s.chars().map(advance_of).sum() };
 
     // Cursor + selection state.
-    let cursor_pos = app.buffer.cursor();
-    let (cursor_line, cursor_byte_col) = app
-        .buffer
-        .pos_to_linecol(cursor_pos)
+    let cursor_pos = app.active_buffer().cursor();
+    let (cursor_line, cursor_byte_col) = app.active_buffer().pos_to_linecol(cursor_pos)
         .unwrap_or((0, 0));
 
-    let selection = app.buffer.selection();
+    let selection = app.active_buffer().selection();
     let sel_range: Option<std::ops::Range<usize>> = if selection.is_collapsed() {
         None
     } else {
@@ -206,9 +200,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                 // the selection rectangle.
                 let y = (rect.top() + line_idx as f32 * line_height).round();
 
-                let line_text = app
-                    .buffer
-                    .line_text(line_idx)
+                let line_text = app.active_buffer().line_text(line_idx)
                     .map(|c| c.into_owned())
                     .unwrap_or_default();
 
@@ -223,14 +215,14 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                 );
 
                 let text_x = (rect.left() + prefix_chars as f32 * char_width
-            - app.scroll_x_cols as f32 * char_width)
+            - app.active_doc().view.scroll_x_cols as f32 * char_width)
             .round();
 
                 // Compute selection-in-this-line once. If there's no
                 // selection, `seg` stays at the default (None) and we
                 // draw the entire line as one piece.
                 let sel_in_line: Option<(usize, usize)> = sel_range.as_ref().and_then(|sr| {
-                    let line_byte_range = app.buffer.line_byte_range(line_idx)?;
+                    let line_byte_range = app.active_buffer().line_byte_range(line_idx)?;
                     let intersect = selection_in_line(line_byte_range.clone(), sr.clone())?;
                     let start = line_byte_range.start;
                     let total_chars = line_text.chars().count();
@@ -337,7 +329,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
             // right-edge minus horizontal scroll). pixel_to_byte_pos
             // uses it to map pointer.x → char_col.
             let text_x = rect.left() + prefix_chars as f32 * char_width
-                - app.scroll_x_cols as f32 * char_width;
+                - app.active_doc().view.scroll_x_cols as f32 * char_width;
             if response.clicked() || response.drag_started() || response.dragged() {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if let Some(byte_pos) = pixel_to_byte_pos(
@@ -369,8 +361,8 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                     // Shift+wheel: horizontal scroll. Convert pixel
                     // delta to column delta using char_width.
                     let cols_delta = (scroll_delta.y / char_width).round() as i32;
-                    let new_cols = (app.scroll_x_cols as i32 + cols_delta).max(0) as usize;
-                    app.scroll_x_cols = new_cols;
+                    let new_cols = (app.active_doc().view.scroll_x_cols as i32 + cols_delta).max(0) as usize;
+                    app.active_doc_mut().view.scroll_x_cols = new_cols;
                 }
             }
         });
@@ -396,10 +388,10 @@ fn pixel_to_byte_pos(
         return None;
     }
     let line_offset = (rel_y / line_height).floor() as usize;
-    let total_lines = app.buffer.line_count();
+    let total_lines = app.active_buffer().line_count();
     if line_offset >= total_lines {
         // Click past the last line — position at end of buffer.
-        return Some(app.buffer.len());
+        return Some(app.active_buffer().len());
     }
 
     // Determine char column from x. If the click is in the gutter, snap
@@ -412,15 +404,13 @@ let text_x_relative = text_x - rect.left();
         };
         let _ = (prefix_chars, gutter_width); // currently unused; reserved for future
 
-    let line_text = app
-        .buffer
-        .line_text(line_offset)
+    let line_text = app.active_buffer().line_text(line_offset)
         .map(|c| c.into_owned())
         .unwrap_or_default();
     let total_chars = line_text.chars().count();
     let char_col = char_col.min(total_chars);
     let byte_col = core::char_col_to_byte_col(&line_text, char_col);
 
-    let line_byte_start = app.buffer.line_byte_range(line_offset)?.start;
+    let line_byte_start = app.active_buffer().line_byte_range(line_offset)?.start;
     Some(line_byte_start + byte_col)
 }
