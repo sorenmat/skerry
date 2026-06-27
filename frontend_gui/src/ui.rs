@@ -121,6 +121,17 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     let gutter_width = total_lines.to_string().len().max(2);
     let font_id = egui::FontId::monospace(FONT_SIZE);
 
+    // Detect cursor movement so we can auto-scroll the ScrollArea to
+    // bring the cursor back into view. Without this, PageUp/PageDown
+    // and Find jumps move the cursor off-screen and the GUI's
+    // ScrollArea never follows — it only scrolls on user wheel/scrollbar
+    // input. `last_seen_cursor` lives on the document so switching
+    // tabs doesn't trip a spurious "cursor moved" event for the
+    // newly-activated doc (which would otherwise blow away the
+    // preserved scroll offset the user had set for it).
+    let current_cursor = app.active_buffer().cursor();
+    let cursor_moved = current_cursor != app.active_doc().view.last_seen_cursor;
+
     // Measure glyph / line dimensions once per frame.
     //
     // Important: egui's monospace font renders tabs as ~4 character
@@ -165,6 +176,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     let prefix_chars = prefix_text.chars().count();
 
     egui::ScrollArea::vertical()
+        .id_salt(("editor_scroll", app.active))
         .auto_shrink([false; 2])
         .show(ui, |ui| {
             let total_height = total_lines as f32 * line_height;
@@ -375,7 +387,35 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                     app.active_doc_mut().view.scroll_x_cols = new_cols;
                 }
             }
+
+            // Auto-scroll to cursor when it has moved off-screen. Only
+            // fires when the cursor position changed since the last
+            // frame (so manual wheel-scrolling past the cursor still
+            // works). The cursor's content-space rect is the line at
+            // `cursor_line * line_height` — passing that to
+            // `scroll_to_rect` with `Align::Center` gives a PageUp/PageDown
+            // feel (cursor lands in the middle) which matches most
+            // editors' behavior.
+            if cursor_moved {
+                let cursor_content_y = cursor_line as f32 * line_height;
+                let cursor_screen_y = rect.top() + cursor_content_y;
+                let above = cursor_screen_y < rect.top();
+                let below = cursor_screen_y + line_height > rect.bottom();
+                if above || below {
+                    let cursor_rect = egui::Rect::from_min_size(
+                        egui::pos2(0.0, cursor_content_y),
+                        egui::vec2(rect.width(), line_height),
+                    );
+                    ui.scroll_to_rect(cursor_rect, Some(egui::Align::Center));
+                }
+            }
         });
+
+    // Mark the cursor position as seen so the next frame's
+    // `cursor_moved` check correctly detects fresh motion. Per-doc
+    // so we don't conflate "tab switched" with "cursor moved within
+    // this doc" — see the comment at the top of `render_text`.
+    app.active_doc_mut().view.last_seen_cursor = current_cursor;
 }
 
 /// Convert a pointer position (relative to the editor window) to a byte

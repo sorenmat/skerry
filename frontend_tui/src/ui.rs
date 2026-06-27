@@ -129,9 +129,10 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     let vh = app.viewport_height as usize;
-    let end_line = (app.viewport_top_line + vh).min(total_lines);
+    let top_line = app.active_doc().view.scroll_top_line;
+    let end_line = (top_line + vh).min(total_lines);
 
-    for line_idx in app.viewport_top_line..end_line {
+    for line_idx in top_line..end_line {
         let line_text = app.active_buffer().line_text(line_idx)
             .map(|cow| cow.into_owned())
             .unwrap_or_default();
@@ -277,10 +278,11 @@ fn push_line_spans(
 fn compute_cursor_screen_pos(app: &App, area: Rect) -> Option<Position> {
     let cursor_pos = app.active_buffer().cursor();
     let (cursor_line, cursor_byte_col) = app.active_buffer().pos_to_linecol(cursor_pos)?;
-    if cursor_line < app.viewport_top_line {
+    let top_line = app.active_doc().view.scroll_top_line;
+    if cursor_line < top_line {
         return None;
     }
-    let row_in_view = cursor_line - app.viewport_top_line;
+    let row_in_view = cursor_line - top_line;
     if row_in_view >= app.viewport_height as usize {
         return None;
     }

@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn left_click_translates_to_set_cursor() {
         let mut app = app_with("hello\nworld");
-        app.viewport_top_line = 0;
+        app.active_doc_mut().view.scroll_top_line = 0;
         app.viewport_height = 10;
         // Click on row 2 ("world"), col 4 (gutter end), expect byte 6.
         let ev = translate_mouse(
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn left_drag_translates_to_select_extend_to() {
         let mut app = app_with("hello\nworld");
-        app.viewport_top_line = 0;
+        app.active_doc_mut().view.scroll_top_line = 0;
         app.viewport_height = 10;
         // First click sets the anchor.
         app.handle_event(EditorEvent::SetCursor {

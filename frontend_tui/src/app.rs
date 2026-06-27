@@ -19,11 +19,6 @@ pub struct App {
     pub active: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
-    /// First visible line in the viewport. Adjusted by `adjust_viewport`.
-    /// Window-global — it's the terminal's current scroll position, not a
-    /// per-document view. When switching docs, `adjust_viewport` clamps
-    /// this so the active doc's cursor line stays visible.
-    pub viewport_top_line: usize,
     /// Last rendered viewport height in lines (set during `render`).
     /// Window-global — comes from the terminal size.
     pub viewport_height: u16,
@@ -54,7 +49,6 @@ impl App {
             active: 0,
             should_quit: false,
             status_message: None,
-            viewport_top_line: 0,
             viewport_height: 0,
             search: Search::new(),
         }
@@ -615,8 +609,12 @@ impl App {
         new_byte.min(len)
     }
 
-    /// Adjust `viewport_top_line` so the cursor is visible. Called by
-    /// the renderer after it determines the viewport height.
+    /// Adjust the active document's `scroll_top_line` so the cursor is
+    /// visible. Called by the renderer after it determines the viewport
+    /// height. Each document owns its own scroll offset, so switching
+    /// tabs preserves where you were scrolled to in each one — the
+    /// cursor-following clamp only fires for the doc you're currently
+    /// looking at.
     pub fn adjust_viewport(&mut self, viewport_height: u16) {
         self.viewport_height = viewport_height;
         let cursor_pos = self.active_buffer().cursor();
@@ -627,11 +625,15 @@ impl App {
         if vh == 0 {
             return;
         }
-        if cursor_line < self.viewport_top_line {
-            self.viewport_top_line = cursor_line;
-        } else if cursor_line >= self.viewport_top_line + vh {
-            self.viewport_top_line = cursor_line + 1 - vh;
-        }
+        let top = self.active_doc().view.scroll_top_line;
+        let new_top = if cursor_line < top {
+            cursor_line
+        } else if cursor_line >= top + vh {
+            cursor_line + 1 - vh
+        } else {
+            top
+        };
+        self.active_doc_mut().view.scroll_top_line = new_top;
     }
 
     /// Whether the buffer has unsaved edits. Convenience wrapper around
@@ -830,7 +832,7 @@ impl App {
         if content_row >= self.viewport_height as usize {
             return None;
         }
-        let doc_line = self.viewport_top_line + content_row;
+        let doc_line = self.active_doc().view.scroll_top_line + content_row;
         let total_lines = self.active_buffer().line_count();
         if doc_line >= total_lines {
             // Click past last line — clamp to end of last line.
@@ -1019,7 +1021,7 @@ mod tests {
     #[test]
     fn click_in_gutter_snaps_to_line_start() {
         let mut app = app_with("hello\nworld");
-        app.viewport_top_line = 0;
+        app.active_doc_mut().view.scroll_top_line = 0;
         app.viewport_height = 10;
         // Click on row 2 (the "world" line), col 0 (gutter).
         // Row 0 = header, rows 1..N = content.
@@ -1030,7 +1032,7 @@ mod tests {
     #[test]
     fn click_in_text_positions_at_char() {
         let mut app = app_with("hello\nworld");
-        app.viewport_top_line = 0;
+        app.active_doc_mut().view.scroll_top_line = 0;
         app.viewport_height = 10;
         // Row 2 = "world" (after header on row 0). Gutter is 4 chars wide.
         // Click on col 5 = "w" of "world" (col 5 in the text).
@@ -1050,7 +1052,7 @@ mod tests {
     #[test]
     fn click_in_status_returns_none() {
         let mut app = app_with("hello");
-        app.viewport_top_line = 0;
+        app.active_doc_mut().view.scroll_top_line = 0;
         app.viewport_height = 5;
         // Row 6 = status (rows 0=header, 1..5=content, 6=status)
         let pos = app.click_to_byte_pos(0, 6);
@@ -1060,7 +1062,7 @@ mod tests {
     #[test]
     fn click_past_last_line_clamps_to_end() {
         let mut app = app_with("hello");
-        app.viewport_top_line = 0;
+        app.active_doc_mut().view.scroll_top_line = 0;
         app.viewport_height = 10;
         // Row 5 = past the end of the buffer (only 1 line at row 1).
         let pos = app.click_to_byte_pos(0, 5).unwrap();
@@ -1070,9 +1072,9 @@ mod tests {
     #[test]
     fn click_with_viewport_scrolled() {
         let mut app = app_with("aaa\nbbb\nccc\nddd");
-        app.viewport_top_line = 2; // viewport shows lines 2,3 (ccc, ddd)
+        app.active_doc_mut().view.scroll_top_line = 2; // viewport shows lines 2,3 (ccc, ddd)
         app.viewport_height = 5;
-        // Row 1 (first content row) = viewport_top_line + 0 = line 2 ("ccc").
+        // Row 1 (first content row) = scroll_top_line + 0 = line 2 ("ccc").
         // Click col 0 (gutter).
         let pos = app.click_to_byte_pos(0, 1).unwrap();
         assert_eq!(pos, 8, "should snap to start of line 2 ('ccc')");
@@ -1454,5 +1456,75 @@ mod tests {
         assert_eq!(app.active_buffer().to_bytes(), b"world".to_vec());
         app.handle_event(EditorEvent::PrevDoc);
         assert_eq!(app.active_buffer().to_bytes(), b"hello!".to_vec());
+    }
+
+    // ----- per-doc vertical scroll -----
+
+    #[test]
+    fn adjust_viewport_writes_to_active_doc_only() {
+        // The cursor-following clamp in `adjust_viewport` must only
+        // touch the active document's scroll_top_line. Other docs'
+        // offsets are untouched so they keep their scroll position
+        // when the user tabs back.
+        let mut app = app_with_docs(&["alpha\nbeta\ngamma\ndelta", "x"]);
+        app.viewport_height = 2;
+
+        // Move cursor near the bottom of doc 0 and adjust — only doc 0
+        // scrolls.
+        let pos = app.active_buffer().linecol_to_pos(3, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(2);
+        let top_doc0 = app.documents[0].view.scroll_top_line;
+        let top_doc1 = app.documents[1].view.scroll_top_line;
+        assert!(top_doc0 > 0, "doc 0 should have scrolled: top={top_doc0}");
+        assert_eq!(top_doc1, 0, "doc 1 untouched: top={top_doc1}");
+
+        // Switch to doc 1 and adjust — doc 0's offset stays where it was.
+        app.active = 1;
+        app.adjust_viewport(2);
+        assert_eq!(
+            app.documents[0].view.scroll_top_line,
+            top_doc0,
+            "doc 0 scroll preserved across tab switch"
+        );
+    }
+
+    #[test]
+    fn switch_tabs_preserves_each_docs_scroll_top() {
+        // Scrolling in doc A, then switching to doc B and scrolling
+        // there, then back to doc A — doc A's scroll offset is exactly
+        // where we left it. This is the "per-doc vertical scroll"
+        // parity with horizontal scroll.
+        let mut app = app_with_docs(&[
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10",
+            "l1\nl2\nl3\nl4\nl5",
+        ]);
+        app.viewport_height = 3;
+
+        // Scroll doc 0 to the bottom.
+        let pos = app.active_buffer().linecol_to_pos(9, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(3);
+        let doc0_top = app.documents[0].view.scroll_top_line;
+        assert!(doc0_top > 0, "doc 0 scrolled down: top={doc0_top}");
+
+        // Switch to doc 1, scroll it down too.
+        app.handle_event(EditorEvent::NextDoc);
+        let pos = app.active_buffer().linecol_to_pos(4, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(3);
+        let doc1_top = app.documents[1].view.scroll_top_line;
+        assert!(doc1_top > 0, "doc 1 scrolled down: top={doc1_top}");
+
+        // Back to doc 0 — its offset is preserved.
+        app.handle_event(EditorEvent::PrevDoc);
+        assert_eq!(
+            app.documents[0].view.scroll_top_line, doc0_top,
+            "doc 0 scroll preserved"
+        );
+        assert_eq!(
+            app.documents[1].view.scroll_top_line, doc1_top,
+            "doc 1 scroll preserved"
+        );
     }
 }

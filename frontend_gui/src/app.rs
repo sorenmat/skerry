@@ -273,14 +273,17 @@ impl EditorApp {
                 if let Some(pos) = self.search.next_after(self.active_buffer().cursor()) {
                     self.active_buffer_mut().set_cursor(pos);
                     self.active_buffer_mut().set_selection(Selection::collapsed(pos));
-                    self.ensure_cursor_visible();
+                    // Auto-scroll on next render: the per-doc
+                    // `last_seen_cursor` still holds the old value, so
+                    // the render path detects motion and scrolls into
+                    // view.
                 }
             }
             EditorEvent::FindPrev => {
                 if let Some(pos) = self.search.prev_before(self.active_buffer().cursor()) {
                     self.active_buffer_mut().set_cursor(pos);
                     self.active_buffer_mut().set_selection(Selection::collapsed(pos));
-                    self.ensure_cursor_visible();
+                    // See FindNext.
                 }
             }
             EditorEvent::Move(movement) => {
@@ -452,19 +455,6 @@ impl EditorApp {
 
     pub fn is_dirty(&self) -> bool {
         self.active_buffer().is_dirty()
-    }
-
-    /// Adjust `viewport_lines` so the cursor is visible. The GUI's
-    /// egui ScrollArea handles vertical scroll automatically once the
-    /// cursor's pixel Y is inside the viewport — but it can only
-    /// scroll via mouse wheel / scrollbar, not programmatically. We
-    /// approximate by clamping `scroll_x_cols` to keep the cursor
-    /// char on screen, and rely on the natural next-frame repaint
-    /// to bring the line into view via the user's mouse interaction.
-    fn ensure_cursor_visible(&mut self) {
-        let _ = self.active_buffer().pos_to_linecol(self.active_buffer().cursor());
-        // No-op for now: the GUI's own ScrollArea will scroll when
-        // the user moves the wheel. TUI uses adjust_viewport.
     }
 
     /// Delete the entire line under the cursor, including its trailing
@@ -1172,5 +1162,48 @@ mod tests {
         assert_eq!(app.active_buffer().to_bytes(), b"world".to_vec());
         app.handle_event(EditorEvent::PrevDoc);
         assert_eq!(app.active_buffer().to_bytes(), b"hello!".to_vec());
+    }
+
+    // ----- GUI auto-scroll trigger -----
+
+    #[test]
+    fn last_seen_cursor_starts_at_zero() {
+        let app = app_with("hello");
+        assert_eq!(app.active_doc().view.last_seen_cursor, 0);
+    }
+
+    #[test]
+    fn handle_event_moves_cursor_without_touching_last_seen_cursor() {
+        // `last_seen_cursor` is the renderer's record of the LAST
+        // observed cursor position. It must NOT be updated by
+        // `handle_event` — otherwise we'd lose the ability to detect
+        // motion between frames (the renderer is the only writer).
+        let mut app = app_with("hello");
+        assert_eq!(app.active_doc().view.last_seen_cursor, 0);
+        app.handle_event(EditorEvent::Insert('x'));
+        assert_eq!(app.active_buffer().cursor(), 1);
+        assert_eq!(
+            app.active_doc().view.last_seen_cursor,
+            0,
+            "handle_event must not update last_seen_cursor; renderer does"
+        );
+    }
+
+    #[test]
+    fn last_seen_cursor_is_per_document() {
+        // Each doc carries its own last_seen_cursor. Switching tabs
+        // doesn't leak the previous tab's value into the new active
+        // doc's "did the cursor move?" check — that's what makes
+        // per-doc scroll preservation across tab switches work.
+        let mut app = app_with_docs(&["alpha", "beta"]);
+        app.active_doc_mut().view.last_seen_cursor = 42;
+        app.handle_event(EditorEvent::NextDoc);
+        assert_eq!(
+            app.active_doc().view.last_seen_cursor, 0,
+            "doc 1's last_seen_cursor starts at 0"
+        );
+        // Switching back: doc 0's value is intact.
+        app.handle_event(EditorEvent::PrevDoc);
+        assert_eq!(app.active_doc().view.last_seen_cursor, 42);
     }
 }

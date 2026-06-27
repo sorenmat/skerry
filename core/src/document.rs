@@ -17,9 +17,8 @@ use crate::Buffer;
 /// Per-document view state that both frontends share.
 ///
 /// Only fields that are meaningful to BOTH the TUI and the GUI live
-/// here. Renderer-specific bits (e.g. the TUI's vertical scroll
-/// position, the GUI's viewport line count) stay on the frontend
-/// `App` struct because only that frontend knows how to use them.
+/// here. Renderer-specific bits stay on the frontend `App` struct
+/// because only that frontend knows how to use them.
 #[derive(Clone, Debug, Default)]
 pub struct ViewState {
     /// Horizontal scroll offset in character columns. 0 = the line
@@ -27,6 +26,24 @@ pub struct ViewState {
     /// than the viewport get clipped on the left when `scroll_x_cols`
     /// is positive. Both frontends read this.
     pub scroll_x_cols: usize,
+    /// First visible line in the viewport. 0 = the document's first
+    /// line is at the top of the content area. Lives on the document
+    /// (not the frontend) so switching tabs preserves each doc's
+    /// scroll position — same fix pattern as `scroll_x_cols`. Both
+    /// frontends read/write this; the GUI's `egui::ScrollArea`
+    /// additionally manages its own scroll offset keyed by document
+    /// id, so this field is the source of truth that the GUI re-syncs
+    /// to when the user switches documents.
+    pub scroll_top_line: usize,
+    /// Last cursor byte position the renderer observed for THIS doc.
+    /// Lives on the document (not the app) so tab switches don't
+    /// trigger spurious "cursor moved" events that would scroll the
+    /// freshly-activated doc to ITS cursor even when the user just
+    /// wanted to peek at it without disturbing its scroll. The
+    /// TUI's `adjust_viewport` doesn't read this (its cursor-following
+    /// clamp always runs in `render`), but the GUI's
+    /// `scroll_to_rect` logic does.
+    pub last_seen_cursor: usize,
 }
 
 /// One document open in the session.
