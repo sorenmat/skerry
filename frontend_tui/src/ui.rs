@@ -84,20 +84,47 @@ fn render_find_bar(app: &App) -> Line<'static> {
 }
 
 fn render_header(app: &App) -> Line<'static> {
-    let path = app
-        .active_buffer()
-        .source_path()
-        .and_then(|p| p.to_str())
-        .unwrap_or("[No Name]");
-    let dirty = if app.is_dirty() { " [+]" } else { "" };
-    // Only show "(N/M)" when M > 1 — single-doc sessions don't need
-    // the noise; matches browser/editor tab-bar convention.
-    let pos = if app.doc_count() > 1 {
-        format!("  ({}/{})", app.active() + 1, app.doc_count())
-    } else {
-        String::new()
-    };
-    Line::from(format!(" {path}{dirty}{pos}"))
+    // Single-doc header: just filename + dirty marker. We deliberately
+    // don't render the tab strip with one entry — the label would just
+    // say "[No Name]" or whatever, which is noise. Match the browser
+    // convention of hiding the tab bar when there's only one tab.
+    if app.doc_count() == 1 {
+        let path = app
+            .active_buffer()
+            .source_path()
+            .and_then(|p| p.to_str())
+            .unwrap_or("[No Name]");
+        let dirty = if app.is_dirty() { " [+]" } else { "" };
+        return Line::from(format!(" {path}{dirty}"));
+    }
+
+    // Multi-doc tab strip: one labelled cell per open doc. The active
+    // doc gets a coloured background; inactive ones are dimmed. Thin
+    // `│` separators between cells. No "(N/M)" counter — the tabs
+    // themselves communicate position now.
+    let active_style = Style::default()
+        .bg(Color::Rgb(60, 80, 140))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(Color::DarkGray);
+    let separator_style = Style::default().fg(Color::Rgb(80, 80, 80));
+
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
+    for (i, doc) in app.documents.iter().enumerate() {
+        let name = doc.display_name();
+        let dirty = if doc.is_dirty() { "*" } else { "" };
+        let label = format!(" {}{} ", name, dirty);
+        let style = if i == app.active {
+            active_style
+        } else {
+            inactive_style
+        };
+        spans.push(Span::styled(label, style));
+        if i + 1 < app.documents.len() {
+            spans.push(Span::styled(" │ ", separator_style));
+        }
+    }
+    Line::from(spans)
 }
 
 fn render_status(app: &App) -> Line<'static> {

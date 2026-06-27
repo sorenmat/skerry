@@ -21,27 +21,80 @@ use crate::app::EditorApp;
 
 const FONT_SIZE: f32 = 14.0;
 const CARET_WIDTH: f32 = 2.0;
+const TAB_ACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(60, 80, 140);
+const TAB_INACTIVE_FG: egui::Color32 = egui::Color32::from_rgb(150, 150, 150);
+const TAB_SEPARATOR: egui::Color32 = egui::Color32::from_rgb(80, 80, 80);
 
-pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
-    // Extract everything as owned data so panel closures don't all
-    // borrow `app` mutably at once.
-    let header_text = {
+/// Render the header strip. For a single document, this is the legacy
+/// "filename + dirty marker" header. For multiple documents, it becomes
+/// a tab strip — one labelled cell per open doc, with the active doc
+/// highlighted. Clicking an inactive tab switches the active document;
+/// clicking the active tab is a no-op. The single-doc form keeps the
+/// old, quieter look (just one filename) so users without tabs don't
+/// see a stray empty strip.
+fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
+    if app.doc_count() == 1 {
         let path = app
             .active_buffer()
             .source_path()
             .and_then(|p| p.to_str())
             .unwrap_or("[No Name]");
         let dirty = if app.is_dirty() { " [+]" } else { "" };
-        // Only show "(N/M)" when M > 1 — single-doc sessions don't
-        // need the noise, and the convention in browser/editor tab bars
-        // is to omit the counter when there's only one tab.
-        let pos = if app.doc_count() > 1 {
-            format!("  ({}/{})", app.active() + 1, app.doc_count())
-        } else {
-            String::new()
-        };
-        format!(" {path}{dirty}{pos}")
-    };
+        ui.label(
+            egui::RichText::new(format!(" {path}{dirty}"))
+                .strong()
+                .monospace(),
+        );
+        return;
+    }
+
+    // Multi-doc tab strip. Each tab is its own label so egui tracks
+    // click responses per-tab. The active tab's label has a coloured
+    // background; inactive tabs are dimmed. Clicking an inactive tab
+    // switches `app.active`.
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        for i in 0..app.doc_count() {
+            let is_active = i == app.active;
+            let doc = &app.documents[i];
+            let name = doc.display_name();
+            let dirty = if doc.is_dirty() { "*" } else { "" };
+            let label = format!(" {}{} ", name, dirty);
+
+            let text = if is_active {
+                egui::RichText::new(&label)
+                    .monospace()
+                    .strong()
+                    .color(egui::Color32::WHITE)
+                    .background_color(TAB_ACTIVE_BG)
+            } else {
+                egui::RichText::new(&label)
+                    .monospace()
+                    .color(TAB_INACTIVE_FG)
+            };
+
+            let response = ui.label(text);
+            if !is_active && response.clicked() {
+                app.active = i;
+            }
+
+            if i + 1 < app.doc_count() {
+                // Thin separator between tabs. egui's add_space gives
+                // us a uniform gap; the visual separator char keeps the
+                // tab boundary obvious.
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new("│")
+                        .monospace()
+                        .color(TAB_SEPARATOR),
+                );
+                ui.add_space(2.0);
+            }
+        }
+    });
+}
+
+pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     let (status_message, status_pos) = {
         let msg = app.status_message.clone().unwrap_or_default();
         let cursor_pos = app.active_buffer().cursor();
@@ -52,11 +105,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     };
 
     egui::TopBottomPanel::top("header").show(ctx, |ui| {
-        ui.label(
-            egui::RichText::new(&header_text)
-                .strong()
-                .monospace(),
-        );
+        render_header_strip(ui, app);
     });
 
     egui::TopBottomPanel::bottom("status").show(ctx, |ui| {

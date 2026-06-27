@@ -76,54 +76,103 @@ mod tests {
     }
 
     #[test]
-    fn header_shows_active_doc_position_with_multiple_docs() {
-        // Three unsaved docs → header should show "(1/3)", "(2/3)", "(3/3)"
-        // depending on which is active. Position is 1-indexed.
-        let docs: Vec<Document> = ["alpha", "beta", "gamma"]
+    fn header_shows_tab_strip_with_multiple_docs() {
+        // Three named docs → the header becomes a tab strip with all
+        // three filenames visible, separated by "│". The active tab is
+        // highlighted via a background colour, but visually we just
+        // confirm every filename is rendered.
+        let docs: Vec<Document> = ["alpha.txt", "beta.rs", "gamma.md"]
             .iter()
-            .map(|c| {
-                let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
-                    c.as_bytes().to_vec(),
-                ));
+            .map(|name| {
+                let path = std::path::PathBuf::from(format!("/tmp/{name}"));
+                let buf: Box<dyn Buffer> = Box::new(
+                    PieceTableBuffer::from_bytes_with_path(
+                        b"".to_vec(),
+                        path,
+                    ),
+                );
                 Document::new(buf)
             })
             .collect();
         let mut app = App::new_with_documents(docs);
 
-        let backend = TestBackend::new(40, 5);
+        let backend = TestBackend::new(80, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(
-            out.contains("(1/3)"),
-            "expected '(1/3)' in header at active=0: {out:?}"
-        );
+        assert!(out.contains("alpha.txt"), "expected tab 'alpha.txt': {out:?}");
+        assert!(out.contains("beta.rs"), "expected tab 'beta.rs': {out:?}");
+        assert!(out.contains("gamma.md"), "expected tab 'gamma.md': {out:?}");
+        assert!(out.contains("│"), "expected tab separator: {out:?}");
+        // The legacy "(1/3)" counter is gone — the tabs themselves
+        // communicate position now.
+        assert!(!out.contains("(1/3)"), "counter no longer rendered: {out:?}");
 
-        // Cycle to the middle doc.
+        // Cycle to the middle doc and re-render. Every tab is still
+        // visible; only the highlight moves.
         app.handle_event(core::EditorEvent::NextDoc);
-        let backend = TestBackend::new(40, 5);
+        let backend = TestBackend::new(80, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(
-            out.contains("(2/3)"),
-            "expected '(2/3)' in header at active=1: {out:?}"
-        );
+        assert!(out.contains("alpha.txt"), "tabs persist on tab switch: {out:?}");
+        assert!(out.contains("beta.rs"), "tabs persist on tab switch: {out:?}");
+        assert!(out.contains("gamma.md"), "tabs persist on tab switch: {out:?}");
     }
 
     #[test]
-    fn header_hides_position_when_only_one_doc() {
-        // With a single doc, showing "(1/1)" is noise. The header
-        // should just show the doc name without a position suffix.
+    fn header_hides_tab_strip_when_only_one_doc() {
+        // With a single doc, the tab strip is suppressed — we just
+        // render the legacy "filename + dirty" header. The single-doc
+        // case is the most common one and deserves the quieter UI.
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(b"".to_vec()));
         let mut app = App::new(buf);
-        let backend = TestBackend::new(40, 5);
+        let backend = TestBackend::new(80, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(
-            !out.contains("(1/1)"),
-            "single-doc header should not show a position counter: {out:?}"
-        );
+        // The header row (first line of output) should just contain
+        // "[No Name]" — no tab separator, no other doc names.
+        let header_line = out.lines().next().unwrap_or("");
+        assert!(header_line.contains("[No Name]"),
+                "expected single-doc header: {header_line:?}");
+        // No tab separator in the single-doc header line. The content
+        // area's line-number gutter also uses "│", so we only look at
+        // the first (header) line.
+        assert!(!header_line.contains("│"),
+                "single-doc header has no tab strip: {header_line:?}");
+    }
+
+    #[test]
+    fn tab_strip_shows_dirty_marker() {
+        // An unsaved edit on the middle doc shows up as "*" in its tab.
+        let docs: Vec<Document> = ["alpha.txt", "beta.rs", "gamma.md"]
+            .iter()
+            .map(|name| {
+                let path = std::path::PathBuf::from(format!("/tmp/{name}"));
+                let buf: Box<dyn Buffer> = Box::new(
+                    PieceTableBuffer::from_bytes_with_path(
+                        b"".to_vec(),
+                        path,
+                    ),
+                );
+                Document::new(buf)
+            })
+            .collect();
+        let mut app = App::new_with_documents(docs);
+        app.active = 1;
+        app.handle_event(core::EditorEvent::Insert('x'));
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        // "beta" tab should be marked dirty — either "beta.rs*" or "beta.rs *".
+        assert!(out.contains("beta.rs*") || out.contains("beta.rs *"),
+                "expected dirty marker on beta tab: {out:?}");
+        // Untouched tabs should NOT have the marker.
+        assert!(!out.contains("alpha.txt*") && !out.contains("alpha.txt *"),
+                "alpha tab is clean: {out:?}");
+        assert!(!out.contains("gamma.md*") && !out.contains("gamma.md *"),
+                "gamma tab is clean: {out:?}");
     }
 }
