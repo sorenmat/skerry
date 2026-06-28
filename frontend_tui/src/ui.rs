@@ -21,22 +21,32 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Clear, Paragraph},
     Frame,
 };
 
-use crate::app::App;
+use crate::app::{App, CloseChoice};
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
-    // Four vertical chunks: header, content, status, optional find bar.
+    // Vertical chunks: header, content, status, and a row each for the
+    // find bar, close-confirm prompt, and open-file dialog (whichever
+    // are open). Modals take priority: we always reserve their row
+    // when their state is Some so opening/closing one doesn't make the
+    // rest of the layout jump.
     let mut constraints = vec![
         Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
     ];
     if app.search.bar_open {
+        constraints.push(Constraint::Length(1));
+    }
+    if app.close_confirm.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
+    if app.open_file_dialog.is_some() {
         constraints.push(Constraint::Length(1));
     }
     let chunks = Layout::default()
@@ -54,21 +64,139 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let status = render_status(app);
     f.render_widget(Paragraph::new(status), chunks[2]);
 
+    // Modal rows, in order. Index = 3 + (1 per preceding modal that's
+    // open). We track it explicitly to avoid the off-by-one that
+    // would come from chained `if` indexing.
+    let mut idx = 3;
     if app.search.bar_open {
         let find_line = render_find_bar(app);
-        f.render_widget(Paragraph::new(find_line), chunks[3]);
+        f.render_widget(Paragraph::new(find_line), chunks[idx]);
+        idx += 1;
+    }
+    if let Some(confirm) = &app.close_confirm {
+        let line = render_close_confirm(confirm, &app.documents[confirm.doc_index]);
+        f.render_widget(Paragraph::new(line), chunks[idx]);
+        idx += 1;
+    }
+    if let Some(dialog) = &app.open_file_dialog {
+        let line = render_open_file_dialog(dialog);
+        f.render_widget(Paragraph::new(line), chunks[idx]);
+        // No further modals to index after this.
     }
 
-    // Position the terminal cursor over the buffer cursor OR the
-    // find bar's text input.
+    // Position the terminal cursor. The find bar and the open-file
+    // dialog both have a text input — they want the cursor at end of
+    // their query string. Close-confirm has no input; cursor stays on
+    // the buffer if visible.
     if app.search.bar_open {
-        // Cursor at end of query in the find bar.
+        let find_idx = 3;
         let query_prefix_chars = " Find: ".chars().count() as u16;
-        let cursor_x = chunks[3].x + query_prefix_chars + app.search.query.chars().count() as u16;
-        f.set_cursor_position(Position::new(cursor_x, chunks[3].y));
+        let cursor_x = chunks[find_idx].x + query_prefix_chars
+            + app.search.query.chars().count() as u16;
+        f.set_cursor_position(Position::new(cursor_x, chunks[find_idx].y));
+    } else if app.open_file_dialog.is_some() {
+        // The dialog row sits at the last allocated chunk — chunks is
+        // built in declaration order so the dialog row is always the
+        // final entry. `unwrap` is safe: we just rendered into it.
+        let last = chunks.last().unwrap();
+        let prefix_chars = " Open: ".chars().count() as u16;
+        let cursor_x = last.x + prefix_chars
+            + app.open_file_dialog.as_ref().unwrap().query.chars().count() as u16;
+        f.set_cursor_position(Position::new(cursor_x, last.y));
     } else if let Some(pos) = compute_cursor_screen_pos(app, chunks[1]) {
         f.set_cursor_position(pos);
     }
+
+    // Highlight the focused choice in the close-confirm prompt by
+    // painting a centered overlay. Done last so it draws on top of the
+    // content. Only the focused cell gets a coloured background; the
+    // others stay plain so the eye lands on the highlighted one.
+    if let Some(confirm) = &app.close_confirm {
+        render_close_confirm_overlay(f, area, confirm);
+    }
+}
+
+/// Render the close-on-dirty prompt as a single line at the bottom.
+/// The line shows the three choices with the focused one highlighted
+/// by reverse video. Also includes a hint about the key bindings.
+fn render_close_confirm(
+    confirm: &crate::app::CloseConfirm,
+    doc: &core::Document,
+) -> Line<'static> {
+    let doc_name = doc.display_name();
+    let dirty_msg = format!("'{doc_name}' has unsaved changes.");
+    let choice_label = |c: CloseChoice, label: &str| -> Span<'static> {
+        let focused = confirm.choice == c;
+        let mut style = Style::default();
+        if focused {
+            style = style.bg(Color::Rgb(60, 80, 140)).fg(Color::White)
+                .add_modifier(Modifier::BOLD);
+        } else {
+            style = style.fg(Color::DarkGray);
+        }
+        Span::styled(format!(" {label} "), style)
+    };
+    Line::from(vec![
+        Span::raw(format!(" {dirty_msg} ")),
+        choice_label(CloseChoice::Save, "Save (Enter)"),
+        Span::raw(" "),
+        choice_label(CloseChoice::Discard, "Discard (y)"),
+        Span::raw(" "),
+        choice_label(CloseChoice::Cancel, "Cancel (Esc)"),
+    ])
+}
+
+/// Draw a centred overlay line over the content area showing the three
+/// choices in reverse video on the focused one. We render this AFTER
+/// the content so it visually sits on top of the buffer text — makes
+/// the prompt unmissable.
+fn render_close_confirm_overlay(
+    f: &mut Frame,
+    area: Rect,
+    confirm: &crate::app::CloseConfirm,
+) {
+    // Centre horizontally on the available area, with one row of padding
+    // above and below.
+    let label_w = 60usize.min(area.width as usize);
+    let x = area.x + (area.width.saturating_sub(label_w as u16)) / 2;
+    let y = area.y + area.height / 2;
+    let overlay_rect = Rect::new(x, y, label_w as u16, 3);
+    f.render_widget(Clear, overlay_rect);
+
+    let focused = confirm.choice;
+    let save_style = if focused == CloseChoice::Save {
+        Style::default().bg(Color::Rgb(60, 80, 140)).fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let discard_style = if focused == CloseChoice::Discard {
+        Style::default().bg(Color::Rgb(60, 80, 140)).fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let cancel_style = if focused == CloseChoice::Cancel {
+        Style::default().bg(Color::Rgb(60, 80, 140)).fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let prompt = Line::from(vec![
+        Span::raw(" Save?  "),
+        Span::styled(" Save ", save_style),
+        Span::raw("  "),
+        Span::styled(" Discard ", discard_style),
+        Span::raw("  "),
+        Span::styled(" Cancel ", cancel_style),
+    ]);
+    f.render_widget(Paragraph::new(prompt), overlay_rect);
+}
+
+/// Render the open-file text-input prompt.
+fn render_open_file_dialog(dialog: &crate::app::OpenFileDialog) -> Line<'static> {
+    Line::from(format!(" Open: {}█", dialog.query))
 }
 
 fn render_find_bar(app: &App) -> Line<'static> {

@@ -61,6 +61,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::D => Some(EditorEvent::DuplicateLine),
             Key::T => Some(EditorEvent::NewDoc),
             Key::W => Some(EditorEvent::CloseDoc),
+            Key::O => Some(EditorEvent::OpenFile(None)),
             Key::Tab => Some(EditorEvent::NextDoc),
             Key::Backspace => Some(EditorEvent::DeleteWordLeft),
             Key::Delete => Some(EditorEvent::DeleteWordRight),

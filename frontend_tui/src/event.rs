@@ -73,6 +73,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('d') => Some(EditorEvent::DuplicateLine),
             KeyCode::Char('t') => Some(EditorEvent::NewDoc),
             KeyCode::Char('w') => Some(EditorEvent::CloseDoc),
+            KeyCode::Char('o') => Some(EditorEvent::OpenFile(None)),
             KeyCode::Tab => Some(EditorEvent::NextDoc),
             KeyCode::Backspace => Some(EditorEvent::DeleteWordLeft),
             KeyCode::Delete => Some(EditorEvent::DeleteWordRight),

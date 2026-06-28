@@ -17,7 +17,7 @@
 use core::{byte_to_char_col, format_position, selection_in_line, EditorEvent};
 use eframe::egui;
 
-use crate::app::EditorApp;
+use crate::app::{CloseChoice, EditorApp};
 
 const FONT_SIZE: f32 = 14.0;
 const CARET_WIDTH: f32 = 2.0;
@@ -163,6 +163,144 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     egui::CentralPanel::default().show(ctx, |ui| {
         render_text(ui, app);
     });
+
+    // Modal prompts render on top. Close-confirm is a centred dialog;
+    // the open-file dialog is also centred. The order matters only if
+    // both were up (they shouldn't be — opening one drops the other)
+    // and we want close-confirm on top because it's tied to a
+    // destructive action.
+    if app.close_confirm.is_some() {
+        render_close_confirm_window(ctx, app);
+    }
+    if app.open_file_dialog.is_some() {
+        render_open_file_window(ctx, app);
+    }
+}
+
+/// Render the close-on-dirty dialog as a centred egui::Window.
+/// Three buttons (Save / Discard / Cancel); the focused choice has a
+/// coloured background. Tab / Shift+Tab cycle the focused choice via
+/// [`crate::app::EditorApp::cycle_close_choice`] which we call from
+/// `dispatch_modal_event`; Enter / `y` confirm via
+/// [`crate::app::EditorApp::confirm_close_choice`].
+fn render_close_confirm_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+    // Snapshot the bits we need before opening the window so we can
+    // take a `&mut` borrow on `app` inside the closure without
+    // colliding with the read of `app.close_confirm`.
+    let (doc_name, focused) = match app.close_confirm.as_ref() {
+        Some(c) => (app.documents[c.doc_index].display_name(), c.choice),
+        None => return,
+    };
+
+    egui::Window::new("Unsaved changes")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label(format!("'{doc_name}' has unsaved changes."));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if focused_button(ui, focused, CloseChoice::Save, "Save").clicked() {
+                    app.close_confirm = None;
+                    match app.active_buffer_mut().save() {
+                        Ok(()) => {
+                            app.status_message = Some("Saved.".to_string());
+                            app.perform_close_active();
+                        }
+                        Err(e) => app.status_message = Some(format!("Save error: {e}")),
+                    }
+                }
+                if focused_button(ui, focused, CloseChoice::Discard, "Discard").clicked() {
+                    app.close_confirm = None;
+                    app.perform_close_active();
+                }
+                if focused_button(ui, focused, CloseChoice::Cancel, "Cancel").clicked() {
+                    app.close_confirm = None;
+                    app.status_message = Some("Close cancelled.".to_string());
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Tab to switch · Enter to confirm · Esc to cancel")
+                    .small()
+                    .weak(),
+            );
+        });
+
+    // If the user clicked the window's X, treat as cancel.
+    if !open && app.close_confirm.is_some() {
+        app.close_confirm = None;
+        app.status_message = Some("Close cancelled.".to_string());
+    }
+}
+
+/// Draw a button whose label is styled to reflect whether it is the
+/// currently-focused choice in the close-confirm prompt. Returns the
+/// response so the caller can test `.clicked()`.
+fn focused_button(
+    ui: &mut egui::Ui,
+    focused: CloseChoice,
+    this: CloseChoice,
+    label: &str,
+) -> egui::Response {
+    let is_focused = focused == this;
+    let text = if is_focused {
+        egui::RichText::new(label)
+            .strong()
+            .color(egui::Color32::WHITE)
+            .background_color(TAB_ACTIVE_BG)
+    } else {
+        egui::RichText::new(label).color(TAB_INACTIVE_FG)
+    };
+    ui.button(text)
+}
+
+/// Render the open-file dialog as a centred egui::Window with a single
+/// text input for the path. Enter / Esc are intercepted in
+/// `dispatch_modal_event`.
+fn render_open_file_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+    egui::Window::new("Open file")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label("Path:");
+            let mut query = app
+                .open_file_dialog
+                .as_ref()
+                .map(|d| d.query.clone())
+                .unwrap_or_default();
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .hint_text("/path/to/file")
+                    .desired_width(400.0),
+            );
+            if response.changed() {
+                if let Some(d) = app.open_file_dialog.as_mut() {
+                    d.query = query;
+                }
+            }
+            if response.gained_focus()
+                || (app.open_file_dialog.as_ref().map(|d| d.query.is_empty()).unwrap_or(false)
+                    && !response.has_focus())
+            {
+                response.request_focus();
+            }
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Enter to open · Esc to cancel")
+                    .small()
+                    .weak(),
+            );
+        });
+
+    if !open {
+        app.cancel_open_file_dialog();
+    }
 }
 
 fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {

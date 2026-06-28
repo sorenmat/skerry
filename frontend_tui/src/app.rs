@@ -4,6 +4,7 @@
 //! so we can unit-test the event-handling logic without spinning up a
 //! real terminal.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use core::{Buffer, BytePos, Document, EditorEvent, Movement, Search, Selection};
@@ -25,6 +26,48 @@ pub struct App {
     /// Find state: query, match list, current match, bar visibility.
     /// Operates on the active document's buffer.
     pub search: Search,
+    /// Close-on-dirty prompt. `Some` while the prompt is up — the
+    /// renderer draws the dialog overlay and the input loop intercepts
+    /// keys instead of forwarding them to `handle_event`.
+    pub close_confirm: Option<CloseConfirm>,
+    /// Open-file dialog. `Some` while the prompt is up. The user types
+    /// a path; Enter loads it, Esc cancels. Same intercept pattern as
+    /// `close_confirm` and the find bar.
+    pub open_file_dialog: Option<OpenFileDialog>,
+}
+
+/// The three choices offered when closing a dirty document. Stored on
+/// [`CloseConfirm::choice`]; Tab / Shift+Tab / Left / Right cycle the
+/// focused option, and Enter / `y` activates it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseChoice {
+    /// Save the buffer first, then close. No-op if the buffer has no
+    /// path (treated as cancel + status message).
+    Save,
+    /// Discard unsaved edits and close.
+    Discard,
+    /// Cancel — leave the document open, drop the prompt.
+    Cancel,
+}
+
+/// State for the close-on-dirty dialog. Captured at prompt-open time so
+/// the close target doesn't shift if the user changes the active doc
+/// while the prompt is up (defensive — they can't via normal key flow,
+/// but this guarantees the close happens on the right doc).
+#[allow(dead_code)] // `doc_index` reserved for future prompt+tab-switch
+                    // interleave; current modal intercepts prevent active
+                    // changes while the prompt is up.
+pub struct CloseConfirm {
+    /// Index of the document the close was requested against.
+    pub doc_index: usize,
+    /// Currently focused choice. Cycles Save → Discard → Cancel → Save.
+    pub choice: CloseChoice,
+}
+
+/// State for the open-file text-input dialog. The user types a path
+/// into `query`; Enter resolves it via [`App::submit_open_file_dialog`].
+pub struct OpenFileDialog {
+    pub query: String,
 }
 
 impl App {
@@ -51,6 +94,8 @@ impl App {
             status_message: None,
             viewport_height: 0,
             search: Search::new(),
+            close_confirm: None,
+            open_file_dialog: None,
         }
     }
 
@@ -121,6 +166,15 @@ impl App {
             if cxevent::poll(Duration::from_millis(100))? {
                 match cxevent::read()? {
                     Event::Key(key) => {
+                        // Modal prompts (close-confirm, open-file dialog)
+                        // intercept keys before they reach translate_key.
+                        // We don't want a Ctrl+W inside the open-file
+                        // dialog to bounce back into close-confirm, and we
+                        // don't want printable chars inside the dialog to
+                        // land in the buffer.
+                        if self.dispatch_modal_key(key) {
+                            continue;
+                        }
                         // Clipboard shortcuts are intercepted before
                         // generic key translation because they need
                         // direct OS access.
@@ -163,6 +217,76 @@ impl App {
     /// clipboard actions become no-ops but the buffer state for
     /// `Cut` is still updated (the user can still delete the
     /// selection, they just can't put it on the system clipboard).
+    /// Intercept a key event when a modal prompt is open. Returns `true`
+    /// when the event was consumed (caller should NOT forward it to
+    /// `translate_key` / `handle_event`).
+    ///
+    /// Two prompts today:
+    /// - **close_confirm**: Tab/Shift+Tab/Left/Right cycle choice,
+    ///   Enter confirms the focused choice, `y` confirms as Discard,
+    ///   `n` and Esc cancel.
+    /// - **open_file_dialog**: printable chars append, Backspace pops,
+    ///   Enter submits, Esc cancels.
+    ///
+    /// If both were somehow up (they shouldn't be — opening a dialog
+    /// drops the other), close_confirm wins because it's tied to an
+    /// irreversible action.
+    fn dispatch_modal_key(&mut self, key: cxevent::KeyEvent) -> bool {
+        use cxevent::{KeyCode, KeyModifiers};
+
+        if self.close_confirm.is_some() {
+            match (key.code, key.modifiers) {
+                (KeyCode::Esc, _) | (KeyCode::Char('n'), _) | (KeyCode::Char('N'), _) => {
+                    // Esc / n = cancel.
+                    self.close_confirm = None;
+                    self.status_message = Some("Close cancelled.".to_string());
+                }
+                (KeyCode::Tab, KeyModifiers::NONE)
+                | (KeyCode::Right, _)
+                | (KeyCode::Char('l'), KeyModifiers::NONE) => {
+                    self.cycle_close_choice(1);
+                }
+                (KeyCode::BackTab, _)
+                | (KeyCode::Left, _)
+                | (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                    self.cycle_close_choice(-1);
+                }
+                (KeyCode::Enter, _) => {
+                    self.confirm_close_choice();
+                }
+                (KeyCode::Char('y'), _) | (KeyCode::Char('Y'), _) => {
+                    // One-key "yes, close it" — Discard.
+                    self.close_confirm = None;
+                    self.perform_close_active();
+                }
+                _ => {
+                    // Eat everything else while the prompt is open so
+                    // the buffer doesn't receive stray keystrokes.
+                }
+            }
+            return true;
+        }
+
+        if self.open_file_dialog.is_some() {
+            match key.code {
+                KeyCode::Esc => self.cancel_open_file_dialog(),
+                KeyCode::Enter => self.submit_open_file_dialog(),
+                KeyCode::Backspace => self.pop_open_file_query(),
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    // Plain printable only — filter out ctrl/alt so
+                    // we don't pollute the path with control chars.
+                    self.push_open_file_query(c);
+                }
+                _ => {}
+            }
+            return true;
+        }
+
+        false
+    }
+
     fn apply_clipboard_action(
         &mut self,
         clipboard: &mut Option<arboard::Clipboard>,
@@ -398,7 +522,7 @@ impl App {
                 self.status_message = Some("New document.".to_string());
             }
             EditorEvent::CloseDoc => {
-                self.close_active_doc();
+                self.request_close_active();
             }
             EditorEvent::NextDoc => {
                 if !self.documents.is_empty() {
@@ -411,6 +535,10 @@ impl App {
                         (self.active + self.documents.len() - 1) % self.documents.len();
                 }
             }
+            EditorEvent::OpenFile(maybe_path) => match maybe_path {
+                Some(path) => self.open_path(&path),
+                None => self.open_file_dialog = Some(OpenFileDialog { query: String::new() }),
+            },
             EditorEvent::Quit => {
                 self.should_quit = true;
             }
@@ -861,14 +989,94 @@ impl App {
         Some(line_byte_start + byte_col)
     }
 
-    /// Close the active document. If it was the only document, the
-    /// editor quits (`should_quit = true`). Otherwise the active
-    /// index moves to a neighbour — the document at the same index
-    /// after removal, or the new last if we closed the tail.
+    /// Begin closing the active document. If the buffer has unsaved
+    /// edits, open the close-confirm prompt instead of closing —
+    /// actual close happens once the user picks Save / Discard /
+    /// Cancel via [`App::cycle_close_choice`] and
+    /// [`App::confirm_close_choice`]. If the buffer is clean (or it
+    /// is the only document), close immediately.
     ///
-    /// v1: closes unconditionally — does NOT prompt on dirty buffers.
-    /// A future stage will add a "save before close?" prompt.
-    pub fn close_active_doc(&mut self) {
+    /// Splitting the "begin" step from the "perform" step is what
+    /// makes the prompt possible: the input loop shows the dialog and
+    /// intercepts key events; once the user decides, we call the
+    /// perform step.
+    pub fn request_close_active(&mut self) {
+        if self.active_doc().is_dirty() {
+            // Only one prompt at a time. If the close-confirm is
+            // already up, refresh it to point at the (still same) doc;
+            // opening the open-file dialog over an existing one would
+            // be confusing, so we let close-confirm win.
+            self.open_file_dialog = None;
+            self.close_confirm = Some(CloseConfirm {
+                doc_index: self.active,
+                choice: CloseChoice::Save,
+            });
+            self.status_message = None;
+            return;
+        }
+        self.perform_close_active();
+    }
+
+    /// Cycle the focused choice on the close-confirm prompt. `delta`
+    /// moves forward (+1) or backward (-1) through the Save → Discard
+    /// → Cancel cycle. No-op when no prompt is up.
+    pub fn cycle_close_choice(&mut self, delta: i32) {
+        let Some(confirm) = self.close_confirm.as_mut() else {
+            return;
+        };
+        confirm.choice = match (confirm.choice, delta) {
+            (CloseChoice::Save, d) if d > 0 => CloseChoice::Discard,
+            (CloseChoice::Discard, d) if d > 0 => CloseChoice::Cancel,
+            (CloseChoice::Cancel, d) if d > 0 => CloseChoice::Save,
+            (CloseChoice::Save, _) => CloseChoice::Cancel,
+            (CloseChoice::Discard, _) => CloseChoice::Save,
+            (CloseChoice::Cancel, _) => CloseChoice::Discard,
+        };
+    }
+
+    /// Activate the currently-focused choice on the close-confirm
+    /// prompt. Save saves then closes (failure keeps the prompt
+    /// closed but reports the error in the status bar — the user
+    /// can Ctrl+S manually then Ctrl+W again). Discard closes.
+    /// Cancel just drops the prompt.
+    ///
+    /// `y` is treated as Discard (a one-key "yes, throw it away" for
+    /// power users); `n` and Esc are equivalent to Cancel.
+    pub fn confirm_close_choice(&mut self) {
+        // Copy out the choice + target, then drop the prompt. Doing
+        // the drop first lets `perform_close_active` borrow `self`
+        // non-overlapping with the prompt.
+        let Some(confirm) = self.close_confirm.take() else {
+            return;
+        };
+        match confirm.choice {
+            CloseChoice::Save => {
+                // Save first; if it fails, drop the close (treat as
+                // Cancel) and surface the error.
+                match self.active_buffer_mut().save() {
+                    Ok(()) => {
+                        self.status_message = Some("Saved.".to_string());
+                        self.perform_close_active();
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Save error: {e}"));
+                    }
+                }
+            }
+            CloseChoice::Discard => {
+                self.perform_close_active();
+            }
+            CloseChoice::Cancel => {
+                self.status_message = Some("Close cancelled.".to_string());
+            }
+        }
+    }
+
+    /// The "perform" half of a close. Captures the v1 logic — quit
+    /// when the last document goes, else remove + neighbour-pick.
+    /// Pulled out so [`request_close_active`] and
+    /// [`confirm_close_choice`] share it.
+    fn perform_close_active(&mut self) {
         if self.documents.len() == 1 {
             self.should_quit = true;
             self.status_message = Some("Closed last document — quitting.".to_string());
@@ -879,6 +1087,84 @@ impl App {
             self.active = self.documents.len() - 1;
         }
         self.status_message = Some("Closed document.".to_string());
+    }
+
+    /// Append a character to the open-file dialog's text input.
+    /// No-op when the dialog isn't open.
+    pub fn push_open_file_query(&mut self, ch: char) {
+        if let Some(d) = self.open_file_dialog.as_mut() {
+            d.query.push(ch);
+        }
+    }
+
+    /// Remove the last character from the open-file dialog's text
+    /// input. No-op when the dialog isn't open or the query is empty.
+    pub fn pop_open_file_query(&mut self) {
+        if let Some(d) = self.open_file_dialog.as_mut() {
+            d.query.pop();
+        }
+    }
+
+    /// Cancel the open-file dialog. No-op when it isn't open.
+    pub fn cancel_open_file_dialog(&mut self) {
+        if self.open_file_dialog.take().is_some() {
+            self.status_message = Some("Open cancelled.".to_string());
+        }
+    }
+
+    /// Submit the open-file dialog's current query as a path to load.
+    /// On success the active document's buffer is replaced with the
+    /// file's contents; the dialog drops. On error (file exists but
+    /// can't be read) the dialog drops and the error lands in the
+    /// status bar.
+    ///
+    /// `path` is interpreted as a filesystem path. An empty query
+    /// is treated as Cancel — pressing Enter on an empty prompt
+    /// shouldn't blow up with a confusing I/O error.
+    pub fn submit_open_file_dialog(&mut self) {
+        let Some(dialog) = self.open_file_dialog.take() else {
+            return;
+        };
+        if dialog.query.is_empty() {
+            self.status_message = Some("Open cancelled.".to_string());
+            return;
+        }
+        let path = PathBuf::from(dialog.query);
+        self.open_path(&path);
+    }
+
+    /// Load `path` into the active document. If the file exists, its
+    /// bytes replace the buffer and `source_path` is updated. If the
+    /// path doesn't exist yet, the buffer becomes empty but the path
+    /// is remembered — the next Save will create the file. Errors
+    /// (file exists but unreadable, etc.) land in `status_message`
+    /// and leave the buffer untouched.
+    pub fn open_path(&mut self, path: &std::path::Path) {
+        use core::PieceTableBuffer;
+        let buffer: Box<dyn Buffer> = if path.exists() {
+            match PieceTableBuffer::from_path(path.to_path_buf()) {
+                Ok(buf) => Box::new(buf),
+                Err(e) => {
+                    self.status_message = Some(format!("Open error: {e}"));
+                    return;
+                }
+            }
+        } else {
+            Box::new(PieceTableBuffer::from_bytes_with_path(
+                Vec::new(),
+                path.to_path_buf(),
+            ))
+        };
+        // Replace the active document's buffer in-place. View state
+        // resets — a freshly-opened file shouldn't inherit the scroll
+        // position of whatever was there before.
+        self.documents[self.active] = Document::new(buffer);
+        self.status_message = Some(format!(
+            "Opened {}",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<path>")
+        ));
     }
 }
 
@@ -1526,5 +1812,376 @@ mod tests {
             app.documents[1].view.scroll_top_line, doc1_top,
             "doc 1 scroll preserved"
         );
+    }
+
+    // ----- close-on-dirty prompt -----
+
+    #[test]
+    fn close_doc_on_clean_buffer_removes_immediately() {
+        // A fresh from_bytes buffer is clean — close happens directly,
+        // no prompt.
+        let mut app = app_with("alpha");
+        assert!(!app.active_doc().is_dirty());
+        assert!(app.close_confirm.is_none());
+        app.handle_event(EditorEvent::CloseDoc);
+        assert!(app.close_confirm.is_none(), "no prompt on clean close");
+        assert_eq!(app.doc_count(), 1, "single doc → quit, doc stays");
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn close_doc_on_dirty_buffer_opens_prompt() {
+        // Edit the buffer so it becomes dirty, then hit CloseDoc.
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        assert!(app.active_doc().is_dirty());
+        app.handle_event(EditorEvent::CloseDoc);
+        let confirm = app.close_confirm.as_ref().expect("prompt should be open");
+        assert_eq!(confirm.doc_index, 0);
+        assert_eq!(confirm.choice, CloseChoice::Save, "Save is the default");
+        // The document is still there.
+        assert_eq!(app.doc_count(), 1);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn cycle_close_choice_walks_save_discard_cancel() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.handle_event(EditorEvent::CloseDoc);
+        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Save);
+        app.cycle_close_choice(1);
+        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Discard);
+        app.cycle_close_choice(1);
+        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Cancel);
+        app.cycle_close_choice(1);
+        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Save);
+        // Backward wraps too.
+        app.cycle_close_choice(-1);
+        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Cancel);
+    }
+
+    #[test]
+    fn confirm_close_choice_discard_closes_without_saving() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.handle_event(EditorEvent::CloseDoc);
+        // Cycle to Discard, confirm.
+        app.cycle_close_choice(1);
+        app.confirm_close_choice();
+        assert!(app.close_confirm.is_none());
+        assert_eq!(app.doc_count(), 1);
+        assert!(app.should_quit);
+        // Buffer was dirty-but-discarded, so the save path was NOT
+        // taken — we just exited.
+    }
+
+    #[test]
+    fn confirm_close_choice_cancel_drops_prompt_only() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.handle_event(EditorEvent::CloseDoc);
+        // Cycle Save → Discard (delta=1), then Discard → Cancel
+        // (delta=1). cycle(2) doesn't skip past Cancel — the cycle
+        // implementation only handles unit steps; that's deliberate
+        // because the delta is +1/-1 in all real callers (Tab/Shift+Tab).
+        app.cycle_close_choice(1);
+        app.cycle_close_choice(1);
+        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Cancel);
+        app.confirm_close_choice();
+        assert!(app.close_confirm.is_none());
+        assert_eq!(app.doc_count(), 1, "doc still here");
+        assert!(!app.should_quit, "still running");
+        // Buffer is still dirty.
+        assert!(app.active_doc().is_dirty());
+    }
+
+    #[test]
+    fn confirm_close_choice_save_saves_then_closes() {
+        // Build an app with a pathed buffer and unsaved edits. Insert
+        // is at cursor position (default 0), so the '!' lands at the
+        // start: "!hello".
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("the_editor_close_save_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
+            b"hello".to_vec(),
+            path.clone(),
+        ));
+        let mut app = App::new(buf);
+        app.handle_event(EditorEvent::Insert('!'));
+        assert!(app.active_doc().is_dirty());
+
+        app.handle_event(EditorEvent::CloseDoc);
+        // Save is the default — confirm directly.
+        app.confirm_close_choice();
+
+        // Buffer should be saved → not dirty. Single doc → quit.
+        assert!(app.close_confirm.is_none());
+        assert!(app.should_quit);
+
+        // File should exist on disk.
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, "!hello");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn confirm_close_choice_save_without_path_reports_error() {
+        // A dirty buffer with no source_path can't be saved. The
+        // prompt should drop and the error should land in the status
+        // message.
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        assert!(app.active_doc().is_dirty());
+        assert!(app.active_doc().path().is_none());
+
+        app.handle_event(EditorEvent::CloseDoc);
+        app.confirm_close_choice();
+
+        assert!(app.close_confirm.is_none(), "prompt dropped on save failure");
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            status.contains("Save error"),
+            "expected save error in status: {status}"
+        );
+        // Single doc → didn't quit because the close was aborted.
+        assert!(!app.should_quit);
+        assert_eq!(app.doc_count(), 1);
+    }
+
+    #[test]
+    fn open_file_dialog_opens_on_openfile_none() {
+        let mut app = app_with("hello");
+        assert!(app.open_file_dialog.is_none());
+        app.handle_event(EditorEvent::OpenFile(None));
+        assert!(app.open_file_dialog.is_some());
+        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "");
+    }
+
+    #[test]
+    fn open_file_dialog_push_pop_query() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::OpenFile(None));
+        app.push_open_file_query('/');
+        app.push_open_file_query('t');
+        app.push_open_file_query('m');
+        app.push_open_file_query('p');
+        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "/tmp");
+        app.pop_open_file_query();
+        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "/tm");
+        // Popping more than the query just empties (String::pop).
+        app.pop_open_file_query();
+        app.pop_open_file_query();
+        app.pop_open_file_query();
+        app.pop_open_file_query();
+        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "");
+    }
+
+    #[test]
+    fn open_file_dialog_cancel_drops_dialog() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::OpenFile(None));
+        app.push_open_file_query('/');
+        app.cancel_open_file_dialog();
+        assert!(app.open_file_dialog.is_none());
+    }
+
+    #[test]
+    fn open_file_dialog_submit_empty_cancels() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::OpenFile(None));
+        app.submit_open_file_dialog();
+        assert!(app.open_file_dialog.is_none(), "empty submit = cancel");
+        // Original buffer untouched.
+        assert_eq!(app.active_buffer().to_bytes(), b"hello".to_vec());
+    }
+
+    #[test]
+    fn open_file_dialog_submit_loads_existing_file() {
+        // Write a temp file with known contents.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("the_editor_open_existing_{}.txt", std::process::id()));
+        std::fs::write(&path, b"from disk").unwrap();
+
+        let mut app = app_with("buffer");
+        app.handle_event(EditorEvent::OpenFile(None));
+        app.push_open_file_query(path.to_string_lossy().chars().next().unwrap());
+        for c in path.to_string_lossy().chars().skip(1) {
+            app.push_open_file_query(c);
+        }
+        app.submit_open_file_dialog();
+
+        assert!(app.open_file_dialog.is_none());
+        assert_eq!(app.active_buffer().to_bytes(), b"from disk".to_vec());
+        assert_eq!(app.active_doc().path(), Some(path.as_path()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn open_file_event_with_some_path_loads_directly() {
+        // OpenFile(Some(p)) should bypass the dialog and load directly.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("the_editor_open_some_{}.txt", std::process::id()));
+        std::fs::write(&path, b"hi").unwrap();
+
+        let mut app = app_with("buffer");
+        app.handle_event(EditorEvent::OpenFile(Some(path.clone())));
+        assert!(app.open_file_dialog.is_none(), "Some path skips dialog");
+        assert_eq!(app.active_buffer().to_bytes(), b"hi".to_vec());
+        assert_eq!(app.active_doc().path(), Some(path.as_path()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn open_file_with_nonexistent_path_creates_empty_buffer_with_path() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("the_editor_open_new_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let mut app = app_with("buffer");
+        app.handle_event(EditorEvent::OpenFile(Some(path.clone())));
+        // Buffer is empty (file didn't exist) but path is remembered.
+        assert_eq!(app.active_buffer().to_bytes(), b"".to_vec());
+        assert_eq!(app.active_doc().path(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn close_confirm_drops_open_file_dialog_when_opened() {
+        // Defensive: opening the close-confirm should drop any
+        // open-file dialog so the user isn't asked to navigate
+        // two prompts at once.
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.handle_event(EditorEvent::OpenFile(None));
+        assert!(app.open_file_dialog.is_some());
+        app.handle_event(EditorEvent::CloseDoc);
+        assert!(app.close_confirm.is_some());
+        assert!(app.open_file_dialog.is_none());
+    }
+
+    // ----- modal key interception -----
+
+    fn key(code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn close_confirm_dispatch_esc_cancels() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.handle_event(EditorEvent::CloseDoc);
+        let consumed = app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(consumed);
+        assert!(app.close_confirm.is_none());
+    }
+
+    #[test]
+    fn close_confirm_dispatch_enter_confirms_save() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("the_editor_dispatch_save_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
+            b"hello".to_vec(),
+            path.clone(),
+        ));
+        let mut app = App::new(buf);
+        app.handle_event(EditorEvent::Insert('!'));
+        app.handle_event(EditorEvent::CloseDoc);
+        // Enter on Save (default).
+        app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.close_confirm.is_none());
+        assert!(app.should_quit, "single doc close = quit");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        // Insert('!') at default cursor 0 → "!hello".
+        assert_eq!(contents, "!hello");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn close_confirm_dispatch_y_drops_with_discard() {
+        // Single doc → discard still triggers quit, not removal
+        // (consistent with perform_close_active's behaviour). Use
+        // multi-doc to verify the discard path actually removes.
+        let mut app = app_with_docs(&["alpha", "beta"]);
+        app.handle_event(EditorEvent::Insert('!'));
+        // Active is 0 (alpha). Make sure it's dirty.
+        assert!(app.active_doc().is_dirty());
+        app.handle_event(EditorEvent::CloseDoc);
+        app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.close_confirm.is_none());
+        assert_eq!(app.doc_count(), 1, "multi-doc: discard + close");
+        // The remaining doc should be "beta" (active slid to index 0).
+        assert_eq!(app.active_buffer().to_bytes(), b"beta".to_vec());
+    }
+
+    #[test]
+    fn close_confirm_dispatch_tab_cycles_choice() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.handle_event(EditorEvent::CloseDoc);
+        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Save);
+        app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Discard);
+    }
+
+    #[test]
+    fn open_file_dialog_dispatch_char_appends() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::OpenFile(None));
+        app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Char('b'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "abc");
+    }
+
+    #[test]
+    fn open_file_dialog_dispatch_backspace_pops() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::OpenFile(None));
+        app.push_open_file_query('a');
+        app.push_open_file_query('b');
+        app.push_open_file_query('c');
+        app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "ab");
+    }
+
+    #[test]
+    fn open_file_dialog_dispatch_esc_cancels() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::OpenFile(None));
+        app.dispatch_modal_key(key(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.open_file_dialog.is_none());
     }
 }

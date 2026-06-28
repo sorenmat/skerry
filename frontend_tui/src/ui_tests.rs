@@ -175,4 +175,52 @@ mod tests {
         assert!(!out.contains("gamma.md*") && !out.contains("gamma.md *"),
                 "gamma tab is clean: {out:?}");
     }
+
+    // ----- close-on-dirty prompt rendering -----
+
+    #[test]
+    fn close_confirm_prompt_renders_when_open() {
+        // With a dirty buffer, opening the prompt should add a row
+        // showing "has unsaved changes" and the three options.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("the_editor_render_close_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
+            b"hello".to_vec(),
+            path.clone(),
+        ));
+        let mut app = App::new(buf);
+        app.handle_event(core::EditorEvent::Insert('!'));
+        app.handle_event(core::EditorEvent::CloseDoc);
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(out.contains("has unsaved changes"),
+                "expected prompt copy in: {out:?}");
+        assert!(out.contains("Save"), "expected Save option: {out:?}");
+        assert!(out.contains("Discard"), "expected Discard option: {out:?}");
+        assert!(out.contains("Cancel"), "expected Cancel option: {out:?}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ----- open-file dialog rendering -----
+
+    #[test]
+    fn open_file_dialog_renders_when_open() {
+        let mut app = App::new(Box::new(PieceTableBuffer::new()));
+        app.handle_event(core::EditorEvent::OpenFile(None));
+        app.push_open_file_query('h');
+        app.push_open_file_query('i');
+
+        // 6 rows: header + content + status + dialog row.
+        let backend = TestBackend::new(80, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(out.contains("Open: hi"),
+                "expected typed path 'Open: hi' in output: {out:?}");
+    }
 }

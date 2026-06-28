@@ -8,6 +8,8 @@
 //! frontend because they depend on the frontend's native input types.
 //! The type itself lives here so both frontends see the same shape.
 
+use std::path::PathBuf;
+
 use crate::BytePos;
 
 /// An input event the editor acts on.
@@ -95,6 +97,18 @@ pub enum EditorEvent {
     /// Switch to the previous document in the session, wrapping at
     /// the start. Default binding: Cmd/Ctrl+Shift+Tab.
     PrevDoc,
+    /// Open a file. `None` asks the frontend to show its file picker
+    /// (TUI text input today; a future GUI iteration may swap to a
+    /// native dialog). `Some(path)` loads the path into the active
+    /// document — the buffer is replaced, view state resets, and the
+    /// document stays open. If the path does not exist yet, it is
+    /// treated as a new file (the buffer is empty but `source_path`
+    /// is set so the next Save writes to that path).
+    ///
+    /// Default binding for `None`: Cmd/Ctrl+O. The frontend's
+    /// picker translates the user's selection back into
+    /// `OpenFile(Some(path))`.
+    OpenFile(Option<PathBuf>),
     /// Quit the editor. Frontend may prompt to save dirty buffers.
     Quit,
 }
@@ -184,5 +198,7 @@ mod tests {
         let _ = EditorEvent::CloseDoc;
         let _ = EditorEvent::NextDoc;
         let _ = EditorEvent::PrevDoc;
+        let _ = EditorEvent::OpenFile(None);
+        let _ = EditorEvent::OpenFile(Some(PathBuf::from("/tmp/example.rs")));
     }
 }
