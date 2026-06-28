@@ -414,6 +414,9 @@ impl EditorApp {
             EditorEvent::CycleIndentMode => {
                 self.cycle_indent_mode();
             }
+            EditorEvent::ToggleSoftWrap => {
+                self.toggle_soft_wrap();
+            }
             EditorEvent::InsertTab => {
                 // Indent insertion respects the active doc's indent
                 // mode: spaces (count = tab_width) or a literal tab.
@@ -560,6 +563,19 @@ impl EditorApp {
             _ => (true, 2),
         };
         self.set_indent_mode(next.0, next.1);
+    }
+
+    /// Toggle soft-wrap on the active document. The GUI frontend
+    /// honours this in its renderer — long lines wrap on multiple
+    /// visual rows. Mirrors `frontend_tui::App::toggle_soft_wrap`.
+    pub fn toggle_soft_wrap(&mut self) {
+        let new_value = !self.active_doc().view.soft_wrap;
+        self.active_doc_mut().view.soft_wrap = new_value;
+        self.status_message = Some(if new_value {
+            "Soft-wrap: on".to_string()
+        } else {
+            "Soft-wrap: off (horizontal scroll)".to_string()
+        });
     }
 
     /// If the selection is non-empty, delete it and collapse the cursor

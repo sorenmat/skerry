@@ -99,6 +99,11 @@ pub enum EditorEvent {
     /// tabs (width 4) → spaces:2. No-op when no documents are open.
     /// Default binding: Cmd/Ctrl+I.
     CycleIndentMode,
+    /// Toggle soft-wrap on the active document. Long lines render
+    /// on multiple visual rows when on; horizontal scroll when off.
+    /// No-op when no documents are open. Default binding:
+    /// Cmd/Ctrl+Shift+W (W for "wrap" — Cmd+W is close).
+    ToggleSoftWrap,
     /// Move the cursor. Selection is collapsed to the new position.
     Move(Movement),
     /// Extend the selection by moving one end of it.
@@ -250,6 +255,7 @@ mod tests {
             tab_width: 4,
         };
         let _ = EditorEvent::CycleIndentMode;
+        let _ = EditorEvent::ToggleSoftWrap;
         let _ = EditorEvent::OpenFile(None);
         let _ = EditorEvent::OpenFile(Some(PathBuf::from("/tmp/example.rs")));
     }

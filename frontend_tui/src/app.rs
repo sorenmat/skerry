@@ -498,6 +498,9 @@ impl App {
             EditorEvent::CycleIndentMode => {
                 self.cycle_indent_mode();
             }
+            EditorEvent::ToggleSoftWrap => {
+                self.toggle_soft_wrap();
+            }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
                 self.active_buffer_mut().set_cursor(new_pos);
@@ -850,6 +853,22 @@ impl App {
             _ => (true, 2),
         };
         self.set_indent_mode(next.0, next.1);
+    }
+
+    /// Toggle soft-wrap on the active document and report the
+    /// change. The TUI frontend doesn't yet implement visual line
+    /// wrapping (the GUI does); the toggle still flips the state so
+    /// the setting travels with the document and per-doc configs
+    /// stay consistent across frontends. The TUI shows the new
+    /// state in the status bar so the user knows the toggle worked.
+    pub fn toggle_soft_wrap(&mut self) {
+        let new_value = !self.active_doc().view.soft_wrap;
+        self.active_doc_mut().view.soft_wrap = new_value;
+        self.status_message = Some(if new_value {
+            "Soft-wrap: on".to_string()
+        } else {
+            "Soft-wrap: off (horizontal scroll)".to_string()
+        });
     }
 
     /// Replace the currently-active find match with the replace
@@ -2738,5 +2757,52 @@ mod tests {
         // Switch back — doc 0 still has tabs mode.
         app.handle_event(EditorEvent::PrevDoc);
         assert!(!app.active_doc().view.use_spaces);
+    }
+
+    // ----- soft-wrap toggle -----
+
+    #[test]
+    fn default_soft_wrap_is_off() {
+        let app = app_with("hello");
+        assert!(!app.active_doc().view.soft_wrap);
+    }
+
+    #[test]
+    fn toggle_soft_wrap_flips_state_and_status() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::ToggleSoftWrap);
+        assert!(app.active_doc().view.soft_wrap);
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("on"), "status: {status}");
+        // Toggle again — back to off.
+        app.handle_event(EditorEvent::ToggleSoftWrap);
+        assert!(!app.active_doc().view.soft_wrap);
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("off"), "status: {status}");
+    }
+
+    #[test]
+    fn soft_wrap_is_per_document() {
+        let mut app = app_with_docs(&["x", "y"]);
+        app.active = 0;
+        app.handle_event(EditorEvent::ToggleSoftWrap);
+        assert!(app.active_doc().view.soft_wrap);
+        app.handle_event(EditorEvent::NextDoc);
+        assert!(!app.active_doc().view.soft_wrap);
+        app.handle_event(EditorEvent::PrevDoc);
+        assert!(app.active_doc().view.soft_wrap);
+    }
+
+    #[test]
+    fn ctrl_shift_w_translates_to_toggle_soft_wrap() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let ev = KeyEvent::new(
+            KeyCode::Char('W'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(
+            crate::event::translate_key(ev, None),
+            Some(EditorEvent::ToggleSoftWrap)
+        );
     }
 }

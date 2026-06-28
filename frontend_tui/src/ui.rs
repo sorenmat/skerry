@@ -291,7 +291,16 @@ fn render_status(app: &App) -> Line<'static> {
     let (line, col) = app.active_buffer().pos_to_linecol(cursor_pos)
         .unwrap_or((0, 0));
     let pos = core::format_position(line, col, app.active_buffer().line_count());
-    Line::from(format!(" {message}  |  {pos}"))
+    // Soft-wrap indicator: shows "wrap" when on so the user has a
+    // persistent visual confirmation of the toggle (the status
+    // message itself disappears after a few seconds). Empty when
+    // off so the status bar stays clean in the common case.
+    let wrap_indicator = if app.active_doc().view.soft_wrap {
+        "  |  wrap"
+    } else {
+        ""
+    };
+    Line::from(format!(" {message}  |  {pos}{wrap_indicator}"))
 }
 
 fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {

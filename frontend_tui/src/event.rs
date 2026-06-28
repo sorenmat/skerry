@@ -121,10 +121,12 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
         };
     }
 
-    // Ctrl+Shift-modified keys. Tab cycles the other direction.
+    // Ctrl+Shift-modified keys. Tab cycles the other direction; Shift+W
+    // toggles soft-wrap (W alone is close).
     if ctrl && shift {
         return match key.code {
             KeyCode::Tab => Some(EditorEvent::PrevDoc),
+            KeyCode::Char('W') => Some(EditorEvent::ToggleSoftWrap),
             _ => None,
         };
     }

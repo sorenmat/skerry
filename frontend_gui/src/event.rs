@@ -62,22 +62,29 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::K => Some(EditorEvent::DeleteLine),
             Key::D => Some(EditorEvent::DuplicateLine),
             Key::T => Some(EditorEvent::NewDoc),
-            Key::W => Some(EditorEvent::CloseDoc),
             Key::O => Some(EditorEvent::OpenFile(None)),
+            Key::W => Some(EditorEvent::CloseDoc),
             Key::Tab => Some(EditorEvent::NextDoc),
-            Key::Backspace => Some(EditorEvent::DeleteWordLeft),
-            Key::Delete => Some(EditorEvent::DeleteWordRight),
-            Key::ArrowLeft => Some(movement(Movement::WordLeft, false)),
-            Key::ArrowRight => Some(movement(Movement::WordRight, false)),
-            // C / X / V fall through to clipboard handling.
             _ => None,
         };
     }
 
-    // Ctrl+Shift-modified keys. Tab cycles the other direction.
+    // Cmd/Ctrl+Shift-modified keys. Tab cycles the other direction;
+    // Shift+W toggles soft-wrap (W alone is close).
     if primary && shift {
         return match key {
             Key::Tab => Some(EditorEvent::PrevDoc),
+            Key::W => Some(EditorEvent::ToggleSoftWrap),
+            _ => None,
+        };
+    }
+
+    // Cmd/Ctrl+Shift-modified keys. Tab cycles the other direction;
+    // Shift+W toggles soft-wrap (W alone is close).
+    if primary && shift {
+        return match key {
+            Key::Tab => Some(EditorEvent::PrevDoc),
+            Key::W => Some(EditorEvent::ToggleSoftWrap),
             _ => None,
         };
     }

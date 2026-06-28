@@ -57,6 +57,15 @@ pub struct ViewState {
     /// can use different conventions without re-configuring.
     pub use_spaces: bool,
     pub tab_width: usize,
+    /// Soft-wrap toggle. When true, long lines render on multiple
+    /// visual rows without inserting newlines (the buffer is
+    /// unchanged). When false (the default), long lines extend
+    /// past the right edge and the user scrolls horizontally with
+    /// Shift+wheel (or the GUI's per-doc scroll offset).
+    ///
+    /// Per-document so files with mixed wrap preferences (e.g.
+    /// Markdown prose vs. code) keep their own setting.
+    pub soft_wrap: bool,
 }
 
 impl Default for ViewState {
@@ -67,6 +76,7 @@ impl Default for ViewState {
             last_seen_cursor: 0,
             use_spaces: true,
             tab_width: 4,
+            soft_wrap: false,
         }
     }
 }
