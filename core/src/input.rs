@@ -60,6 +60,25 @@ pub enum EditorEvent {
     FindNext,
     /// Move to the previous match BEFORE the cursor. Wraps around.
     FindPrev,
+    /// Open the replace bar (text input for the replacement string).
+    /// No-op if it's already open. Closing the find bar also closes
+    /// the replace bar — they're a coupled pair. Default binding:
+    /// Cmd/Ctrl+R.
+    ReplaceOpen,
+    /// Close the replace bar.
+    ReplaceClose,
+    /// Replace the replace bar's text and re-run the search. The
+    /// match list is rebuilt incrementally as the user types.
+    ReplaceQueryChanged(String),
+    /// Replace the currently-active find match with the replace
+    /// query, then advance to the next match. No-op when there's no
+    /// current match or the replace query is empty.
+    ReplaceOne,
+    /// Replace every find match with the replace query, as a single
+    /// undo entry. No-op when there are no matches or the replace
+    /// query is empty. v1 has no confirmation prompt — undo if you
+    /// regret it.
+    ReplaceAll,
     /// Move the cursor. Selection is collapsed to the new position.
     Move(Movement),
     /// Extend the selection by moving one end of it.
@@ -198,6 +217,13 @@ mod tests {
         let _ = EditorEvent::CloseDoc;
         let _ = EditorEvent::NextDoc;
         let _ = EditorEvent::PrevDoc;
+        let _ = EditorEvent::FindNext;
+        let _ = EditorEvent::FindPrev;
+        let _ = EditorEvent::ReplaceOpen;
+        let _ = EditorEvent::ReplaceClose;
+        let _ = EditorEvent::ReplaceQueryChanged(String::new());
+        let _ = EditorEvent::ReplaceOne;
+        let _ = EditorEvent::ReplaceAll;
         let _ = EditorEvent::OpenFile(None);
         let _ = EditorEvent::OpenFile(Some(PathBuf::from("/tmp/example.rs")));
     }

@@ -32,6 +32,11 @@ pub fn translate_key(key: KeyEvent, app: Option<&App>) -> Option<EditorEvent> {
 }
 
 fn find_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
+    // Replace bar takes priority — if it's open, all key events go to
+    // the replace bar regardless of whether the find bar is also open.
+    if app.search.replace_bar_open {
+        return replace_bar_translate(key, app);
+    }
     match key.code {
         KeyCode::Esc => Some(EditorEvent::FindClose),
         KeyCode::Enter => {
@@ -56,6 +61,37 @@ fn find_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
     }
 }
 
+/// Translate a key event while the replace bar is open.
+/// Enter = ReplaceOne (replace current + advance), Shift+Enter =
+/// ReplaceAll, Tab = cycle focus between find and replace bars
+/// (handled implicitly because of `bar_open` state — keeping it
+/// simple for v1: Tab does nothing here, the user can Esc the find
+/// bar to refocus on the buffer), Esc = close replace bar (find
+/// bar stays open), Backspace / printable chars edit the replacement.
+fn replace_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
+    match key.code {
+        KeyCode::Esc => Some(EditorEvent::ReplaceClose),
+        KeyCode::Enter => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                Some(EditorEvent::ReplaceAll)
+            } else {
+                Some(EditorEvent::ReplaceOne)
+            }
+        }
+        KeyCode::Backspace => {
+            let mut q = app.search.replace_query.clone();
+            q.pop();
+            Some(EditorEvent::ReplaceQueryChanged(q))
+        }
+        KeyCode::Char(c) => {
+            let mut q = app.search.replace_query.clone();
+            q.push(c);
+            Some(EditorEvent::ReplaceQueryChanged(q))
+        }
+        _ => None,
+    }
+}
+
 fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -69,6 +105,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('y') => Some(EditorEvent::Redo),
             KeyCode::Char('q') => Some(EditorEvent::Quit),
             KeyCode::Char('f') => Some(EditorEvent::FindOpen),
+            KeyCode::Char('r') => Some(EditorEvent::ReplaceOpen),
             KeyCode::Char('k') => Some(EditorEvent::DeleteLine),
             KeyCode::Char('d') => Some(EditorEvent::DuplicateLine),
             KeyCode::Char('t') => Some(EditorEvent::NewDoc),

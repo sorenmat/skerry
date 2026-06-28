@@ -31,16 +31,19 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
     // Vertical chunks: header, content, status, and a row each for the
-    // find bar, close-confirm prompt, and open-file dialog (whichever
-    // are open). Modals take priority: we always reserve their row
-    // when their state is Some so opening/closing one doesn't make the
-    // rest of the layout jump.
+    // find bar, replace bar, close-confirm prompt, and open-file
+    // dialog (whichever are open). Modals take priority: we always
+    // reserve their row when their state is set so opening/closing
+    // one doesn't make the rest of the layout jump.
     let mut constraints = vec![
         Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
     ];
     if app.search.bar_open {
+        constraints.push(Constraint::Length(1));
+    }
+    if app.search.replace_bar_open {
         constraints.push(Constraint::Length(1));
     }
     if app.close_confirm.is_some() {
@@ -73,6 +76,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         f.render_widget(Paragraph::new(find_line), chunks[idx]);
         idx += 1;
     }
+    if app.search.replace_bar_open {
+        let replace_line = render_replace_bar(app);
+        f.render_widget(Paragraph::new(replace_line), chunks[idx]);
+        idx += 1;
+    }
     if let Some(confirm) = &app.close_confirm {
         let line = render_close_confirm(confirm, &app.documents[confirm.doc_index]);
         f.render_widget(Paragraph::new(line), chunks[idx]);
@@ -84,24 +92,32 @@ pub fn render(f: &mut Frame, app: &mut App) {
         // No further modals to index after this.
     }
 
-    // Position the terminal cursor. The find bar and the open-file
-    // dialog both have a text input — they want the cursor at end of
-    // their query string. Close-confirm has no input; cursor stays on
-    // the buffer if visible.
-    if app.search.bar_open {
+    // Position the terminal cursor. The find bar, replace bar, and
+    // open-file dialog all have a text input — they want the cursor
+    // at end of their query string. Close-confirm has no input;
+    // cursor stays on the buffer if visible. Replace bar takes
+    // priority over find bar (it's the more recently opened
+    // modal); find bar takes priority over no modal.
+    if app.search.replace_bar_open {
+        let replace_idx = if app.search.bar_open { 4 } else { 3 };
+        let prefix_chars = " Replace: ".chars().count() as u16;
+        let cursor_x = chunks[replace_idx].x + prefix_chars
+            + app.search.replace_query.chars().count() as u16;
+        f.set_cursor_position(Position::new(cursor_x, chunks[replace_idx].y));
+    } else if app.search.bar_open {
         let find_idx = 3;
         let query_prefix_chars = " Find: ".chars().count() as u16;
         let cursor_x = chunks[find_idx].x + query_prefix_chars
             + app.search.query.chars().count() as u16;
         f.set_cursor_position(Position::new(cursor_x, chunks[find_idx].y));
-    } else if app.open_file_dialog.is_some() {
+    } else if let Some(dialog) = app.open_file_dialog.as_ref() {
         // The dialog row sits at the last allocated chunk — chunks is
         // built in declaration order so the dialog row is always the
         // final entry. `unwrap` is safe: we just rendered into it.
         let last = chunks.last().unwrap();
         let prefix_chars = " Open: ".chars().count() as u16;
         let cursor_x = last.x + prefix_chars
-            + app.open_file_dialog.as_ref().unwrap().query.chars().count() as u16;
+            + dialog.query.chars().count() as u16;
         f.set_cursor_position(Position::new(cursor_x, last.y));
     } else if let Some(pos) = compute_cursor_screen_pos(app, chunks[1]) {
         f.set_cursor_position(pos);
@@ -209,6 +225,20 @@ fn render_find_bar(app: &App) -> Line<'static> {
     };
     let line = format!("/{}", app.search.query);
     Line::from(format!(" Find: {line}{count} "))
+}
+
+/// Render the replace bar (single-line text input for the replacement
+/// string). Cursor is positioned at the end of the query by the caller.
+fn render_replace_bar(app: &App) -> Line<'static> {
+    // Show the bar with the current replacement text. The replace bar
+    // appears below the find bar in the layout; visual order matches
+    // modal hierarchy (find = older, replace = newer focus).
+    let hint = if app.search.replace_query.is_empty() {
+        " (empty)"
+    } else {
+        ""
+    };
+    Line::from(format!(" Replace: {}{hint} ", app.search.replace_query))
 }
 
 fn render_header(app: &App) -> Line<'static> {

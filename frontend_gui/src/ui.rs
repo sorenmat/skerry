@@ -131,9 +131,13 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                 }
                 // Auto-focus the text input so the user can type
                 // immediately. Only focus on first appearance to
-                // avoid stealing focus every frame.
+                // avoid stealing focus every frame. Skip auto-focus
+                // when the replace bar is also open — the user
+                // probably wants to type into the replacement.
                 if response.gained_focus()
-                    || (app.search.query.is_empty() && !response.has_focus())
+                    || (app.search.query.is_empty()
+                        && !response.has_focus()
+                        && !app.search.replace_bar_open)
                 {
                     response.request_focus();
                 }
@@ -153,10 +157,54 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                 if ui.button("Prev").clicked() {
                     app.handle_event(EditorEvent::FindPrev);
                 }
+                let replace_toggle_label = if app.search.replace_bar_open {
+                    "Hide Replace"
+                } else {
+                    "Replace"
+                };
+                if ui.button(replace_toggle_label).clicked() {
+                    if app.search.replace_bar_open {
+                        app.handle_event(EditorEvent::ReplaceClose);
+                    } else {
+                        app.handle_event(EditorEvent::ReplaceOpen);
+                    }
+                }
                 if ui.button("Close").clicked() {
                     app.handle_event(EditorEvent::FindClose);
                 }
             });
+            // Replace row sits directly below the find row. Visible
+            // only when `replace_bar_open` is set. Tab / focus shifts
+            // are implicit via egui's text-input focus model.
+            if app.search.replace_bar_open {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(" Replace: ").strong().monospace());
+                    let mut rq = app.search.replace_query.clone();
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut rq)
+                            .hint_text("replacement")
+                            .desired_width(300.0),
+                    );
+                    if response.changed() {
+                        app.handle_event(EditorEvent::ReplaceQueryChanged(rq));
+                    }
+                    // Auto-focus the replace input the first time the
+                    // bar appears so the user can type immediately.
+                    // Don't steal focus every frame.
+                    if response.gained_focus()
+                        || (app.search.replace_query.is_empty()
+                            && !response.has_focus())
+                    {
+                        response.request_focus();
+                    }
+                    if ui.button("Replace").clicked() {
+                        app.handle_event(EditorEvent::ReplaceOne);
+                    }
+                    if ui.button("Replace All").clicked() {
+                        app.handle_event(EditorEvent::ReplaceAll);
+                    }
+                });
+            }
         });
     }
 

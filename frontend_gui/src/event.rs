@@ -57,6 +57,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::Y => Some(EditorEvent::Redo),
             Key::Q => Some(EditorEvent::Quit),
             Key::F => Some(EditorEvent::FindOpen),
+            Key::R => Some(EditorEvent::ReplaceOpen),
             Key::K => Some(EditorEvent::DeleteLine),
             Key::D => Some(EditorEvent::DuplicateLine),
             Key::T => Some(EditorEvent::NewDoc),
@@ -291,6 +292,14 @@ mod tests {
         assert_eq!(
             translate_event(&key_event(Key::S, true, primary())),
             Some(EditorEvent::Save)
+        );
+    }
+
+    #[test]
+    fn primary_r_opens_replace_bar() {
+        assert_eq!(
+            translate_event(&key_event(Key::R, true, primary())),
+            Some(EditorEvent::ReplaceOpen)
         );
     }
 

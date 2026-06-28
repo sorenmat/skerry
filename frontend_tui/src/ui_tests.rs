@@ -307,4 +307,38 @@ mod tests {
         assert!(out.contains("and foo there"), "line 1 rendered: {out:?}");
         assert!(out.contains("foo again"), "line 2 rendered: {out:?}");
     }
+
+    // ----- replace bar -----
+
+    #[test]
+    fn replace_bar_renders_when_open() {
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(b"hello".to_vec()));
+        let mut app = App::new(buf);
+        app.handle_event(core::EditorEvent::FindOpen);
+        app.handle_event(core::EditorEvent::ReplaceOpen);
+        app.search.replace_query = "world".to_string();
+        // 7 rows: header + content + status + find + replace rows.
+        let backend = TestBackend::new(80, 7);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(out.contains("Find:"), "find bar still renders: {out:?}");
+        assert!(out.contains("Replace: world"),
+                "replace bar with query rendered: {out:?}");
+    }
+
+    #[test]
+    fn replace_bar_shows_empty_placeholder() {
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(b"hello".to_vec()));
+        let mut app = App::new(buf);
+        app.handle_event(core::EditorEvent::FindOpen);
+        app.handle_event(core::EditorEvent::ReplaceOpen);
+        // Replace query is empty — should render with "(empty)" hint.
+        let backend = TestBackend::new(80, 7);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(out.contains("(empty)"),
+                "empty replace shows placeholder: {out:?}");
+    }
 }

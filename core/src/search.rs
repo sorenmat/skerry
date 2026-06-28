@@ -28,6 +28,11 @@ pub const MAX_STORED_MATCHES: usize = 10_000;
 pub struct Search {
     /// Current search query. Empty means "no active search".
     pub query: String,
+    /// Replacement string used by `ReplaceOne` / `ReplaceAll`. Empty
+    /// means "no active replacement"; the App refuses to run a
+    /// replace when this is empty (treats it as a user error rather
+    /// than silently deleting matches).
+    pub replace_query: String,
     /// All match positions (byte offsets, sorted ascending). Trimmed
     /// to `MAX_STORED_MATCHES` if exceeded.
     pub matches: Vec<BytePos>,
@@ -38,6 +43,11 @@ pub struct Search {
     /// across multiple searches so the user can refine and navigate
     /// without re-opening.
     pub bar_open: bool,
+    /// Whether the replace bar is open. Independent from `bar_open`
+    /// — the user can have only one, both, or neither. The replace
+    /// bar is hidden when the find bar is closed (no point editing
+    /// the replacement without an active search).
+    pub replace_bar_open: bool,
 }
 
 impl Search {

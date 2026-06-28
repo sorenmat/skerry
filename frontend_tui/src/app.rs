@@ -439,6 +439,8 @@ impl App {
             }
             EditorEvent::FindClose => {
                 self.search.bar_open = false;
+                // Coupled with replace — closing find also closes replace.
+                self.search.replace_bar_open = false;
             }
             EditorEvent::FindQueryChanged(q) => {
                 self.search.query = q;
@@ -459,6 +461,30 @@ impl App {
                     self.active_buffer_mut().set_cursor(pos);
                     self.active_buffer_mut().set_selection(Selection::collapsed(pos));
                 }
+            }
+            EditorEvent::ReplaceOpen => {
+                // Require the find bar to be open — no point editing the
+                // replacement without an active search visible.
+                if self.search.bar_open {
+                    self.search.replace_bar_open = true;
+                } else {
+                    // Auto-open find too so the user has the full
+                    // find/replace experience.
+                    self.search.bar_open = true;
+                    self.search.replace_bar_open = true;
+                }
+            }
+            EditorEvent::ReplaceClose => {
+                self.search.replace_bar_open = false;
+            }
+            EditorEvent::ReplaceQueryChanged(q) => {
+                self.search.replace_query = q;
+            }
+            EditorEvent::ReplaceOne => {
+                self.replace_one();
+            }
+            EditorEvent::ReplaceAll => {
+                self.replace_all();
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
@@ -754,6 +780,106 @@ impl App {
                 .unwrap_or(len);
         }
         new_byte.min(len)
+    }
+
+    /// Replace the currently-active find match with the replace
+    /// query, then advance to the next match. No-op (with status
+    /// message) when:
+    /// - The find query is empty.
+    /// - The replace query is empty (refusing to silently delete).
+    /// - There's no current match.
+    ///
+    /// The replace happens via `Buffer::replace` which is one atomic
+    /// edit — single undo entry. After the replace, the search is
+    /// refreshed (match positions shifted) and the cursor is moved
+    /// to the next match via `Search::next_after`. If the replacement
+    /// was the last match, the cursor lands at the replacement's
+    /// start position (you see what was changed) and the status bar
+    /// reports "no more matches".
+    pub fn replace_one(&mut self) {
+        if self.search.query.is_empty() {
+            self.status_message = Some("Replace: nothing to find.".to_string());
+            return;
+        }
+        if self.search.replace_query.is_empty() {
+            self.status_message =
+                Some("Replace: replacement is empty — type something first.".to_string());
+            return;
+        }
+        let Some(pos) = self.search.current_match() else {
+            self.status_message = Some("Replace: no current match.".to_string());
+            return;
+        };
+        let end = pos + self.search.query.len();
+        let replacement = self.search.replace_query.clone();
+        if let Err(e) = self.active_buffer_mut().replace(pos..end, &replacement) {
+            self.status_message = Some(format!("Replace error: {e}"));
+            return;
+        }
+        // Refresh matches (positions shifted) — keep cursor at the
+        // replacement start so the user can see what changed.
+        self.search.refresh(&self.active_buffer().to_bytes());
+        self.active_buffer_mut().set_cursor(pos);
+        self.active_buffer_mut().set_selection(Selection::collapsed(pos));
+        // Advance to next match.
+        if let Some(next) = self.search.next_after(pos) {
+            self.active_buffer_mut().set_cursor(next);
+            self.active_buffer_mut().set_selection(Selection::collapsed(next));
+            self.status_message =
+                Some(format!("Replaced 1; advanced to match {}/{}.",
+                             self.search.current.unwrap_or(0) + 1,
+                             self.search.matches.len()));
+        } else {
+            self.status_message = Some("Replaced 1; no more matches.".to_string());
+        }
+    }
+
+    /// Replace every find match with the replace query, as a single
+    /// undo entry. Iterates in reverse so earlier byte offsets stay
+    /// valid as later ones are replaced. No-op (with status message)
+    /// when the queries are empty or there are no matches.
+    ///
+    /// v1: no confirmation prompt. Undo if you regret it.
+    pub fn replace_all(&mut self) {
+        if self.search.query.is_empty() {
+            self.status_message = Some("Replace all: nothing to find.".to_string());
+            return;
+        }
+        if self.search.replace_query.is_empty() {
+            self.status_message =
+                Some("Replace all: replacement is empty — type something first.".to_string());
+            return;
+        }
+        let matches: Vec<usize> = self.search.matches.clone();
+        if matches.is_empty() {
+            self.status_message = Some("Replace all: no matches.".to_string());
+            return;
+        }
+        let count = matches.len();
+        let query_len = self.search.query.len();
+        let replacement = self.search.replace_query.clone();
+        // Wrap in one edit group so the whole batch is a single undo.
+        self.active_buffer_mut().begin_edit_group();
+        let mut err = None;
+        for &pos in matches.iter().rev() {
+            if let Err(e) = self.active_buffer_mut().replace(pos..pos + query_len, &replacement) {
+                err = Some(e);
+                break;
+            }
+        }
+        self.active_buffer_mut().end_edit_group();
+        if let Some(e) = err {
+            self.status_message = Some(format!("Replace error: {e}"));
+            return;
+        }
+        // Refresh matches (positions shifted, count may be different
+        // if replacement contains the query — recursive replace
+        // semantics are deliberately NOT implemented here; we
+        // snapshot matches before any replace so the loop is bounded).
+        self.search.refresh(&self.active_buffer().to_bytes());
+        self.active_buffer_mut().set_cursor(0);
+        self.active_buffer_mut().set_selection(Selection::collapsed(0));
+        self.status_message = Some(format!("Replaced {count} occurrences."));
     }
 
     /// Adjust the active document's `scroll_top_line` so the cursor is
@@ -2301,5 +2427,129 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(app.open_file_dialog.is_none());
+    }
+
+    // ----- find + replace -----
+
+    #[test]
+    fn replace_one_with_empty_query_is_noop() {
+        let mut app = app_with("hello world");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::ReplaceOpen);
+        app.search.replace_query = "earth".to_string();
+        // No find query, so replace should refuse.
+        app.handle_event(EditorEvent::ReplaceOne);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello world".to_vec());
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("nothing to find"), "status: {status}");
+    }
+
+#[test]
+    fn replace_one_with_empty_replace_query_is_noop() {
+        let mut app = app_with("hello world");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::FindQueryChanged("world".to_string()));
+        // Replace query is empty (default).
+        assert!(app.search.replace_query.is_empty());
+        app.handle_event(EditorEvent::ReplaceOne);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello world".to_vec());
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("replacement is empty"), "status: {status}");
+    }
+
+    #[test]
+    fn replace_one_replaces_current_match_and_advances() {
+        let mut app = app_with("foo bar foo baz");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::ReplaceQueryChanged("FOO".to_string()));
+        app.handle_event(EditorEvent::FindQueryChanged("foo".to_string()));
+        // Current match is at byte 0.
+        assert_eq!(app.search.current_match(), Some(0));
+        app.handle_event(EditorEvent::ReplaceOne);
+        // First "foo" became "FOO"; remaining matches shift: was 8, now 8.
+        assert_eq!(app.active_buffer().to_bytes(), b"FOO bar foo baz".to_vec());
+        // Cursor should advance to next match.
+        assert_eq!(app.search.current_match(), Some(8));
+    }
+
+    #[test]
+    fn replace_one_with_shorter_replacement_collapses_match_list() {
+        let mut app = app_with("aaaa bbbb aaaa");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::ReplaceQueryChanged("X".to_string()));
+        app.handle_event(EditorEvent::FindQueryChanged("aaaa".to_string()));
+        assert_eq!(app.search.matches.len(), 2);
+        app.handle_event(EditorEvent::ReplaceOne);
+        // First "aaaa" (4 bytes) became "X" (1 byte). The second
+        // match's offset shifts from 10 to 7.
+        assert_eq!(app.active_buffer().to_bytes(), b"X bbbb aaaa".to_vec());
+        assert_eq!(app.search.current_match(), Some(7));
+    }
+
+    #[test]
+    fn replace_one_with_longer_replacement_shifts_matches() {
+        let mut app = app_with("ab ab cd");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::ReplaceQueryChanged("XYZ".to_string()));
+        app.handle_event(EditorEvent::FindQueryChanged("ab".to_string()));
+        app.handle_event(EditorEvent::ReplaceOne);
+        // First "ab" → "XYZ". Second match shifts 3 bytes right.
+        assert_eq!(app.active_buffer().to_bytes(), b"XYZ ab cd".to_vec());
+        assert_eq!(app.search.current_match(), Some(4));
+    }
+
+    #[test]
+    fn replace_all_replaces_every_match() {
+        let mut app = app_with("foo bar foo baz foo");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::ReplaceQueryChanged("X".to_string()));
+        app.handle_event(EditorEvent::FindQueryChanged("foo".to_string()));
+        assert_eq!(app.search.matches.len(), 3);
+        app.handle_event(EditorEvent::ReplaceAll);
+        assert_eq!(app.active_buffer().to_bytes(), b"X bar X baz X".to_vec());
+        // No matches remain.
+        assert!(app.search.matches.is_empty());
+    }
+
+    #[test]
+    fn replace_all_with_no_matches_is_noop() {
+        let mut app = app_with("hello world");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::ReplaceQueryChanged("X".to_string()));
+        app.handle_event(EditorEvent::FindQueryChanged("xyz".to_string()));
+        app.handle_event(EditorEvent::ReplaceAll);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello world".to_vec());
+    }
+
+    #[test]
+    fn replace_open_also_opens_find_bar_if_closed() {
+        let mut app = app_with("hello");
+        // Both bars closed.
+        assert!(!app.search.bar_open);
+        assert!(!app.search.replace_bar_open);
+        app.handle_event(EditorEvent::ReplaceOpen);
+        assert!(app.search.bar_open, "find bar should auto-open");
+        assert!(app.search.replace_bar_open);
+    }
+
+    #[test]
+    fn find_close_drops_replace_bar() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::ReplaceOpen);
+        assert!(app.search.replace_bar_open);
+        app.handle_event(EditorEvent::FindClose);
+        assert!(!app.search.replace_bar_open, "coupled: closing find closes replace");
+    }
+
+    #[test]
+    fn ctrl_r_translates_to_replace_open() {
+        // Default binding for ReplaceOpen is Ctrl+R.
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let ev = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(
+            crate::event::translate_key(ev, None),
+            Some(EditorEvent::ReplaceOpen)
+        );
     }
 }

@@ -368,6 +368,8 @@ impl EditorApp {
             }
             EditorEvent::FindClose => {
                 self.search.bar_open = false;
+                // Coupled with replace — closing find also closes replace.
+                self.search.replace_bar_open = false;
             }
             EditorEvent::FindQueryChanged(q) => {
                 self.search.query = q;
@@ -393,6 +395,28 @@ impl EditorApp {
                     self.active_buffer_mut().set_selection(Selection::collapsed(pos));
                     // See FindNext.
                 }
+            }
+            EditorEvent::ReplaceOpen => {
+                // Require the find bar to be open — no point editing the
+                // replacement without an active search visible.
+                if self.search.bar_open {
+                    self.search.replace_bar_open = true;
+                } else {
+                    self.search.bar_open = true;
+                    self.search.replace_bar_open = true;
+                }
+            }
+            EditorEvent::ReplaceClose => {
+                self.search.replace_bar_open = false;
+            }
+            EditorEvent::ReplaceQueryChanged(q) => {
+                self.search.replace_query = q;
+            }
+            EditorEvent::ReplaceOne => {
+                self.replace_one();
+            }
+            EditorEvent::ReplaceAll => {
+                self.replace_all();
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
@@ -499,6 +523,83 @@ impl EditorApp {
                 false
             }
         }
+    }
+
+    /// Replace the currently-active find match with the replace query,
+    /// then advance to the next match. Mirrors
+    /// `frontend_tui::App::replace_one`.
+    pub fn replace_one(&mut self) {
+        if self.search.query.is_empty() {
+            self.status_message = Some("Replace: nothing to find.".to_string());
+            return;
+        }
+        if self.search.replace_query.is_empty() {
+            self.status_message =
+                Some("Replace: replacement is empty — type something first.".to_string());
+            return;
+        }
+        let Some(pos) = self.search.current_match() else {
+            self.status_message = Some("Replace: no current match.".to_string());
+            return;
+        };
+        let end = pos + self.search.query.len();
+        let replacement = self.search.replace_query.clone();
+        if let Err(e) = self.active_buffer_mut().replace(pos..end, &replacement) {
+            self.status_message = Some(format!("Replace error: {e}"));
+            return;
+        }
+        self.search.refresh(&self.active_buffer().to_bytes());
+        self.active_buffer_mut().set_cursor(pos);
+        self.active_buffer_mut().set_selection(Selection::collapsed(pos));
+        if let Some(next) = self.search.next_after(pos) {
+            self.active_buffer_mut().set_cursor(next);
+            self.active_buffer_mut().set_selection(Selection::collapsed(next));
+            self.status_message =
+                Some(format!("Replaced 1; advanced to match {}/{}.",
+                             self.search.current.unwrap_or(0) + 1,
+                             self.search.matches.len()));
+        } else {
+            self.status_message = Some("Replaced 1; no more matches.".to_string());
+        }
+    }
+
+    /// Replace every find match with the replace query, as a single
+    /// undo entry. Mirrors `frontend_tui::App::replace_all`.
+    pub fn replace_all(&mut self) {
+        if self.search.query.is_empty() {
+            self.status_message = Some("Replace all: nothing to find.".to_string());
+            return;
+        }
+        if self.search.replace_query.is_empty() {
+            self.status_message =
+                Some("Replace all: replacement is empty — type something first.".to_string());
+            return;
+        }
+        let matches: Vec<usize> = self.search.matches.clone();
+        if matches.is_empty() {
+            self.status_message = Some("Replace all: no matches.".to_string());
+            return;
+        }
+        let count = matches.len();
+        let query_len = self.search.query.len();
+        let replacement = self.search.replace_query.clone();
+        self.active_buffer_mut().begin_edit_group();
+        let mut err = None;
+        for &pos in matches.iter().rev() {
+            if let Err(e) = self.active_buffer_mut().replace(pos..pos + query_len, &replacement) {
+                err = Some(e);
+                break;
+            }
+        }
+        self.active_buffer_mut().end_edit_group();
+        if let Some(e) = err {
+            self.status_message = Some(format!("Replace error: {e}"));
+            return;
+        }
+        self.search.refresh(&self.active_buffer().to_bytes());
+        self.active_buffer_mut().set_cursor(0);
+        self.active_buffer_mut().set_selection(Selection::collapsed(0));
+        self.status_message = Some(format!("Replaced {count} occurrences."));
     }
 
     /// Compute the byte position a movement should land on. Identical
