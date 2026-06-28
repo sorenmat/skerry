@@ -358,6 +358,18 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
         Some(selection.range())
     };
 
+    // Find-match highlight range. `current_match()` returns the start
+    // byte; the match length equals the query byte length (memchr
+    // operates on raw bytes, so start + query.len() is the correct
+    // end). Visible only when there's no selection — selection
+    // preempts it to keep the GUI simple (no need to layer two
+    // rectangle styles on the same span). Same precedence rule as
+    // the TUI frontend.
+    let match_range: Option<std::ops::Range<usize>> = app
+        .search
+        .current_match()
+        .map(|pos| pos..pos.saturating_add(app.search.query.len()));
+
     let visuals = ui.style().visuals.clone();
     let prefix_text = format!("{:>width$} \u{2502} ", 1, width = gutter_width);
     let prefix_chars = prefix_text.chars().count();
@@ -446,9 +458,45 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                     }
                 });
 
-                match sel_in_line {
-                    None => {
-                        // No selection on this line — draw the whole line.
+                // Compute match-in-this-line when there's no active
+                // selection. Same shape as `sel_in_line` (a char-col
+                // range for the visible window of this line) but for
+                // the find-match highlight. Skipped when a selection
+                // is present so the user can see their selection
+                // without the match painting over it.
+                let match_in_line: Option<(usize, usize)> = if sel_in_line.is_none() {
+                    match_range.as_ref().and_then(|mr| {
+                        let line_byte_range =
+                            app.active_buffer().line_byte_range(line_idx)?;
+                        let intersect = selection_in_line(
+                            line_byte_range.clone(),
+                            mr.clone(),
+                        )?;
+                        let start = line_byte_range.start;
+                        let total_chars = line_text.chars().count();
+                        let take_lo = byte_to_char_col(
+                            &line_text,
+                            intersect.start - start,
+                        )
+                        .min(total_chars);
+                        let take_hi = byte_to_char_col(
+                            &line_text,
+                            intersect.end - start,
+                        )
+                        .min(total_chars);
+                        if take_hi > take_lo {
+                            Some((take_lo, take_hi))
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
+
+                match (sel_in_line, match_in_line) {
+                    (None, None) => {
+                        // No selection, no match — draw the whole line.
                         painter.text(
                             egui::pos2(text_x, y),
                             egui::Align2::LEFT_TOP,
@@ -457,7 +505,68 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                             visuals.text_color(),
                         );
                     }
-                    Some((take_lo, take_hi)) => {
+                    (None, Some((take_lo, take_hi))) => {
+                        // Match highlight: three segments with the
+                        // match's character range styled. Same
+                        // sub-pixel-safe layout as the selection branch
+                        // — each segment drawn exactly once at an
+                        // integer-rounded x.
+                        let before: String =
+                            line_text.chars().take(take_lo).collect();
+                        let matched: String = line_text
+                            .chars()
+                            .skip(take_lo)
+                            .take(take_hi - take_lo)
+                            .collect();
+                        let after: String =
+                            line_text.chars().skip(take_hi).collect();
+
+                        let match_x = (text_x + width_of(&before)).round();
+                        let match_w = width_of(&matched).round();
+
+                        // Match colour: distinct from the selection
+                        // bg so the user can tell them apart at a
+                        // glance. Amber/yellow pairs well with the
+                        // default egui dark theme.
+                        let match_color = egui::Color32::from_rgb(200, 160, 40);
+
+                        if !before.is_empty() {
+                            painter.text(
+                                egui::pos2(text_x, y),
+                                egui::Align2::LEFT_TOP,
+                                before,
+                                font_id.clone(),
+                                visuals.text_color(),
+                            );
+                        }
+
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(match_x, y),
+                                egui::vec2(match_w, line_height),
+                            ),
+                            0.0,
+                            match_color,
+                        );
+                        painter.text(
+                            egui::pos2(match_x, y),
+                            egui::Align2::LEFT_TOP,
+                            matched,
+                            font_id.clone(),
+                            visuals.text_color(),
+                        );
+
+                        if !after.is_empty() {
+                            painter.text(
+                                egui::pos2((match_x + match_w).round(), y),
+                                egui::Align2::LEFT_TOP,
+                                after,
+                                font_id.clone(),
+                                visuals.text_color(),
+                            );
+                        }
+                    }
+                    (Some((take_lo, take_hi)), _) => {
                         // Three segments: before / selected / after.
                         // Each is drawn exactly once in the normal text color.
                         let before: String =

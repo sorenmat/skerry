@@ -223,4 +223,42 @@ mod tests {
         assert!(out.contains("Open: hi"),
                 "expected typed path 'Open: hi' in output: {out:?}");
     }
+
+    // ----- find-match highlight -----
+
+    #[test]
+    fn find_match_is_present_when_search_has_results() {
+        // Smoke test: rendering with an active search query that has
+        // a match does not panic and produces output containing the
+        // matched word. (We can't easily inspect Style objects from a
+        // TestBackend, but we can confirm the layout didn't blow up.)
+        let buf: Box<dyn Buffer> =
+            Box::new(PieceTableBuffer::from_bytes(b"the quick brown fox".to_vec()));
+        let mut app = App::new(buf);
+        app.handle_event(core::EditorEvent::FindQueryChanged("quick".to_string()));
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(out.contains("quick"),
+                "matched word should appear in rendered output: {out:?}");
+        assert!(out.contains("the"), "line text still rendered: {out:?}");
+    }
+
+    #[test]
+    fn find_match_persists_across_multiple_finds() {
+        // FindNext on a buffer with two matches should highlight the
+        // second match. Visual inspection isn't possible from
+        // TestBackend, but `current_match()` reports the byte
+        // position — we use that as a proxy to confirm the renderer
+        // would have something to highlight.
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
+            b"foo bar foo baz".to_vec(),
+        ));
+        let mut app = App::new(buf);
+        app.handle_event(core::EditorEvent::FindQueryChanged("foo".to_string()));
+        assert_eq!(app.search.current_match(), Some(0));
+        app.handle_event(core::EditorEvent::FindNext);
+        assert_eq!(app.search.current_match(), Some(8));
+    }
 }

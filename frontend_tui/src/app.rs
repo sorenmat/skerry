@@ -586,8 +586,7 @@ impl App {
                 if line == 0 {
                     0
                 } else {
-                    self.active_buffer().linecol_to_pos(line - 1, col)
-                        .unwrap_or(pos)
+                    self.clamped_linecol_to_pos(line - 1, col)
                 }
             }
             Movement::Down => {
@@ -596,8 +595,7 @@ impl App {
                 if line + 1 >= self.active_buffer().line_count() {
                     pos
                 } else {
-                    self.active_buffer().linecol_to_pos(line + 1, col)
-                        .unwrap_or(pos)
+                    self.clamped_linecol_to_pos(line + 1, col)
                 }
             }
             Movement::PageUp => {
@@ -608,8 +606,7 @@ impl App {
                     0
                 } else {
                     let target = line.saturating_sub(page);
-                    self.active_buffer().linecol_to_pos(target, col)
-                        .unwrap_or(pos)
+                    self.clamped_linecol_to_pos(target, col)
                 }
             }
             Movement::PageDown => {
@@ -618,8 +615,7 @@ impl App {
                 let page = self.viewport_lines();
                 let last = self.active_buffer().line_count().saturating_sub(1);
                 let target = (line + page).min(last);
-                self.active_buffer().linecol_to_pos(target, col)
-                    .unwrap_or(pos)
+                self.clamped_linecol_to_pos(target, col)
             }
             Movement::WordLeft => self.skip_word_left_from(pos),
             Movement::WordRight => self.skip_word_right_from(pos),
@@ -638,6 +634,29 @@ impl App {
             Movement::DocumentStart => 0,
             Movement::DocumentEnd => len,
         }
+    }
+
+    /// Resolve `(line, col)` to a byte position, clamping `col` to the
+    /// target line's actual byte length when it exceeds the line.
+    /// Without this clamp, `linecol_to_pos` returns `None` for a col
+    /// past the end of a line, and the vertical-movement handlers
+    /// would silently fail to move the cursor when the target line
+    /// is shorter than the current column (e.g. cursor at column 30
+    /// on a long line, Up to a 5-char line above — should land at
+    /// the end of that 5-char line, not stay put).
+    fn clamped_linecol_to_pos(&self, line: usize, col: usize) -> usize {
+        let Some(range) = self.active_buffer().line_byte_range(line) else {
+            // Line is out of range — fall back to buffer end. This
+            // shouldn't happen in normal Up/Down/PageUp/PageDown
+            // because the caller bounds-checks, but we don't want a
+            // panic if it ever does.
+            return self.active_buffer().len();
+        };
+        let line_byte_len = range.end - range.start;
+        let clamped_col = col.min(line_byte_len);
+        self.active_buffer()
+            .linecol_to_pos(line, clamped_col)
+            .unwrap_or(range.end)
     }
 
     /// Number of lines that fit in the current viewport. Falls back to
@@ -1487,6 +1506,105 @@ mod tests {
         app.handle_event(EditorEvent::FindQueryChanged("xyz".to_string()));
         assert!(app.search.matches.is_empty());
         assert!(app.search.current.is_none());
+    }
+
+    // ----- Up/Down over short lines -----
+
+    #[test]
+    fn up_arrow_clamps_to_end_of_shorter_line_above() {
+        // Buffer with one long line (30 chars) and a 5-char line above
+        // it. Cursor at col 25 on the long line; pressing Up should
+        // land at end of the 5-char line (col 5), not stay at col 25
+        // and not jump to col 0. This was the bug: `linecol_to_pos`
+        // returned None when col exceeded the target line's length,
+        // and the movement code fell back to the current position.
+        let mut app = app_with("hello\nthis is a much longer line");
+        // Move to line 1, column 25 (well past "hello" length of 5).
+        let pos = app.active_buffer().linecol_to_pos(1, 25).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        // Up should land at line 0 column 5 (end of "hello").
+        app.handle_event(EditorEvent::Move(Movement::Up));
+        let (line, col) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
+        assert_eq!(line, 0);
+        assert_eq!(col, 5, "should clamp to end of short line above");
+    }
+
+    #[test]
+    fn down_arrow_clamps_to_end_of_shorter_line_below() {
+        // Mirror of the up-arrow test: short line above, long line
+        // below. Cursor at col 4 on "hello"; Down should land at
+        // col 4 on the long line below (column 4 fits there).
+        let mut app = app_with("hello\nthis is a much longer line");
+        let pos = app.active_buffer().linecol_to_pos(0, 4).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.handle_event(EditorEvent::Move(Movement::Down));
+        let (line, col) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
+        assert_eq!(line, 1);
+        assert_eq!(col, 4);
+    }
+
+    #[test]
+    fn down_arrow_clamps_when_target_line_shorter() {
+        // Long line above, short line below. Cursor at col 25 on the
+        // long line; Down should land at col 5 (end of "hello").
+        let mut app = app_with("this is a much longer line\nhello");
+        let pos = app.active_buffer().linecol_to_pos(0, 25).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.handle_event(EditorEvent::Move(Movement::Down));
+        let (line, col) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
+        assert_eq!(line, 1);
+        assert_eq!(col, 5);
+    }
+
+    #[test]
+    fn page_up_clamps_when_target_line_shorter() {
+        // PageUp moves multiple lines at once — clamping must still
+        // apply. Build a buffer with a long last line and several
+        // short lines above. PageUp from line 5 col 25 should land
+        // at line 0 col 1 (end of "a"), not stay at col 25.
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
+            b"a\nb\nc\nd\ne\nthis is a long final line".to_vec(),
+        ));
+        let mut app = App::new(buf);
+        app.viewport_height = 5;
+        let pos = app.active_buffer().linecol_to_pos(5, 25).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        // PageUp with viewport 5 → target line 0.
+        app.handle_event(EditorEvent::Move(Movement::PageUp));
+        let (line, col) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
+        assert_eq!(line, 0);
+        assert_eq!(col, 1, "should clamp to end of 'a' (length 1)");
+    }
+
+    #[test]
+    fn page_down_clamps_when_target_line_shorter() {
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
+            b"a\nb\nc\nd\nthis is a long final line".to_vec(),
+        ));
+        let mut app = App::new(buf);
+        app.viewport_height = 5;
+        let pos = app.active_buffer().linecol_to_pos(0, 1).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        // PageDown with viewport 5 → target line min(0+5, 4) = 4.
+        app.handle_event(EditorEvent::Move(Movement::PageDown));
+        let (line, col) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
+        assert_eq!(line, 4);
+        assert_eq!(col, 1, "col 1 fits on the long last line");
     }
 
     // ----- PageUp / PageDown -----
