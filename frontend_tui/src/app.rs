@@ -326,18 +326,24 @@ impl App {
                 // Selection-aware: a non-collapsed selection is replaced
                 // by the inserted character (matches every editor since
                 // 1995).
-                self.delete_selection_if_any();
-                let pos = self.active_buffer().cursor();
-                let s = ch.to_string();
-                match self.active_buffer_mut().insert(pos, &s) {
-                    Ok(new_pos) => {
-                        // Buffer advances its own cursor; ensure consistency.
-                        self.active_buffer_mut().set_cursor(new_pos);
-                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
-                        self.status_message = None;
-                    }
-                    Err(e) => self.status_message = Some(format!("insert error: {e}")),
-                }
+                self.insert_text(&ch.to_string());
+            }
+            EditorEvent::InsertTab => {
+                // Indent insertion respects the active doc's indent
+                // mode: spaces (count = tab_width) or a literal tab.
+                // Reuses the same selection-aware path as Insert so
+                // selecting some text and pressing Tab replaces it
+                // with the indent — matches Sublime / VSCode / IntelliJ.
+                let (use_spaces, tab_width) = {
+                    let v = &self.active_doc().view;
+                    (v.use_spaces, v.tab_width)
+                };
+                let text = if use_spaces {
+                    " ".repeat(tab_width)
+                } else {
+                    "\t".to_string()
+                };
+                self.insert_text(&text);
             }
             EditorEvent::DeleteLeft => {
                 // Selection-aware: delete the selection first, fall back
@@ -486,6 +492,12 @@ impl App {
             EditorEvent::ReplaceAll => {
                 self.replace_all();
             }
+            EditorEvent::SetIndentMode { use_spaces, tab_width } => {
+                self.set_indent_mode(use_spaces, tab_width);
+            }
+            EditorEvent::CycleIndentMode => {
+                self.cycle_indent_mode();
+            }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
                 self.active_buffer_mut().set_cursor(new_pos);
@@ -516,16 +528,18 @@ impl App {
             }
             EditorEvent::Paste(text) => {
                 // Selection-aware paste: replace the selection if any,
-                // otherwise insert at cursor.
-                self.delete_selection_if_any();
-                let pos = self.active_buffer().cursor();
-                match self.active_buffer_mut().insert(pos, &text) {
-                    Ok(new_pos) => {
-                        self.active_buffer_mut().set_cursor(new_pos);
-                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
-                        self.status_message = None;
+                // otherwise insert at cursor. Goes through the shared
+                // insert_text path so error / cursor-update behaviour
+                // matches Insert and InsertTab.
+                self.insert_text(&text);
+                // insert_text reports generic "insert error" on
+                // failure; for paste the conventional label is
+                // "paste error" so swap it. We only swap when the
+                // insert actually failed.
+                if let Some(msg) = self.status_message.as_deref() {
+                    if msg.contains("insert error") {
+                        self.status_message = Some(msg.replace("insert error", "paste error"));
                     }
-                    Err(e) => self.status_message = Some(format!("paste error: {e}")),
                 }
             }
             EditorEvent::Save => match self.active_buffer_mut().save() {
@@ -568,6 +582,24 @@ impl App {
             EditorEvent::Quit => {
                 self.should_quit = true;
             }
+        }
+    }
+
+    /// Shared insertion path used by `Insert(char)` and `InsertTab`.
+    /// Selection-aware: a non-collapsed selection is replaced by the
+    /// inserted text (matches every editor since 1995). Centralised
+    /// here so `Paste` and `InsertTab` don't drift in their error /
+    /// cursor-update behaviour.
+    fn insert_text(&mut self, text: &str) {
+        self.delete_selection_if_any();
+        let pos = self.active_buffer().cursor();
+        match self.active_buffer_mut().insert(pos, text) {
+            Ok(new_pos) => {
+                self.active_buffer_mut().set_cursor(new_pos);
+                self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                self.status_message = None;
+            }
+            Err(e) => self.status_message = Some(format!("insert error: {e}")),
         }
     }
 
@@ -780,6 +812,44 @@ impl App {
                 .unwrap_or(len);
         }
         new_byte.min(len)
+    }
+
+    /// Set the indent mode for the active document and report the
+    /// change in the status bar. Indent mode controls what the Tab
+    /// key inserts (spaces vs tab character) and how many spaces per
+    /// indent level. Per-document so opening a file with different
+    /// conventions doesn't fight the user's preferred mode.
+    pub fn set_indent_mode(&mut self, use_spaces: bool, tab_width: usize) {
+        // Clamp tab_width to a sensible range so a stray config
+        // value can't break the renderer (and the status line
+        // formatting). 1..=16 covers every indent style in the wild.
+        let tab_width = tab_width.clamp(1, 16);
+        self.active_doc_mut().view.use_spaces = use_spaces;
+        self.active_doc_mut().view.tab_width = tab_width;
+        let mode = if use_spaces {
+            format!("spaces:{tab_width}")
+        } else {
+            format!("tabs (width {tab_width})")
+        };
+        self.status_message = Some(format!("Indent: {mode}"));
+    }
+
+    /// Cycle through the four common indent presets in order:
+    /// spaces:2 → spaces:4 → spaces:8 → tabs (width 4) → spaces:2.
+    /// Wired to Cmd/Ctrl+I in both frontends so the user can flip
+    /// modes without remembering the magic keybinding.
+    pub fn cycle_indent_mode(&mut self) {
+        let v = &self.active_doc().view;
+        let next = match (v.use_spaces, v.tab_width) {
+            (true, 2) => (true, 4),
+            (true, 4) => (true, 8),
+            (true, 8) => (false, 4),
+            (false, _) => (true, 2),
+            // Other widths (e.g. from a future config) collapse to the
+            // first preset so the cycle always lands somewhere sane.
+            _ => (true, 2),
+        };
+        self.set_indent_mode(next.0, next.1);
     }
 
     /// Replace the currently-active find match with the replace
@@ -2551,5 +2621,122 @@ mod tests {
             crate::event::translate_key(ev, None),
             Some(EditorEvent::ReplaceOpen)
         );
+    }
+
+    // ----- indent settings -----
+
+    #[test]
+    fn default_indent_is_spaces_4() {
+        let app = app_with("hello");
+        assert!(app.active_doc().view.use_spaces);
+        assert_eq!(app.active_doc().view.tab_width, 4);
+    }
+
+    #[test]
+    fn tab_with_default_settings_inserts_4_spaces() {
+        let mut app = app_with("");
+        app.handle_event(EditorEvent::InsertTab);
+        assert_eq!(app.active_buffer().to_bytes(), b"    ".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 4);
+    }
+
+    #[test]
+    fn tab_with_use_spaces_8_inserts_8_spaces() {
+        let mut app = app_with("");
+        app.active_doc_mut().view.use_spaces = true;
+        app.active_doc_mut().view.tab_width = 8;
+        app.handle_event(EditorEvent::InsertTab);
+        assert_eq!(app.active_buffer().to_bytes(), b"        ".to_vec());
+    }
+
+    #[test]
+    fn tab_with_use_spaces_false_inserts_tab_char() {
+        let mut app = app_with("");
+        app.active_doc_mut().view.use_spaces = false;
+        app.active_doc_mut().view.tab_width = 4;
+        app.handle_event(EditorEvent::InsertTab);
+        assert_eq!(app.active_buffer().to_bytes(), b"\t".to_vec());
+    }
+
+    #[test]
+    fn tab_replaces_selection_with_indent() {
+        let mut app = app_with("hello world");
+        app.active_buffer_mut().set_selection(Selection {
+            anchor: 0,
+            head: 5,
+        });
+        app.handle_event(EditorEvent::InsertTab);
+        // "hello" replaced with 4 spaces.
+        assert_eq!(app.active_buffer().to_bytes(), b"     world".to_vec());
+    }
+
+    #[test]
+    fn set_indent_mode_updates_view_and_status() {
+        let mut app = app_with("");
+        app.handle_event(EditorEvent::SetIndentMode {
+            use_spaces: false,
+            tab_width: 4,
+        });
+        assert!(!app.active_doc().view.use_spaces);
+        assert_eq!(app.active_doc().view.tab_width, 4);
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("tabs"), "status: {status}");
+    }
+
+    #[test]
+    fn set_indent_mode_clamps_tab_width() {
+        // Stray / pathological widths should not break the renderer.
+        let mut app = app_with("");
+        app.handle_event(EditorEvent::SetIndentMode {
+            use_spaces: true,
+            tab_width: 0,
+        });
+        assert_eq!(app.active_doc().view.tab_width, 1, "clamp to >= 1");
+        app.handle_event(EditorEvent::SetIndentMode {
+            use_spaces: true,
+            tab_width: 1000,
+        });
+        assert_eq!(app.active_doc().view.tab_width, 16, "clamp to <= 16");
+    }
+
+    #[test]
+    fn cycle_indent_mode_walks_presets() {
+        let mut app = app_with("");
+        // Default: spaces:4. Cycle: spaces:4 -> spaces:8.
+        app.handle_event(EditorEvent::CycleIndentMode);
+        let v = &app.active_doc().view;
+        assert_eq!((v.use_spaces, v.tab_width), (true, 8));
+        // spaces:8 -> tabs (width 4).
+        app.handle_event(EditorEvent::CycleIndentMode);
+        let v = &app.active_doc().view;
+        assert_eq!((v.use_spaces, v.tab_width), (false, 4));
+        // tabs -> spaces:2.
+        app.handle_event(EditorEvent::CycleIndentMode);
+        let v = &app.active_doc().view;
+        assert_eq!((v.use_spaces, v.tab_width), (true, 2));
+        // spaces:2 -> spaces:4 (back to default).
+        app.handle_event(EditorEvent::CycleIndentMode);
+        let v = &app.active_doc().view;
+        assert_eq!((v.use_spaces, v.tab_width), (true, 4));
+    }
+
+    #[test]
+    fn indent_settings_are_per_document() {
+        // Different docs can have different indent modes — useful
+        // when editing a mix of Makefile (tabs) and Python (4
+        // spaces) in one session.
+        let mut app = app_with_docs(&["x", "y"]);
+        app.active = 0;
+        app.handle_event(EditorEvent::SetIndentMode {
+            use_spaces: false,
+            tab_width: 4,
+        });
+        // Switch to doc 1 — its mode should still be the default.
+        app.handle_event(EditorEvent::NextDoc);
+        assert!(app.active_doc().view.use_spaces);
+        assert_eq!(app.active_doc().view.tab_width, 4);
+        // Switch back — doc 0 still has tabs mode.
+        app.handle_event(EditorEvent::PrevDoc);
+        assert!(!app.active_doc().view.use_spaces);
     }
 }

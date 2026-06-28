@@ -106,6 +106,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('q') => Some(EditorEvent::Quit),
             KeyCode::Char('f') => Some(EditorEvent::FindOpen),
             KeyCode::Char('r') => Some(EditorEvent::ReplaceOpen),
+            KeyCode::Char('i') => Some(EditorEvent::CycleIndentMode),
             KeyCode::Char('k') => Some(EditorEvent::DeleteLine),
             KeyCode::Char('d') => Some(EditorEvent::DuplicateLine),
             KeyCode::Char('t') => Some(EditorEvent::NewDoc),
@@ -144,7 +145,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
         KeyCode::Backspace => Some(EditorEvent::DeleteLeft),
         KeyCode::Delete => Some(EditorEvent::DeleteRight),
         KeyCode::Enter => Some(EditorEvent::Insert('\n')),
-        KeyCode::Tab => Some(EditorEvent::Insert('\t')),
+        KeyCode::Tab => Some(EditorEvent::InsertTab),
         KeyCode::Esc => Some(EditorEvent::Quit),
         KeyCode::Left if shift => Some(EditorEvent::ScrollLeft),
         KeyCode::Right if shift => Some(EditorEvent::ScrollRight),
@@ -544,9 +545,21 @@ mod tests {
 
     #[test]
     fn plain_tab_inserts_indent_not_doc_event() {
+        // Plain Tab (no modifier) emits InsertTab so the App can
+        // resolve it per the active document's indent mode (spaces
+        // vs tab character). Used to emit Insert('\t'); refactored
+        // when indent settings landed.
         assert_eq!(
             translate_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None),
-            Some(EditorEvent::Insert('\t'))
+            Some(EditorEvent::InsertTab)
+        );
+    }
+
+    #[test]
+    fn ctrl_i_translates_to_cycle_indent_mode() {
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL), None),
+            Some(EditorEvent::CycleIndentMode)
         );
     }
 }

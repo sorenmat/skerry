@@ -18,6 +18,11 @@ pub enum EditorEvent {
     /// Insert a character at the cursor position. If the selection is
     /// non-empty, the selection is replaced by the inserted character.
     Insert(char),
+    /// Insert an indent at the cursor. The App resolves this to
+    /// either a literal `\t` or `tab_width` space characters based
+    /// on the active document's indent mode (see `ViewState`).
+    /// Selection-replacement is the same as `Insert`.
+    InsertTab,
     /// Delete the character to the left of the cursor (Backspace). If
     /// the selection is non-empty, the entire selection is deleted
     /// instead — same as `DeleteSelection`.
@@ -79,6 +84,21 @@ pub enum EditorEvent {
     /// query is empty. v1 has no confirmation prompt — undo if you
     /// regret it.
     ReplaceAll,
+    /// Set the indent mode for the active document. When `use_spaces`
+    /// is true, the Tab key inserts `tab_width` spaces; when false,
+    /// it inserts a single `\t`. Affects Tab-key behaviour only —
+    /// existing `\t` characters in the buffer are not re-rendered.
+    /// Default binding: Cmd/Ctrl+I cycles through
+    /// (spaces:2, spaces:4, spaces:8, tabs).
+    SetIndentMode {
+        use_spaces: bool,
+        tab_width: usize,
+    },
+    /// Cycle the indent mode of the active document. Walks through
+    /// the four common presets: spaces:2 → spaces:4 → spaces:8 →
+    /// tabs (width 4) → spaces:2. No-op when no documents are open.
+    /// Default binding: Cmd/Ctrl+I.
+    CycleIndentMode,
     /// Move the cursor. Selection is collapsed to the new position.
     Move(Movement),
     /// Extend the selection by moving one end of it.
@@ -219,11 +239,17 @@ mod tests {
         let _ = EditorEvent::PrevDoc;
         let _ = EditorEvent::FindNext;
         let _ = EditorEvent::FindPrev;
+        let _ = EditorEvent::InsertTab;
         let _ = EditorEvent::ReplaceOpen;
         let _ = EditorEvent::ReplaceClose;
         let _ = EditorEvent::ReplaceQueryChanged(String::new());
         let _ = EditorEvent::ReplaceOne;
         let _ = EditorEvent::ReplaceAll;
+        let _ = EditorEvent::SetIndentMode {
+            use_spaces: true,
+            tab_width: 4,
+        };
+        let _ = EditorEvent::CycleIndentMode;
         let _ = EditorEvent::OpenFile(None);
         let _ = EditorEvent::OpenFile(Some(PathBuf::from("/tmp/example.rs")));
     }

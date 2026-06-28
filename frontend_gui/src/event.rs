@@ -58,6 +58,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::Q => Some(EditorEvent::Quit),
             Key::F => Some(EditorEvent::FindOpen),
             Key::R => Some(EditorEvent::ReplaceOpen),
+            Key::I => Some(EditorEvent::CycleIndentMode),
             Key::K => Some(EditorEvent::DeleteLine),
             Key::D => Some(EditorEvent::DuplicateLine),
             Key::T => Some(EditorEvent::NewDoc),
@@ -96,7 +97,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         Key::Backspace => Some(EditorEvent::DeleteLeft),
         Key::Delete => Some(EditorEvent::DeleteRight),
         Key::Enter => Some(EditorEvent::Insert('\n')),
-        Key::Tab => Some(EditorEvent::Insert('\t')),
+        Key::Tab => Some(EditorEvent::InsertTab),
         Key::Escape => Some(EditorEvent::Quit),
         Key::ArrowLeft if shift => Some(EditorEvent::ScrollLeft),
         Key::ArrowRight if shift => Some(EditorEvent::ScrollRight),
@@ -497,9 +498,19 @@ mod tests {
     #[test]
     fn plain_tab_inserts_indent_not_doc_event() {
         // Without primary modifier, Tab is still the indent key.
+        // InsertTab is the new event — the App resolves it per the
+        // active document's indent mode (spaces vs tab char).
         assert_eq!(
             translate_event(&key_event(Key::Tab, true, no_mods())),
-            Some(EditorEvent::Insert('\t'))
+            Some(EditorEvent::InsertTab)
+        );
+    }
+
+    #[test]
+    fn primary_i_cycles_indent_mode() {
+        assert_eq!(
+            translate_event(&key_event(Key::I, true, primary())),
+            Some(EditorEvent::CycleIndentMode)
         );
     }
 }

@@ -19,7 +19,7 @@ use crate::Buffer;
 /// Only fields that are meaningful to BOTH the TUI and the GUI live
 /// here. Renderer-specific bits stay on the frontend `App` struct
 /// because only that frontend knows how to use them.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ViewState {
     /// Horizontal scroll offset in character columns. 0 = the line
     /// starts at the left edge of the content area. Lines longer
@@ -44,6 +44,31 @@ pub struct ViewState {
     /// clamp always runs in `render`), but the GUI's
     /// `scroll_to_rect` logic does.
     pub last_seen_cursor: usize,
+    /// Indent mode for this document. When `use_spaces` is true,
+    /// pressing Tab inserts `tab_width` space characters; when false,
+    /// it inserts a single `\t`. Affects ONLY what Tab produces —
+    /// the renderer doesn't expand existing `\t` characters in the
+    /// buffer to `tab_width` columns (a v2 polish; for v1 the user
+    /// gets "what does Tab insert?" which is what 99% of indent
+    /// settings control in editors).
+    ///
+    /// Defaults: spaces + width 4. Matches the de-facto standard
+    /// for most modern codebases. Per-document so different files
+    /// can use different conventions without re-configuring.
+    pub use_spaces: bool,
+    pub tab_width: usize,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            scroll_x_cols: 0,
+            scroll_top_line: 0,
+            last_seen_cursor: 0,
+            use_spaces: true,
+            tab_width: 4,
+        }
+    }
 }
 
 /// One document open in the session.

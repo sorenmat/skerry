@@ -257,17 +257,7 @@ impl EditorApp {
                 // Selection-aware: a non-collapsed selection is replaced
                 // by the inserted character (matches every editor since
                 // 1995).
-                self.delete_selection_if_any();
-                let pos = self.active_buffer().cursor();
-                let s = ch.to_string();
-                match self.active_buffer_mut().insert(pos, &s) {
-                    Ok(new_pos) => {
-                        self.active_buffer_mut().set_cursor(new_pos);
-                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
-                        self.status_message = None;
-                    }
-                    Err(e) => self.status_message = Some(format!("insert error: {e}")),
-                }
+                self.insert_text(&ch.to_string());
             }
             EditorEvent::DeleteLeft => {
                 if self.delete_selection_if_any() {
@@ -418,6 +408,29 @@ impl EditorApp {
             EditorEvent::ReplaceAll => {
                 self.replace_all();
             }
+            EditorEvent::SetIndentMode { use_spaces, tab_width } => {
+                self.set_indent_mode(use_spaces, tab_width);
+            }
+            EditorEvent::CycleIndentMode => {
+                self.cycle_indent_mode();
+            }
+            EditorEvent::InsertTab => {
+                // Indent insertion respects the active doc's indent
+                // mode: spaces (count = tab_width) or a literal tab.
+                // Reuses the same selection-aware path as Insert so
+                // selecting some text and pressing Tab replaces it
+                // with the indent — matches Sublime / VSCode / IntelliJ.
+                let (use_spaces, tab_width) = {
+                    let v = &self.active_doc().view;
+                    (v.use_spaces, v.tab_width)
+                };
+                let text = if use_spaces {
+                    " ".repeat(tab_width)
+                } else {
+                    "\t".to_string()
+                };
+                self.insert_text(&text);
+            }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
                 self.active_buffer_mut().set_cursor(new_pos);
@@ -448,16 +461,14 @@ impl EditorApp {
             }
             EditorEvent::Paste(text) => {
                 // Selection-aware paste: replace the selection if any,
-                // otherwise insert at cursor.
-                self.delete_selection_if_any();
-                let pos = self.active_buffer().cursor();
-                match self.active_buffer_mut().insert(pos, &text) {
-                    Ok(new_pos) => {
-                        self.active_buffer_mut().set_cursor(new_pos);
-                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
-                        self.status_message = None;
+                // otherwise insert at cursor. Goes through the shared
+                // insert_text path so error / cursor-update behaviour
+                // matches Insert and InsertTab.
+                self.insert_text(&text);
+                if let Some(msg) = self.status_message.as_deref() {
+                    if msg.contains("insert error") {
+                        self.status_message = Some(msg.replace("insert error", "paste error"));
                     }
-                    Err(e) => self.status_message = Some(format!("paste error: {e}")),
                 }
             }
             EditorEvent::Save => match self.active_buffer_mut().save() {
@@ -501,6 +512,54 @@ impl EditorApp {
                 self.should_quit = true;
             }
         }
+    }
+
+    /// Shared insertion path used by `Insert(char)`, `InsertTab`, and
+    /// `Paste(String)`. Selection-aware: a non-collapsed selection
+    /// is replaced by the inserted text. Centralised here so all
+    /// three events share error / cursor-update behaviour.
+    fn insert_text(&mut self, text: &str) {
+        self.delete_selection_if_any();
+        let pos = self.active_buffer().cursor();
+        match self.active_buffer_mut().insert(pos, text) {
+            Ok(new_pos) => {
+                self.active_buffer_mut().set_cursor(new_pos);
+                self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                self.status_message = None;
+            }
+            Err(e) => self.status_message = Some(format!("insert error: {e}")),
+        }
+    }
+
+    /// Set the indent mode for the active document. Indent mode
+    /// controls what the Tab key inserts (spaces vs tab character)
+    /// and how many spaces per indent level. Per-document so opening
+    /// a file with different conventions doesn't fight the user's
+    /// preferred mode. Mirrors `frontend_tui::App::set_indent_mode`.
+    pub fn set_indent_mode(&mut self, use_spaces: bool, tab_width: usize) {
+        let tab_width = tab_width.clamp(1, 16);
+        self.active_doc_mut().view.use_spaces = use_spaces;
+        self.active_doc_mut().view.tab_width = tab_width;
+        let mode = if use_spaces {
+            format!("spaces:{tab_width}")
+        } else {
+            format!("tabs (width {tab_width})")
+        };
+        self.status_message = Some(format!("Indent: {mode}"));
+    }
+
+    /// Cycle through the four common indent presets. See the TUI
+    /// counterpart for the rationale and presets list.
+    pub fn cycle_indent_mode(&mut self) {
+        let v = &self.active_doc().view;
+        let next = match (v.use_spaces, v.tab_width) {
+            (true, 2) => (true, 4),
+            (true, 4) => (true, 8),
+            (true, 8) => (false, 4),
+            (false, _) => (true, 2),
+            _ => (true, 2),
+        };
+        self.set_indent_mode(next.0, next.1);
     }
 
     /// If the selection is non-empty, delete it and collapse the cursor
