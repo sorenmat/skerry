@@ -358,17 +358,23 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
         Some(selection.range())
     };
 
-    // Find-match highlight range. `current_match()` returns the start
-    // byte; the match length equals the query byte length (memchr
-    // operates on raw bytes, so start + query.len() is the correct
-    // end). Visible only when there's no selection — selection
-    // preempts it to keep the GUI simple (no need to layer two
-    // rectangle styles on the same span). Same precedence rule as
-    // the TUI frontend.
-    let match_range: Option<std::ops::Range<usize>> = app
-        .search
-        .current_match()
-        .map(|pos| pos..pos.saturating_add(app.search.query.len()));
+    // Find-match highlight. `current_match()` returns the start byte;
+    // the match length equals the query byte length (memchr operates
+    // on raw bytes, so start + query.len() is the correct end).
+    //
+    // Two intensities mirror VSCode / Sublime:
+    // - current_match_color: bright amber for the match the user
+    //   most recently navigated to (cursor sits at its start).
+    // - other_match_color: dimmer amber for every other match so the
+    //   eye can scan the cluster at a glance.
+    //
+    // Visible only when there's no selection — selection preempts
+    // matches so the user can see their drag without matches
+    // painting over it. Same precedence rule as the TUI frontend.
+    let query_byte_len = app.search.query.len();
+    let current_match_start = app.search.current_match();
+    let current_match_color = egui::Color32::from_rgb(200, 160, 40);
+    let other_match_color = egui::Color32::from_rgb(120, 100, 40);
 
     let visuals = ui.style().visuals.clone();
     let prefix_text = format!("{:>width$} \u{2502} ", 1, width = gutter_width);
@@ -441,9 +447,12 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
 
                 // Compute selection-in-this-line once. If there's no
                 // selection, `seg` stays at the default (None) and we
-                // draw the entire line as one piece.
+                // draw the entire line as one piece. `line_byte_range`
+                // is bound in the outer scope so the match-highlights
+                // block below can read it without re-querying.
+                let line_byte_range =
+                    app.active_buffer().line_byte_range(line_idx).unwrap_or(0..0);
                 let sel_in_line: Option<(usize, usize)> = sel_range.as_ref().and_then(|sr| {
-                    let line_byte_range = app.active_buffer().line_byte_range(line_idx)?;
                     let intersect = selection_in_line(line_byte_range.clone(), sr.clone())?;
                     let start = line_byte_range.start;
                     let total_chars = line_text.chars().count();
@@ -458,20 +467,27 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                     }
                 });
 
-                // Compute match-in-this-line when there's no active
-                // selection. Same shape as `sel_in_line` (a char-col
-                // range for the visible window of this line) but for
-                // the find-match highlight. Skipped when a selection
-                // is present so the user can see their selection
-                // without the match painting over it.
-                let match_in_line: Option<(usize, usize)> = if sel_in_line.is_none() {
-                    match_range.as_ref().and_then(|mr| {
-                        let line_byte_range =
-                            app.active_buffer().line_byte_range(line_idx)?;
-                        let intersect = selection_in_line(
-                            line_byte_range.clone(),
-                            mr.clone(),
-                        )?;
+                // Compute match highlights for this line. One entry per match that
+                // starts on this line, each tagged with the colour
+                // (bright for current, dim for the rest). Same shape
+                // as `sel_in_line` (a char-col range) but it's a Vec
+                // because there can be many matches on a line. Skipped
+                // when a selection is present so the user can see
+                // their selection without matches painting over it.
+                //
+                // Skipping matches that start on a previous line keeps
+                // the v1 implementation simple — cross-line matches
+                // render their first-line portion only (rare in
+                // practice).
+                let mut match_highlights: Vec<(usize, usize, egui::Color32)> = Vec::new();
+                if sel_in_line.is_none() && query_byte_len > 0 {
+                    let start_idx = app.search.matches.partition_point(|&m| m < line_byte_range.start);
+                    for &m in &app.search.matches[start_idx..] {
+                        if m >= line_byte_range.end {
+                            break;
+                        }
+                        let end = (m + query_byte_len).min(line_byte_range.end);
+                        let intersect = (line_byte_range.start.max(m))..(line_byte_range.start.max(end));
                         let start = line_byte_range.start;
                         let total_chars = line_text.chars().count();
                         let take_lo = byte_to_char_col(
@@ -484,135 +500,155 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                             intersect.end - start,
                         )
                         .min(total_chars);
-                        if take_hi > take_lo {
-                            Some((take_lo, take_hi))
-                        } else {
-                            None
+                        if take_hi <= take_lo {
+                            continue;
                         }
-                    })
-                } else {
-                    None
-                };
+                        let color = if Some(m) == current_match_start {
+                            current_match_color
+                        } else {
+                            other_match_color
+                        };
+                        match_highlights.push((take_lo, take_hi, color));
+                    }
+                }
 
-                match (sel_in_line, match_in_line) {
-                    (None, None) => {
-                        // No selection, no match — draw the whole line.
+                if let Some((take_lo, take_hi)) = sel_in_line {
+                    // Selection rendering: three segments
+                    // (before / selected / after). Each is drawn
+                    // exactly once at an integer-rounded x to avoid
+                    // sub-pixel ghosting on the selection rectangle.
+                    let before: String =
+                        line_text.chars().take(take_lo).collect();
+                    let selected: String = line_text
+                        .chars()
+                        .skip(take_lo)
+                        .take(take_hi - take_lo)
+                        .collect();
+                    let after: String =
+                        line_text.chars().skip(take_hi).collect();
+
+                    let sel_x = (text_x + width_of(&before)).round();
+                    let sel_w = width_of(&selected).round();
+
+                    if !before.is_empty() {
                         painter.text(
                             egui::pos2(text_x, y),
                             egui::Align2::LEFT_TOP,
-                            &line_text,
+                            before,
                             font_id.clone(),
                             visuals.text_color(),
                         );
                     }
-                    (None, Some((take_lo, take_hi))) => {
-                        // Match highlight: three segments with the
-                        // match's character range styled. Same
-                        // sub-pixel-safe layout as the selection branch
-                        // — each segment drawn exactly once at an
-                        // integer-rounded x.
-                        let before: String =
-                            line_text.chars().take(take_lo).collect();
+
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(sel_x, y),
+                            egui::vec2(sel_w, line_height),
+                        ),
+                        0.0,
+                        visuals.selection.bg_fill,
+                    );
+                    painter.text(
+                        egui::pos2(sel_x, y),
+                        egui::Align2::LEFT_TOP,
+                        selected,
+                        font_id.clone(),
+                        visuals.text_color(),
+                    );
+
+                    if !after.is_empty() {
+                        painter.text(
+                            egui::pos2((sel_x + sel_w).round(), y),
+                            egui::Align2::LEFT_TOP,
+                            after,
+                            font_id.clone(),
+                            visuals.text_color(),
+                        );
+                    }
+                } else if match_highlights.is_empty() {
+                    // Plain line.
+                    painter.text(
+                        egui::pos2(text_x, y),
+                        egui::Align2::LEFT_TOP,
+                        &line_text,
+                        font_id.clone(),
+                        visuals.text_color(),
+                    );
+                } else {
+                    // Multi-match highlights. Walk the line text
+                    // left-to-right, emitting plain / styled /
+                    // plain / styled / ... segments. Each styled
+                    // segment gets its own background rectangle so
+                    // adjacent matches render as adjacent coloured
+                    // bars.
+                    let mut highlights = match_highlights;
+                    // Stable sort by start (matches on the same
+                    // char-col keep insertion order — shouldn't
+                    // happen in practice since memchr matches are
+                    // non-overlapping).
+                    highlights.sort_by_key(|h| h.0);
+
+                    let mut cursor = 0usize;
+                    let total_chars = line_text.chars().count();
+                    for (lo, hi, color) in highlights {
+                        if lo > cursor {
+                            let plain: String = line_text
+                                .chars()
+                                .skip(cursor)
+                                .take(lo - cursor)
+                                .collect();
+                            if !plain.is_empty() {
+                                painter.text(
+                                    egui::pos2(text_x, y),
+                                    egui::Align2::LEFT_TOP,
+                                    plain,
+                                    font_id.clone(),
+                                    visuals.text_color(),
+                                );
+                            }
+                        }
                         let matched: String = line_text
                             .chars()
-                            .skip(take_lo)
-                            .take(take_hi - take_lo)
+                            .skip(lo)
+                            .take(hi - lo)
                             .collect();
-                        let after: String =
-                            line_text.chars().skip(take_hi).collect();
-
-                        let match_x = (text_x + width_of(&before)).round();
-                        let match_w = width_of(&matched).round();
-
-                        // Match colour: distinct from the selection
-                        // bg so the user can tell them apart at a
-                        // glance. Amber/yellow pairs well with the
-                        // default egui dark theme.
-                        let match_color = egui::Color32::from_rgb(200, 160, 40);
-
-                        if !before.is_empty() {
+                        if !matched.is_empty() {
+                            // Width must be measured from `text_x` so
+                            // we account for the chars before this
+                            // segment too — `width_of(&matched)` alone
+                            // would be wrong if a previous segment
+                            // included tabs (tab advance ≠ 1 char).
+                            let matched_x = (text_x + width_of(
+                                &line_text.chars().take(lo).collect::<String>(),
+                            ))
+                            .round();
+                            let matched_w = width_of(&matched).round();
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(matched_x, y),
+                                    egui::vec2(matched_w, line_height),
+                                ),
+                                0.0,
+                                color,
+                            );
                             painter.text(
-                                egui::pos2(text_x, y),
+                                egui::pos2(matched_x, y),
                                 egui::Align2::LEFT_TOP,
-                                before,
+                                matched,
                                 font_id.clone(),
                                 visuals.text_color(),
                             );
                         }
-
-                        painter.rect_filled(
-                            egui::Rect::from_min_size(
-                                egui::pos2(match_x, y),
-                                egui::vec2(match_w, line_height),
-                            ),
-                            0.0,
-                            match_color,
-                        );
-                        painter.text(
-                            egui::pos2(match_x, y),
-                            egui::Align2::LEFT_TOP,
-                            matched,
-                            font_id.clone(),
-                            visuals.text_color(),
-                        );
-
-                        if !after.is_empty() {
-                            painter.text(
-                                egui::pos2((match_x + match_w).round(), y),
-                                egui::Align2::LEFT_TOP,
-                                after,
-                                font_id.clone(),
-                                visuals.text_color(),
-                            );
-                        }
+                        cursor = hi;
                     }
-                    (Some((take_lo, take_hi)), _) => {
-                        // Three segments: before / selected / after.
-                        // Each is drawn exactly once in the normal text color.
-                        let before: String =
-                            line_text.chars().take(take_lo).collect();
-                        let selected: String = line_text
-                            .chars()
-                            .skip(take_lo)
-                            .take(take_hi - take_lo)
-                            .collect();
-                        let after: String =
-                            line_text.chars().skip(take_hi).collect();
-
-                        let sel_x = (text_x + width_of(&before)).round();
-                        let sel_w = width_of(&selected).round();
-
-                        if !before.is_empty() {
+                    if cursor < total_chars {
+                        let tail: String =
+                            line_text.chars().skip(cursor).collect();
+                        if !tail.is_empty() {
                             painter.text(
                                 egui::pos2(text_x, y),
                                 egui::Align2::LEFT_TOP,
-                                before,
-                                font_id.clone(),
-                                visuals.text_color(),
-                            );
-                        }
-
-                        painter.rect_filled(
-                            egui::Rect::from_min_size(
-                                egui::pos2(sel_x, y),
-                                egui::vec2(sel_w, line_height),
-                            ),
-                            0.0,
-                            visuals.selection.bg_fill,
-                        );
-                        painter.text(
-                            egui::pos2(sel_x, y),
-                            egui::Align2::LEFT_TOP,
-                            selected,
-                            font_id.clone(),
-                            visuals.text_color(),
-                        );
-
-                        if !after.is_empty() {
-                            painter.text(
-                                egui::pos2((sel_x + sel_w).round(), y),
-                                egui::Align2::LEFT_TOP,
-                                after,
+                                tail,
                                 font_id.clone(),
                                 visuals.text_color(),
                             );

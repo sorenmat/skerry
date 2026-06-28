@@ -261,4 +261,50 @@ mod tests {
         app.handle_event(core::EditorEvent::FindNext);
         assert_eq!(app.search.current_match(), Some(8));
     }
+
+    #[test]
+    fn find_with_multiple_matches_renders_without_panic() {
+        // Smoke test for highlight-all: with several matches on a
+        // line and across lines, the renderer must not panic and the
+        // line text must still come through. TestBackend can't see
+        // styles, so we just check that the content survives the
+        // multi-segment push_highlight_spans path.
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
+            b"foo bar foo baz foo qux foo".to_vec(),
+        ));
+        let mut app = App::new(buf);
+        app.handle_event(core::EditorEvent::FindQueryChanged("foo".to_string()));
+        // Four matches on line 0.
+        assert_eq!(app.search.matches.len(), 4);
+        // Open the find bar so the counter is rendered (the bar
+        // shows "1/4" by default).
+        app.handle_event(core::EditorEvent::FindOpen);
+        let backend = TestBackend::new(80, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(out.contains("foo bar foo baz foo qux foo"),
+                "line text survives multi-match render: {out:?}");
+        assert!(out.contains("1/4"), "find counter still works: {out:?}");
+    }
+
+    #[test]
+    fn find_match_across_multiple_lines_renders_each_line() {
+        // Matches on more than one line — make sure each line's
+        // render path still produces output (i.e. the per-line
+        // partition_point + iterate doesn't drop a match).
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
+            b"foo here\nand foo there\nfoo again".to_vec(),
+        ));
+        let mut app = App::new(buf);
+        app.handle_event(core::EditorEvent::FindQueryChanged("foo".to_string()));
+        assert_eq!(app.search.matches.len(), 3);
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let out = terminal.backend().to_string();
+        assert!(out.contains("foo here"), "line 0 rendered: {out:?}");
+        assert!(out.contains("and foo there"), "line 1 rendered: {out:?}");
+        assert!(out.contains("foo again"), "line 2 rendered: {out:?}");
+    }
 }

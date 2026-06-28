@@ -273,13 +273,20 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
         .bg(Color::Rgb(60, 80, 140))
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
-    // Find-match highlight. Distinct colour from selection so the
-    // user can tell "this is the match the search landed on" from
-    // "this is a selection I dragged out".
-    let match_style = Style::default()
+    // Find-match highlight styles. Two intensities:
+    // - current_match_style: bright amber for the match the user
+    //   most recently navigated to (cursor sits at its start).
+    // - other_match_style: dimmer amber for every other match.
+    //
+    // Pattern matches VSCode / Sublime — visual scan finds the
+    // cluster fast, and the "where am I now" pointer stands out.
+    let current_match_style = Style::default()
         .bg(Color::Rgb(200, 160, 40))
         .fg(Color::Black)
         .add_modifier(Modifier::BOLD);
+    let other_match_style = Style::default()
+        .bg(Color::Rgb(120, 100, 40))
+        .fg(Color::White);
     let gutter_style = Style::default().fg(Color::DarkGray);
 
     let selection = app.active_buffer().selection();
@@ -289,16 +296,12 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
         Some(selection.range())
     };
 
-    // The byte range of the currently-active find match. `search.query`
-    // is UTF-8; the byte length of the match equals the byte length of
-    // the query (memchr operates on raw bytes, so start + len is the
-    // correct end). If the match straddles a newline the visual will
-    // look odd, but that's a v2 issue — for v1 matches are expected to
-    // stay within a single line in normal usage.
-    let match_range: Option<std::ops::Range<usize>> = app
-        .search
-        .current_match()
-        .map(|pos| pos..pos.saturating_add(app.search.query.len()));
+    // Snapshot the search state once per frame so the per-line loop
+    // doesn't have to look it up. `current_match_start` is the byte
+    // position of the active match (or None when there's no current
+    // match — empty query, no matches, or before the first FindNext).
+    let query_byte_len = app.search.query.len();
+    let current_match_start = app.search.current_match();
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     let vh = app.viewport_height as usize;
@@ -319,10 +322,33 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
         let selected_in_line = sel_range
             .as_ref()
             .and_then(|sr| selection_in_line(line_byte_range.clone(), sr.clone()));
-        // Compute the match sub-range within this line, if any.
-        let match_in_line = match_range
-            .as_ref()
-            .and_then(|mr| selection_in_line(line_byte_range.clone(), mr.clone()));
+        // Compute the match highlights for this line. Only when there's
+        // no active selection — selection takes priority visually so the
+        // user can see their drag without matches painting over it.
+        //
+        // For each match start that falls on this line (binary-search
+        // the first one, then iterate forward until past line end), emit
+        // a (byte_range, style) tuple. Style is `current_match_style`
+        // for the match the cursor is on, `other_match_style` for the
+        // rest. Skipping matches that start on a previous line keeps the
+        // v1 implementation simple — cross-line matches render their
+        // first-line portion only (rare in practice).
+        let mut match_highlights: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
+        if sel_range.is_none() && query_byte_len > 0 {
+            let start_idx = app.search.matches.partition_point(|&m| m < line_byte_range.start);
+            for &m in &app.search.matches[start_idx..] {
+                if m >= line_byte_range.end {
+                    break;
+                }
+                let end = (m + query_byte_len).min(line_byte_range.end);
+                let style = if Some(m) == current_match_start {
+                    current_match_style
+                } else {
+                    other_match_style
+                };
+                match_highlights.push((m..end, style));
+            }
+        }
 
         // Apply horizontal scroll: skip `scroll_x` chars from the start of
         // each line, then truncate to the available width.
@@ -340,8 +366,7 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
             &line_text,
             selected_in_line,
             selection_style,
-            match_in_line,
-            match_style,
+            &match_highlights,
             scroll_bytes,
         );
         lines.push(Line::from(spans));
@@ -357,16 +382,14 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
 
 /// Push spans for one line's text content, applying selection styling
 /// to the selected byte range and match styling to the matched byte
-/// range (mapped back to char positions for the truncated visible
+/// ranges (mapped back to char positions for the truncated visible
 /// text).
 ///
-/// Precedence: selection > match. When the user has an active drag
-/// selection, that wins visually and the match highlight is hidden.
-/// When the selection is collapsed (the post-FindNext state), the
-/// match shows through. This avoids the complexity of stacking two
-/// highlight styles on the same span while still giving the user
-/// "find landed here, this is what it found" feedback in the common
-/// case.
+/// Precedence: selection > matches. When the user has an active drag
+/// selection, that wins visually and the match highlights are hidden.
+/// When the selection is collapsed (the post-FindNext state), every
+/// match on this line highlights — bright amber for the current
+/// match, dimmer amber for the rest.
 ///
 /// `scroll_bytes` is the byte offset within the FULL line where the
 /// visible (truncated) window starts. Selection/match byte offsets
@@ -380,38 +403,58 @@ fn push_line_spans(
     full_line_text: &str,
     selected_in_line: Option<std::ops::Range<usize>>,
     selection_style: Style,
-    match_in_line: Option<std::ops::Range<usize>>,
-    match_style: Style,
+    match_highlights: &[(std::ops::Range<usize>, Style)],
     scroll_bytes: usize,
 ) {
-    let trunc_byte_len = truncated.len();
     let line_byte_start = line_byte_range.start;
 
-    // No selection visible — render the match (if any) as the lone
-    // highlight, or fall back to plain text.
-    let Some(sel) = selected_in_line else {
-        if let Some(m) = match_in_line {
-            push_single_range(
-                spans,
-                truncated,
-                line_byte_start,
-                m,
-                match_style,
-                scroll_bytes,
-            );
-        } else {
-            spans.push(Span::raw(truncated.to_string()));
-        }
+    // Selection path: matches are hidden behind the selection. Keeps
+    // the visual simple — one highlight style at a time.
+    if let Some(sel) = selected_in_line {
+        push_selection_spans(
+            spans,
+            truncated,
+            line_byte_start,
+            sel,
+            selection_style,
+            scroll_bytes,
+            full_line_text,
+        );
         return;
-    };
+    }
 
-    // Absolute selection byte offsets within this line.
+    // No-selection path: render the match highlights, or fall back
+    // to plain text. `match_highlights` is already pre-filtered to
+    // matches that start on this line.
+    if match_highlights.is_empty() {
+        spans.push(Span::raw(truncated.to_string()));
+        return;
+    }
+    push_highlight_spans(
+        spans,
+        truncated,
+        line_byte_start,
+        match_highlights,
+        scroll_bytes,
+    );
+}
+
+/// Push spans for the selection case (one highlight, single style).
+/// Identical to the v1 selection-only behaviour — kept as a separate
+/// function so the match-highlights path stays readable.
+fn push_selection_spans(
+    spans: &mut Vec<Span<'static>>,
+    truncated: &str,
+    line_byte_start: usize,
+    sel: std::ops::Range<usize>,
+    selection_style: Style,
+    scroll_bytes: usize,
+    full_line_text: &str,
+) {
+    let trunc_byte_len = truncated.len();
     let sel_byte_lo_full = sel.start - line_byte_start;
     let sel_byte_hi_full = sel.end - line_byte_start;
 
-    // Translate to within-truncated. Anything to the left of
-    // `scroll_bytes` is off-screen; anything to the right of
-    // `scroll_bytes + trunc_byte_len` is off-screen.
     if sel_byte_lo_full < scroll_bytes {
         // Selection extends into the off-screen left part. The visible
         // portion of the selection runs from byte 0 of truncated up to
@@ -440,7 +483,6 @@ fn push_line_spans(
         return;
     }
 
-    // sel_byte_lo_full >= scroll_bytes: selection starts in the visible region.
     let sel_byte_lo_in_trunc = sel_byte_lo_full - scroll_bytes;
     if sel_byte_lo_in_trunc >= trunc_byte_len {
         // Selection starts past what's visible.
@@ -452,7 +494,7 @@ fn push_line_spans(
     let char_count = truncated.chars().count();
     let char_sel_lo = core::byte_to_char_col(truncated, sel_byte_lo_in_trunc);
     let char_sel_hi = core::byte_to_char_col(truncated, sel_byte_hi_clamped);
-    let _ = full_line_text; // currently unused; reserved for future byte-accurate sel
+    let _ = full_line_text; // reserved for future byte-accurate sel
 
     if char_sel_lo >= char_count {
         spans.push(Span::raw(truncated.to_string()));
@@ -479,11 +521,110 @@ fn push_line_spans(
     }
 }
 
+/// Push spans for the no-selection case where `match_highlights` lists
+/// every match that starts on this line (with the current match styled
+/// brighter than the others). Translates each highlight's full-line
+/// byte range into a char range within `truncated`, sorts by start,
+/// and walks the truncated text emitting plain/styled/plain segments.
+///
+/// Highlights are byte ranges relative to the full line; the function
+/// handles `scroll_bytes` shifting + truncation clipping. Highlights
+/// entirely off-screen are dropped. Adjacent highlights with the same
+/// style are emitted as one segment (small win, mostly relevant when
+/// the query is 1 byte).
+fn push_highlight_spans(
+    spans: &mut Vec<Span<'static>>,
+    truncated: &str,
+    line_byte_start: usize,
+    match_highlights: &[(std::ops::Range<usize>, Style)],
+    scroll_bytes: usize,
+) {
+    let trunc_byte_len = truncated.len();
+    let char_count = truncated.chars().count();
+    let mut segments: Vec<(usize, usize, Style)> = Vec::with_capacity(match_highlights.len());
+    for (range, style) in match_highlights {
+        let lo_full = range.start - line_byte_start;
+        let hi_full = range.end - line_byte_start;
+        // Off-screen left or empty/inverted: skip.
+        if hi_full <= scroll_bytes {
+            continue;
+        }
+        let lo_trunc = lo_full.saturating_sub(scroll_bytes);
+        let hi_trunc = hi_full.saturating_sub(scroll_bytes).min(trunc_byte_len);
+        if hi_trunc <= lo_trunc {
+            continue;
+        }
+        let char_lo = core::byte_to_char_col(truncated, lo_trunc).min(char_count);
+        let char_hi = core::byte_to_char_col(truncated, hi_trunc).min(char_count);
+        if char_lo >= char_hi {
+            continue;
+        }
+        segments.push((char_lo, char_hi, *style));
+    }
+    // Sort by start so the walk below emits segments in left-to-right
+    // order. Within the same start, keep insertion order (stable sort).
+    segments.sort_by_key(|s| s.0);
+
+    // Merge adjacent segments with the same style. memchr::memmem
+    // returns non-overlapping matches so we won't see two ranges
+    // overlap here in practice — adjacent-with-same-style is the only
+    // merge case that matters.
+    let merged = merge_adjacent_same_style(segments);
+
+    let mut cursor = 0usize;
+    for (lo, hi, style) in merged {
+        if lo > cursor {
+            let plain: String = truncated
+                .chars()
+                .skip(cursor)
+                .take(lo - cursor)
+                .collect();
+            if !plain.is_empty() {
+                spans.push(Span::raw(plain));
+            }
+        }
+        let inside: String = truncated
+            .chars()
+            .skip(lo)
+            .take(hi - lo)
+            .collect();
+        if !inside.is_empty() {
+            spans.push(Span::styled(inside, style));
+        }
+        cursor = hi;
+    }
+    if cursor < char_count {
+        let tail: String = truncated.chars().skip(cursor).collect();
+        if !tail.is_empty() {
+            spans.push(Span::raw(tail));
+        }
+    }
+}
+
+/// Merge adjacent segments with the same style. Assumes segments are
+/// sorted by start. Returns a new Vec; does not mutate the input.
+fn merge_adjacent_same_style(
+    segments: Vec<(usize, usize, Style)>,
+) -> Vec<(usize, usize, Style)> {
+    let mut out: Vec<(usize, usize, Style)> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        if let Some(last) = out.last_mut() {
+            if last.1 == seg.0 && last.2 == seg.2 {
+                last.1 = seg.1;
+                continue;
+            }
+        }
+        out.push(seg);
+    }
+    out
+}
+
 /// Push spans for a single highlighted byte range (selection OR match
 /// — same code path). Translates the range's full-line byte offsets
 /// into within-truncated offsets, then emits at most three spans:
 /// before (plain) / inside (styled) / after (plain). Out-of-view
 /// portions of the range are clipped silently.
+#[allow(dead_code)] // kept for now; replaced by push_highlight_spans
 fn push_single_range(
     spans: &mut Vec<Span<'static>>,
     truncated: &str,
