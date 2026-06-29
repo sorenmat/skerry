@@ -882,20 +882,33 @@ fn auto_scroll_to_cursor(
     let visible_height = (vh_lines as f32) * line_height;
     // `scroll-margin` in Emacs speaks in lines; we scale by
     // `line_height` so the math is in the same units as
-    // `current_offset_y`. `margin_px = 0` collapses to the legacy
-    // "scroll when cursor leaves the viewport" behaviour.
-    let margin_px = (margin_lines as f32) * line_height;
+    // `current_offset_y`.
+    //
+    // **Edge case**: if `2 * margin + 1 > vh` the safe zone
+    // collapses to nothing (rows [margin, vh - 1 - margin] becomes
+    // `[margin, margin - 1]`) and every cursor position triggers a
+    // scroll. That makes a small window with default margin=3
+    // behave like "scroll on every keypress", which is what the
+    // user explicitly flagged. Fall back to legacy `margin=0`
+    // (scroll only when the cursor actually leaves the viewport)
+    // when the requested margin can't fit.
+    let effective_margin: usize = if vh_lines > 2 * margin_lines + 1 {
+        margin_lines
+    } else {
+        0
+    };
+    let margin_px = (effective_margin as f32) * line_height;
 
     // Cursor's content-y range.
     let cursor_top_y = (cursor_line as f32) * line_height;
     let cursor_bottom_y = cursor_top_y + line_height;
 
     // Compute the desired top-of-viewport content-y so the cursor
-    // sits at row `margin_lines` from the top and `margin_lines`
-    // from the bottom (i.e., row `viewport_height - margin_lines
-    // - 1`). Default to the current offset so that when the
-    // cursor is already inside the safe zone, the call becomes a
-    // no-op.
+    // sits at row `effective_margin` from the top and
+    // `effective_margin` from the bottom (i.e., row
+    // `viewport_height - effective_margin - 1`). Default to the
+    // current offset so that when the cursor is already inside
+    // the safe zone, the call becomes a no-op.
     let mut desired_top_y = current_offset_y;
 
     // Trigger scroll DOWN once the cursor's BOTTOM is within the
@@ -907,7 +920,7 @@ fn auto_scroll_to_cursor(
         desired_top_y = cursor_top_y - (visible_height - line_height - margin_px);
     } else if cursor_top_y < current_offset_y + margin_px {
         // Cursor is within margin of the top row. Scroll up so the
-        // cursor's TOP lands at row `margin_lines`. Solve:
+        // cursor's TOP lands at row `effective_margin`. Solve:
         //   cursor_top_y - new_offset = margin * lh
         desired_top_y = cursor_top_y - margin_px;
     }

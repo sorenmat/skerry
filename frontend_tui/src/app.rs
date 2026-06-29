@@ -996,7 +996,20 @@ impl App {
         // view jumping at the very last row. Reads from the doc's
         // `ViewState::scroll_margin_lines` (defaults to 3 in
         // `core::Document`).
-        let margin = self.active_doc().view.scroll_margin_lines;
+        //
+        // **Edge case**: when `2 * margin + 1 > vh` the safe zone
+        // (rows [margin, vh - 1 - margin]) collapses to nothing and
+        // every cursor movement trips a scroll — the user sees the
+        // view "scroll on every cursor move near the middle" with a
+        // small window. Fall back to legacy `margin=0`
+        // (scroll only on actual viewport exit) when the requested
+        // margin can't fit. Same fallback the GUI uses.
+        let requested_margin = self.active_doc().view.scroll_margin_lines;
+        let margin = if vh > 2 * requested_margin + 1 {
+            requested_margin
+        } else {
+            0
+        };
         let top = self.active_doc().view.scroll_top_line;
         let new_top = if cursor_line < top.saturating_add(margin) {
             // Cursor within `margin` of (or before) the top row.

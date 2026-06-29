@@ -496,3 +496,94 @@ fn scroll_margin_zero_matches_legacy_edge_stick_behavior() {
         "after first scroll-triggering press, caret should still be inside the screen (y={cy_after})"
     );
 }
+
+#[test]
+fn scroll_margin_falls_back_to_legacy_when_viewport_too_small() {
+    // When the requested `scroll_margin_lines` doesn't fit in the
+    // viewport (i.e., `2 * margin + 1 > vh`), the safe zone
+    // `[margin, vh - 1 - margin]` collapses to nothing and every
+    // cursor position would otherwise trip a scroll. We fall back
+    // to the legacy `margin = 0` "scroll only on actual viewport
+    // exit" behaviour — which is exactly what the user reported as
+    // missing for small windows.
+    let ctx = egui::Context::default();
+    ctx.style_mut(|s| {
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+    });
+
+    let mut app = app_with_lines(200);
+    // Mid-margin with vh≈20 → safe zone exists (rows 3..16).
+    app.active_doc_mut().view.scroll_margin_lines = 3;
+    let screen_w = 800.0;
+    let screen_h = 400.0;
+
+    // Walk the cursor down and look for the first sign of a SCROLL
+    // (caret stops advancing). With margin=3 + vh≈20 we expect
+    // margin to actually apply at line ~17. The point of THIS test
+    // is the OPPOSITE: it should NOT have triggered earlier (at the
+    // "center of the screen").
+    let mut prev_cy = 28.0_f32;
+    for line in 1..12 {
+        let cy = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line)
+            .min
+            .y;
+        assert!(
+            (cy - prev_cy).abs() > 1.0,
+            "BUG: scroll triggered at line {line} (cy stayed put from line {}-ish); \
+             with vh≈20 and margin=3 the cursor should freely advance through at \
+             least the first ~12 lines before the margin kicks in at row ~17",
+            line - 1
+        );
+        prev_cy = cy;
+    }
+}
+
+#[test]
+fn scroll_margin_falls_back_to_legacy_for_tiny_viewports() {
+    // Reproduces the user's "down scrolls when hitting the center of
+    // the screen" bug: in a tiny viewport (vh ≈ 7 lines), the
+    // default margin of 3 doesn't leave a real safe zone (rows
+    // [3, 7 - 1 - 3] = [3, 3] is just one row, and the cursor at
+    // the centre would always trip a scroll). Our fallback kicks in
+    // when `2 * margin + 1 > vh` and reverts to legacy edge-stick,
+    // so the cursor should freely advance through the rows that DO
+    // fit and only scroll when it actually leaves the viewport.
+    //
+    // We can't really get a vh=7 viewport from the offscreen
+    // renderer (the test harness space is fixed at 400 px), but we
+    // can exercise the fallback path explicitly by setting a
+    // margin that's too large for the actual viewport and verifying
+    // the cursor freely advances through the centre without
+    // triggering scrolls on every keypress.
+    let ctx = egui::Context::default();
+    ctx.style_mut(|s| {
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+    });
+
+    let mut app = app_with_lines(200);
+    // Force the fallback path: the offscreen viewport here is roughly
+    // 20 lines, and we set a margin so big the safe zone collapses
+    // (2 * 12 + 1 = 25 > 20 — fallback fires).
+    app.active_doc_mut().view.scroll_margin_lines = 12;
+    let screen_w = 800.0;
+    let screen_h = 400.0;
+
+    // Under the fallback we should see the cursor freely advance
+    // through many of the middle rows without a scroll trigger.
+    let mut prev_cy = 28.0_f32;
+    let mut free_count = 0;
+    for line in 1..17 {
+        let cy = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line)
+            .min
+            .y;
+        if (cy - prev_cy).abs() > 1.0 {
+            free_count += 1;
+        }
+        prev_cy = cy;
+    }
+    assert!(
+        free_count >= 12,
+        "with effective margin=0 (fallback), the cursor should freely advance through at \
+         least 12 of the first 16 rows; got {free_count} free rows"
+    );
+}
