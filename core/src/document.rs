@@ -52,15 +52,15 @@ pub struct ViewState {
     /// continues pressing Down without the view jumping at the
     /// last visible row.
     ///
-    /// **Default 0** — the legacy v0.1 behaviour, where the view
-    /// only scrolls when the cursor actually leaves the viewport.
-    /// This avoids surprises in small windows where a non-zero
-    /// margin can collapse the safe zone and trip a scroll on every
-    /// arrow press. Set to 3 (or any positive value) to opt into
-    /// the Emacs `scroll-margin` behaviour; both frontends fall back
-    /// to legacy edge-stick when the margin can't fit in the
-    /// viewport. Per-document so different reading modes can use
-    /// different settings.
+    /// **Default 3** — matches common Emacs configurations of
+    /// `scroll-margin: 3`. Both frontends fall back to legacy
+    /// edge-stick (margin = 0) when the viewport is too small for
+    /// the safe zone to fit (i.e. when `2 * margin + 1 >= vh`), so
+    /// a non-zero default never causes "scroll on every keypress" in
+    /// a tiny window. Set to 0 to opt into the legacy v0.1 behaviour
+    /// (scroll only when the cursor actually leaves the viewport).
+    /// Per-document so different reading modes can use different
+    /// settings.
     pub scroll_margin_lines: usize,
     /// Indent mode for this document. When `use_spaces` is true,
     /// pressing Tab inserts `tab_width` space characters; when false,
@@ -92,7 +92,7 @@ impl Default for ViewState {
             scroll_x_cols: 0,
             scroll_top_line: 0,
             last_seen_cursor: 0,
-            scroll_margin_lines: 0,
+            scroll_margin_lines: 3,
             use_spaces: true,
             tab_width: 4,
             soft_wrap: false,
