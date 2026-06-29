@@ -939,16 +939,28 @@ fn auto_scroll_to_cursor(
 
     // Only emit a non-zero scroll when there's actually something to
     // do. A no-op when the delta is zero keeps manual wheel scrolling
-    // away from the cursor intact (the user's last `scroll_offset`
-    // point is preserved, since `scroll_with_delta_animation` only
-    // runs when needed).
+    // away from the cursor intact.
+    //
+    // We use `ScrollAnimation::none()` here — NOT the default smooth
+    // animation. The cursor itself moves instantly in the buffer; if
+    // the view offset animated over ~100ms (egui's default), the
+    // caret would visibly dip one line below the pin row on each
+    // arrow press and then slide back up as the animation caught up.
+    // That dip-and-slide is the "jumpiness" the user reported. With
+    // `none()`, the offset snaps within one frame (16 ms at 60 fps),
+    // so the caret and view stay in lockstep. Wheel scrolling is
+    // unaffected — it goes through egui's own input path, not this
+    // delta.
     if delta_y.abs() > 0.01 {
         // Negate: egui's `scroll_with_delta` treats positive y as
         // "scroll content up / scroll_offset decreases" (matches
         // wheel-up convention); we want positive `delta_y` here to
         // mean "scroll_offset increases" (we're scrolling DOWN past
         // the bottom row, or up past the top row).
-        ui.scroll_with_delta(egui::vec2(0.0, -delta_y));
+        ui.scroll_with_delta_animation(
+            egui::vec2(0.0, -delta_y),
+            egui::style::ScrollAnimation::none(),
+        );
     }
 }
 
