@@ -9,6 +9,7 @@ mod errors;
 mod input;
 mod piece_table;
 pub mod search;
+mod syntax;
 mod undo;
 mod view;
 
@@ -18,4 +19,5 @@ pub use errors::{EditError, SaveError};
 pub use input::{EditorEvent, Movement};
 pub use piece_table::{Piece, PieceSource, PieceTableBuffer};
 pub use search::Search;
+pub use syntax::{tokenize_line, SyntaxCache, Token, TokenKind, SYNTAX_SIZE_LIMIT};
 pub use view::{byte_to_char_col, char_col_to_byte_col, format_position, selection_in_line};

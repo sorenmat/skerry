@@ -321,6 +321,25 @@ impl App {
 
     /// Apply an `EditorEvent` to the buffer / app state.
     pub fn handle_event(&mut self, event: EditorEvent) {
+        let modifies_buffer = matches!(
+            &event,
+            EditorEvent::Insert(_)
+            | EditorEvent::InsertTab
+            | EditorEvent::DeleteLeft
+            | EditorEvent::DeleteRight
+            | EditorEvent::DeleteSelection
+            | EditorEvent::DeleteWordLeft
+            | EditorEvent::DeleteWordRight
+            | EditorEvent::DeleteLine
+            | EditorEvent::DuplicateLine
+            | EditorEvent::MoveLineUp
+            | EditorEvent::MoveLineDown
+            | EditorEvent::Paste(_)
+            | EditorEvent::Undo
+            | EditorEvent::Redo
+            | EditorEvent::ReplaceOne
+            | EditorEvent::ReplaceAll
+        );
         match event {
             EditorEvent::Insert(ch) => {
                 // Selection-aware: a non-collapsed selection is replaced
@@ -585,6 +604,10 @@ impl App {
             EditorEvent::Quit => {
                 self.should_quit = true;
             }
+        }
+
+        if modifies_buffer {
+            self.active_doc_mut().syntax.invalidate();
         }
     }
 

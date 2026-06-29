@@ -116,6 +116,10 @@ pub struct Document {
     /// Per-document view state shared across frontends. See
     /// [`ViewState`] for what's in here and why.
     pub view: ViewState,
+
+    /// Per-line syntax token cache. Lazily populated by the renderer,
+    /// invalidated on every edit. See [`crate::SyntaxCache`].
+    pub syntax: crate::SyntaxCache,
 }
 
 impl Document {
@@ -126,6 +130,7 @@ impl Document {
         Self {
             buffer,
             view: ViewState::default(),
+            syntax: crate::SyntaxCache::default(),
         }
     }
 

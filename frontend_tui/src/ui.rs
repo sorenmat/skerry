@@ -27,6 +27,42 @@ use ratatui::{
 
 use crate::app::{App, CloseChoice};
 
+/// Map a `TokenKind` to a ratatui `Color`. Uses a palette similar to
+/// the GUI's (VS Code Dark+ inspired), adjusted for terminal
+/// visibility.
+fn syntax_color(kind: core::TokenKind) -> Color {
+    match kind {
+        core::TokenKind::Keyword => Color::Rgb(86, 156, 214),
+        core::TokenKind::Type => Color::Rgb(78, 201, 176),
+        core::TokenKind::Function => Color::Rgb(220, 220, 170),
+        core::TokenKind::String => Color::Rgb(206, 145, 120),
+        core::TokenKind::Comment => Color::Rgb(106, 153, 85),
+        core::TokenKind::Number => Color::Rgb(181, 206, 168),
+        core::TokenKind::Punctuation | core::TokenKind::Identifier => Color::Reset,
+    }
+}
+
+/// Get syntax tokens for a line, using the per-document cache.
+fn get_syntax_tokens(app: &mut App, line_idx: usize, line_text: &str) -> Vec<core::Token> {
+    if app.active_buffer().len() > core::SYNTAX_SIZE_LIMIT {
+        return Vec::new();
+    }
+    if !app.active_doc().syntax.dirty {
+        if let Some(tokens) = app.active_doc().syntax.lines.get(&line_idx) {
+            return tokens.clone();
+        }
+    }
+    let path = app.active_doc().path();
+    let tokens = core::tokenize_line(path, line_text.as_bytes());
+    let doc = app.active_doc_mut();
+    if doc.syntax.dirty {
+        doc.syntax.lines.clear();
+        doc.syntax.dirty = false;
+    }
+    doc.syntax.lines.insert(line_idx, tokens.clone());
+    tokens
+}
+
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
@@ -61,8 +97,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(header), chunks[0]);
 
     app.adjust_viewport(chunks[1].height);
-    let content = render_content(app, chunks[1].width);
-    f.render_widget(Paragraph::new(content), chunks[1]);
+    let content = render_content(app, chunks[1].width);    f.render_widget(Paragraph::new(content), chunks[1]);
 
     let status = render_status(app);
     f.render_widget(Paragraph::new(status), chunks[2]);
@@ -303,7 +338,7 @@ fn render_status(app: &App) -> Line<'static> {
     Line::from(format!(" {message}  |  {pos}{wrap_indicator}"))
 }
 
-fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
+fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
     let total_lines = app.active_buffer().line_count();
     // Gutter: enough digits to fit the largest line number, minimum 2.
     let gutter_width = total_lines.to_string().len().max(2);
@@ -398,6 +433,10 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
         let scroll_bytes = core::char_col_to_byte_col(&line_text, scroll_x);
 
         let mut spans: Vec<Span<'static>> = vec![Span::styled(prefix, gutter_style)];
+
+        // Get syntax tokens for this line (lazy cache population).
+        let syntax_tokens = get_syntax_tokens(app, line_idx, &line_text);
+
         push_line_spans(
             &mut spans,
             &truncated,
@@ -407,6 +446,7 @@ fn render_content(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
             selection_style,
             &match_highlights,
             scroll_bytes,
+            &syntax_tokens,
         );
         lines.push(Line::from(spans));
     }
@@ -444,6 +484,7 @@ fn push_line_spans(
     selection_style: Style,
     match_highlights: &[(std::ops::Range<usize>, Style)],
     scroll_bytes: usize,
+    syntax_tokens: &[core::Token],
 ) {
     let line_byte_start = line_byte_range.start;
 
@@ -463,10 +504,20 @@ fn push_line_spans(
     }
 
     // No-selection path: render the match highlights, or fall back
-    // to plain text. `match_highlights` is already pre-filtered to
-    // matches that start on this line.
+    // to syntax-colored text. `match_highlights` is already
+    // pre-filtered to matches that start on this line.
     if match_highlights.is_empty() {
-        spans.push(Span::raw(truncated.to_string()));
+        if syntax_tokens.is_empty() {
+            // No syntax (unknown extension, too large, or passthrough).
+            spans.push(Span::raw(truncated.to_string()));
+        } else {
+            push_syntax_spans(
+                spans,
+                truncated,
+                syntax_tokens,
+                scroll_bytes,
+            );
+        }
         return;
     }
     push_highlight_spans(
@@ -716,6 +767,62 @@ fn push_single_range(
     }
     if !after.is_empty() {
         spans.push(Span::raw(after));
+    }
+}
+
+/// Push spans for syntax-highlighted text. Walks the token list
+/// left-to-right, emitting each token as a `Span::styled` with the
+/// token's color. Gaps between tokens (whitespace not covered by any
+/// token) are emitted as `Span::raw`.
+///
+/// Token byte ranges are relative to the full line text; this function
+/// maps them into the truncated (horizontally-scrolled) view, clipping
+/// tokens that fall off-screen.
+fn push_syntax_spans(
+    spans: &mut Vec<Span<'static>>,
+    truncated: &str,
+    tokens: &[core::Token],
+    scroll_bytes: usize,
+) {
+    let trunc_len = truncated.len();
+    let mut char_cursor = 0usize; // char position in truncated
+
+    for tok in tokens {
+        // Map token byte range (in full line) to byte range in truncated.
+        let vis_start = tok.range.start.saturating_sub(scroll_bytes);
+        let vis_end = tok.range.end.saturating_sub(scroll_bytes);
+        if vis_end == 0 || vis_start >= trunc_len {
+            continue; // entirely off-screen
+        }
+        let vis_start = vis_start.min(trunc_len);
+        let vis_end = vis_end.min(trunc_len);
+
+        let char_lo = core::byte_to_char_col(truncated, vis_start);
+        let char_hi = core::byte_to_char_col(truncated, vis_end);
+
+        // Gap before this token.
+        if char_lo > char_cursor {
+            let gap: String = truncated.chars().skip(char_cursor).take(char_lo - char_cursor).collect();
+            if !gap.is_empty() {
+                spans.push(Span::raw(gap));
+            }
+        }
+
+        // The token itself.
+        let seg: String = truncated.chars().skip(char_lo).take(char_hi.saturating_sub(char_lo)).collect();
+        if !seg.is_empty() {
+            spans.push(Span::styled(seg, Style::default().fg(syntax_color(tok.kind))));
+        }
+        char_cursor = char_hi;
+    }
+
+    // Trailing gap.
+    let total_chars = truncated.chars().count();
+    if char_cursor < total_chars {
+        let tail: String = truncated.chars().skip(char_cursor).collect();
+        if !tail.is_empty() {
+            spans.push(Span::raw(tail));
+        }
     }
 }
 

@@ -26,6 +26,23 @@ const CARET_WIDTH: f32 = 2.0;
 /// ~70 % of the way in 3 frames (50 ms at 60 fps), which feels
 /// responsive without looking like a hard teleport.
 const CARET_ANIM_SPEED: f32 = 25.0;
+
+/// Map a `TokenKind` to a GUI color. Uses a VS Code Dark+ inspired
+/// palette — readable on dark backgrounds, distinct enough to scan at
+/// a glance.
+fn syntax_color(kind: core::TokenKind) -> egui::Color32 {
+    match kind {
+        core::TokenKind::Keyword => egui::Color32::from_rgb(86, 156, 214),
+        core::TokenKind::Type => egui::Color32::from_rgb(78, 201, 176),
+        core::TokenKind::Function => egui::Color32::from_rgb(220, 220, 170),
+        core::TokenKind::String => egui::Color32::from_rgb(206, 145, 120),
+        core::TokenKind::Comment => egui::Color32::from_rgb(106, 153, 85),
+        core::TokenKind::Number => egui::Color32::from_rgb(181, 206, 168),
+        core::TokenKind::Punctuation | core::TokenKind::Identifier => {
+            egui::Color32::from_rgb(212, 212, 212)
+        }
+    }
+}
 const TAB_ACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(60, 80, 140);
 const TAB_INACTIVE_FG: egui::Color32 = egui::Color32::from_rgb(150, 150, 150);
 const TAB_SEPARATOR: egui::Color32 = egui::Color32::from_rgb(80, 80, 80);
@@ -702,14 +719,108 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                         );
                     }
                 } else if match_highlights.is_empty() {
-                    // Plain line.
-                    painter.text(
-                        egui::pos2(text_x, y),
-                        egui::Align2::LEFT_TOP,
-                        &line_text,
-                        font_id.clone(),
-                        visuals.text_color(),
-                    );
+                    // Plain line — check for syntax highlighting.
+                    // Tokens come from the per-document SyntaxCache,
+                    // lazily populated. Only lines without selection
+                    // and without match highlights get syntax colors
+                    // (precedence: selection > matches > syntax).
+                    let tokens = get_syntax_tokens(app, line_idx, &line_text);
+                    if tokens.is_empty() {
+                        // No syntax (unknown extension, too large, or
+                        // passthrough) — draw as before.
+                        painter.text(
+                            egui::pos2(text_x, y),
+                            egui::Align2::LEFT_TOP,
+                            &line_text,
+                            font_id.clone(),
+                            visuals.text_color(),
+                        );
+                    } else {
+                        // Walk tokens left-to-right, drawing each
+                        // segment in its syntax color. Gaps between
+                        // tokens (whitespace) use the default color.
+                        let mut char_cursor = 0usize;
+                        for tok in &tokens {
+                            let tok_lo =
+                                byte_to_char_col(&line_text, tok.range.start);
+                            let tok_hi =
+                                byte_to_char_col(&line_text, tok.range.end);
+                            // Draw gap before this token.
+                            if tok_lo > char_cursor {
+                                let gap: String = line_text
+                                    .chars()
+                                    .skip(char_cursor)
+                                    .take(tok_lo - char_cursor)
+                                    .collect();
+                                if !gap.is_empty() {
+                                    let gap_x = (text_x
+                                        + width_of(
+                                            &line_text
+                                                .chars()
+                                                .take(char_cursor)
+                                                .collect::<String>(),
+                                        ))
+                                    .round();
+                                    painter.text(
+                                        egui::pos2(gap_x, y),
+                                        egui::Align2::LEFT_TOP,
+                                        gap,
+                                        font_id.clone(),
+                                        visuals.text_color(),
+                                    );
+                                }
+                            }
+                            // Draw the token itself.
+                            let seg: String = line_text
+                                .chars()
+                                .skip(tok_lo)
+                                .take(tok_hi - tok_lo)
+                                .collect();
+                            if !seg.is_empty() {
+                                let seg_x = (text_x
+                                    + width_of(
+                                        &line_text
+                                            .chars()
+                                            .take(tok_lo)
+                                            .collect::<String>(),
+                                    ))
+                                .round();
+                                painter.text(
+                                    egui::pos2(seg_x, y),
+                                    egui::Align2::LEFT_TOP,
+                                    seg,
+                                    font_id.clone(),
+                                    syntax_color(tok.kind),
+                                );
+                            }
+                            char_cursor = tok_hi;
+                        }
+                        // Trailing gap after last token.
+                        let total_chars = line_text.chars().count();
+                        if char_cursor < total_chars {
+                            let tail: String = line_text
+                                .chars()
+                                .skip(char_cursor)
+                                .collect();
+                            if !tail.is_empty() {
+                                let tail_x = (text_x
+                                    + width_of(
+                                        &line_text
+                                            .chars()
+                                            .take(char_cursor)
+                                            .collect::<String>(),
+                                    ))
+                                .round();
+                                painter.text(
+                                    egui::pos2(tail_x, y),
+                                    egui::Align2::LEFT_TOP,
+                                    tail,
+                                    font_id.clone(),
+                                    visuals.text_color(),
+                                );
+                            }
+                        }
+                    }
                 } else {
                     // Multi-match highlights. Walk the line text
                     // left-to-right, emitting plain / styled /
@@ -868,6 +979,43 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     // so we don't conflate "tab switched" with "cursor moved within
     // this doc" — see the comment at the top of `render_text`.
     app.active_doc_mut().view.last_seen_cursor = current_cursor;
+}
+
+/// Get syntax tokens for a line, using the per-document cache.
+/// Tokenizes on cache miss (lazy population). Returns an empty Vec
+/// when syntax highlighting is disabled (file too large, unknown
+/// extension, or no path).
+fn get_syntax_tokens(
+    app: &mut EditorApp,
+    line_idx: usize,
+    line_text: &str,
+) -> Vec<core::Token> {
+    // Size gate — skip tokenization for very large files.
+    if app.active_buffer().len() > core::SYNTAX_SIZE_LIMIT {
+        return Vec::new();
+    }
+
+    // Check the cache first.
+    if !app.active_doc().syntax.dirty {
+        if let Some(tokens) = app.active_doc().syntax.lines.get(&line_idx) {
+            return tokens.clone();
+        }
+    }
+
+    // Cache miss or dirty — tokenize this line.
+    let path = app.active_doc().path();
+    let tokens = core::tokenize_line(path, line_text.as_bytes());
+
+    // Cache the result. If the cache was dirty, this is the first
+    // line of a fresh population pass — clear dirty so subsequent
+    // lines use the cache.
+    let doc = app.active_doc_mut();
+    if doc.syntax.dirty {
+        doc.syntax.lines.clear();
+        doc.syntax.dirty = false;
+    }
+    doc.syntax.lines.insert(line_idx, tokens.clone());
+    tokens
 }
 
 /// Compute the desired vertical scroll offset so the cursor stays

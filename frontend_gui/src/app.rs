@@ -266,6 +266,27 @@ impl EditorApp {
     /// `frontend_tui::App::handle_event` so both frontends behave
     /// identically.
     pub fn handle_event(&mut self, event: EditorEvent) {
+        // Check whether this event modifies the buffer text — used to
+        // invalidate the syntax cache after the match.
+        let modifies_buffer = matches!(
+            &event,
+            EditorEvent::Insert(_)
+            | EditorEvent::InsertTab
+            | EditorEvent::DeleteLeft
+            | EditorEvent::DeleteRight
+            | EditorEvent::DeleteSelection
+            | EditorEvent::DeleteWordLeft
+            | EditorEvent::DeleteWordRight
+            | EditorEvent::DeleteLine
+            | EditorEvent::DuplicateLine
+            | EditorEvent::MoveLineUp
+            | EditorEvent::MoveLineDown
+            | EditorEvent::Paste(_)
+            | EditorEvent::Undo
+            | EditorEvent::Redo
+            | EditorEvent::ReplaceOne
+            | EditorEvent::ReplaceAll
+        );
         match event {
             EditorEvent::Insert(ch) => {
                 // Selection-aware: a non-collapsed selection is replaced
@@ -528,6 +549,10 @@ impl EditorApp {
             EditorEvent::Quit => {
                 self.should_quit = true;
             }
+        }
+
+        if modifies_buffer {
+            self.active_doc_mut().syntax.invalidate();
         }
     }
 
