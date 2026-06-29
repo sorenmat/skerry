@@ -452,10 +452,18 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
             let painter = ui.painter_at(rect);
 
             // Tell the app how many lines fit in the visible viewport
-            // so PageUp/PageDown can scroll by a real page instead of a
-            // guessed default. Use the response rect height (visible
-            // area only) divided by line height.
-            let visible_height = ui.available_height().min(rect.height());
+            // so PageUp/PageDown and the auto-scroll code can use the
+            // REAL viewport height. `ui.clip_rect()` is the actual
+            // visible region of the ScrollArea (what the user can see),
+            // which is the correct source of truth here. Earlier this
+            // used `ui.available_height().min(rect.height())`, but
+            // after `allocate_response(total_height)` the available
+            // height collapses to ~0 and `rect.height()` is the full
+            // allocated content — the `min` picked the wrong thing and
+            // `viewport_lines` got stuck at its default (20) forever.
+            // That made auto-scroll think vh=20 even in a 40-line
+            // window, so the cursor pinned at row 16 — the middle.
+            let visible_height = ui.clip_rect().height();
             let visible_lines = (visible_height / line_height).floor() as usize;
             if visible_lines > 0 {
                 app.viewport_lines = visible_lines;
