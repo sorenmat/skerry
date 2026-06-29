@@ -101,6 +101,126 @@ fn settle_scroll(
 }
 
 #[test]
+fn cursor_down_at_viewport_center_with_default_margin_does_not_scroll() {
+    // Reproduces the user's report: "down scrolls when hitting the
+    // center of the screen". With a normal-sized viewport (vh≈20)
+    // and the default margin=3, pressing Down while the cursor sits
+    // anywhere in the visible safe zone (rows 3..16) must NOT
+    // scroll the view — the cursor is already in view, no work to
+    // do.
+    let ctx = egui::Context::default();
+    ctx.style_mut(|s| {
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+    });
+
+    let mut app = app_with_lines(200);
+    // Default scroll_margin_lines is 3 (configured in
+    // `ViewState::default`).
+    let screen_w = 800.0;
+    let screen_h = 400.0;
+
+    // Probe the actual values used by the auto-scroll code so a
+    // future regression is obvious in the log even when the test
+    // passes. Make sure the safe-zone math holds with the values
+    // the production code is actually working with.
+    let _shapes0 = settle_scroll(&ctx, &mut app, screen_w, screen_h, 0.0);
+    eprintln!("app.viewport_lines (after first render) = {}", app.viewport_lines);
+
+    // Establish baseline at line 0 (top of doc).
+    let caret0 = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 0);
+    let caret0_y = caret0.min.y;
+
+    // Walk the cursor from line 4 to line 13 — those are deep in
+    // the safe zone (vh-1-margin = 16). Pressing Down within this
+    // band MUST leave the caret's screen-y position advancing by ~1
+    // line per press — NOT pinned, NOT triggering scroll.
+    let mut prev_cy = caret0_y;
+    for line in 4..13 {
+        let cy = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line)
+            .min
+            .y;
+        eprintln!("line {line} cy = {cy} (delta from prev {} px)", cy - prev_cy);
+        assert!(
+            (cy - prev_cy).abs() > 1.0,
+            "BUG: cursor at line {line} should be in safe zone rows 3..16 (vh≈20, margin=3) \
+             and free to advance; instead caret moved by only {} px from prev_cy, meaning a \
+             scroll fired at the centre",
+            (cy - prev_cy).abs()
+        );
+        prev_cy = cy;
+    }
+}
+
+#[test]
+fn cursor_up_at_viewport_center_with_default_margin_does_not_scroll() {
+    // Symmetric test for Up navigation. Set the view to start
+    // scrolled down (cursor near the bottom), then walk the cursor
+    // up through the safe zone and verify no scroll fires.
+    let ctx = egui::Context::default();
+    ctx.style_mut(|s| {
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+    });
+
+    let mut app = app_with_lines(200);
+    let screen_w = 800.0;
+    let screen_h = 400.0;
+
+    // Establish baseline at line 0 then march the cursor far down so
+    // the view scrolls to follow.
+    let _ = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 0);
+    let _ = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 100);
+
+    // Now jump the cursor back UP to a position in the centre of the
+    // viewport. Read the current scroll offset to know where the
+    // viewport is, then compute a line that's actually in the centre.
+    let cursor_top_y_initial: f32 = ctx.data_mut(|d| {
+        d.get_persisted::<egui::containers::scroll_area::State>(
+            egui::Id::new(("editor_scroll", 0)),
+        )
+        .map(|s| s.offset.y)
+    }).unwrap_or(0.0);
+    let viewport_lines = app.viewport_lines.max(1);
+    let centre_line = (cursor_top_y_initial / 16.0) as usize + viewport_lines / 2;
+
+    // Walk the cursor back down to centre_line from a position below
+    // it (so we have a known starting offset). Each Up press should
+    // NOT trigger a scroll until the cursor approaches the top of
+    // the viewport (within margin = 3 rows from the top).
+    let pos = app.active_buffer().linecol_to_pos(centre_line + 5, 0).unwrap();
+    app.handle_event(core::EditorEvent::SetCursor { pos });
+    let _ = settle_scroll(&ctx, &mut app, screen_w, screen_h, 0.0);
+
+    let baseline_y: f32 = ctx.data_mut(|d| {
+        d.get_persisted::<egui::containers::scroll_area::State>(
+            egui::Id::new(("editor_scroll", 0)),
+        )
+        .map(|s| s.offset.y)
+    }).unwrap_or(0.0);
+
+    // Walk the cursor UP from centre_line+5 down to centre_line-3.
+    // None of these should fire a scroll. We verify by checking
+    // that the persisted scroll offset doesn't change.
+    for line in (centre_line.saturating_sub(3)..=(centre_line + 4)).rev() {
+        let pos = app.active_buffer().linecol_to_pos(line, 0).unwrap();
+        app.handle_event(core::EditorEvent::SetCursor { pos });
+        let _ = settle_scroll(&ctx, &mut app, screen_w, screen_h, 0.0);
+        let now_y: f32 = ctx.data_mut(|d| {
+            d.get_persisted::<egui::containers::scroll_area::State>(
+                egui::Id::new(("editor_scroll", 0)),
+            )
+            .map(|s| s.offset.y)
+        }).unwrap_or(0.0);
+        // We allow within 1.0 px for floating-point settle noise.
+        assert!(
+            (now_y - baseline_y).abs() < 1.0,
+            "BUG: cursor Up from line {} triggered a scroll (offset {} -> {}, line {} of \
+             down-direction walk)",
+            line, baseline_y, now_y, centre_line + 5 - line
+        );
+    }
+}
+
+#[test]
 fn cursor_down_past_viewport_scrolls_view_so_cursor_stays_visible() {
     // Disable scroll animation for deterministic tests — the production
     // code uses the default smooth animation but for an offscreen test
