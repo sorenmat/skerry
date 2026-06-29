@@ -971,12 +971,13 @@ impl App {
         self.status_message = Some(format!("Replaced {count} occurrences."));
     }
 
-    /// Adjust the active document's `scroll_top_line` so the cursor is
-    /// visible. Called by the renderer after it determines the viewport
-    /// height. Each document owns its own scroll offset, so switching
-    /// tabs preserves where you were scrolled to in each one — the
-    /// cursor-following clamp only fires for the doc you're currently
-    /// looking at.
+    /// Adjust the active document's `scroll_top_line` so the cursor
+    /// stays within the configured `scroll-margin` of the viewport's
+    /// top and bottom rows. Called by the renderer after it
+    /// determines the viewport height. Each document owns its own
+    /// scroll offset, so switching tabs preserves where you were
+    /// scrolled to in each one — the cursor-following clamp only
+    /// fires for the doc you're currently looking at.
     pub fn adjust_viewport(&mut self, viewport_height: u16) {
         self.viewport_height = viewport_height;
         let cursor_pos = self.active_buffer().cursor();
@@ -987,12 +988,31 @@ impl App {
         if vh == 0 {
             return;
         }
+        // Margin (Emacs `scroll-margin`): the cursor triggers a
+        // scroll when it's within this many rows of the viewport's
+        // edge. After scrolling, `margin` rows of buffer are kept
+        // visible above/below the cursor, so the user lands the
+        // cursor near an edge and continues moving without the
+        // view jumping at the very last row. Reads from the doc's
+        // `ViewState::scroll_margin_lines` (defaults to 3 in
+        // `core::Document`).
+        let margin = self.active_doc().view.scroll_margin_lines;
         let top = self.active_doc().view.scroll_top_line;
-        let new_top = if cursor_line < top {
-            cursor_line
-        } else if cursor_line >= top + vh {
-            cursor_line + 1 - vh
+        let new_top = if cursor_line < top.saturating_add(margin) {
+            // Cursor within `margin` of (or before) the top row.
+            // Scroll up so the cursor lands at row `margin`.
+            cursor_line.saturating_sub(margin)
+        } else if cursor_line >= top + vh.saturating_sub(margin) {
+            // Cursor within `margin` of (or past) the bottom row.
+            // Scroll down so the cursor lands at row
+            // `vh - margin - 1`. Solving
+            //   cursor_line = (new_top + vh - margin - 1)
+            // for `new_top` gives the line below.
+            cursor_line + margin + 1 - vh
         } else {
+            // Cursor inside the safe zone — no scroll. Manual wheel
+            // scrolling away from the cursor is preserved across
+            // presses.
             top
         };
         self.active_doc_mut().view.scroll_top_line = new_top;
@@ -2106,6 +2126,88 @@ mod tests {
             top_doc0,
             "doc 0 scroll preserved across tab switch"
         );
+    }
+
+    #[test]
+    fn adjust_viewport_uses_scroll_margin_for_cursor_following() {
+        // Emacs `scroll-margin`: the view should pre-emptively
+        // scroll when the cursor is within `scroll_margin_lines`
+        // rows of the viewport edge. With margin=2 and vh=10
+        // (large enough to fit multiple safe rows), the safe zone
+        // is rows [2..7] (= 5 rows). Cursor moves within that
+        // band don't trigger a scroll.
+        let mut app = app_with(
+            "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14",
+        );
+        app.viewport_height = 10;
+        app.documents[0].view.scroll_margin_lines = 2;
+
+        // Park the cursor at line 5 (row 5 with top=0). Move it
+        // through the safe zone without a scroll triggering.
+        let pos = app.active_buffer().linecol_to_pos(5, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(10);
+        assert_eq!(app.documents[0].view.scroll_top_line, 0);
+        // Walk through safe zone (rows 2..7). Each move from safe
+        // row to safe row stays in safe zone — no scroll.
+        for line in [4usize, 5, 6, 7] {
+            let pos = app.active_buffer().linecol_to_pos(line, 0).unwrap();
+            app.active_buffer_mut().set_cursor(pos);
+            app.adjust_viewport(10);
+            assert_eq!(
+                app.documents[0].view.scroll_top_line, 0,
+                "cursor at line {line} (inside safe zone rows 2..7 with margin=2) should NOT scroll; got top={}",
+                app.documents[0].view.scroll_top_line
+            );
+        }
+
+        // Step ONCE past the bottom of the safe zone (line 8 with
+        // top=0 → row 8 = vh - margin - 1 + 1). Triggers scroll,
+        // pinning the cursor at row vh - 1 - margin = 7.
+        let pos = app.active_buffer().linecol_to_pos(8, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(10);
+        // new_top = cursor_line - (vh - 1 - margin) = 8 - 7 = 1.
+        assert_eq!(
+            app.documents[0].view.scroll_top_line, 1,
+            "margin=2, vh=10, cursor at line 8: should pin at row 7, new_top = 1"
+        );
+
+        // Next cursor move (line 9) should keep the cursor at
+        // row 7 — new_top = 9 - 7 = 2. Each subsequent press
+        // advances the view by exactly 1 line.
+        let pos = app.active_buffer().linecol_to_pos(9, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(10);
+        assert_eq!(app.documents[0].view.scroll_top_line, 2);
+
+        // And for the top edge: cursor way up at line 0 should
+        // pull the view to top with new_top = 0 - margin = -2 →
+        // saturating to 0.
+        let pos = app.active_buffer().linecol_to_pos(0, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(10);
+        assert_eq!(
+            app.documents[0].view.scroll_top_line, 0,
+            "margin=2, cursor at line 0: new_top saturates to 0"
+        );
+
+        // Margin=0 (legacy): the cursor only triggers scroll when
+        // it actually leaves the viewport, no pre-scroll.
+        let mut app = app_with("a\nb\nc\nd\ne\nf");
+        app.viewport_height = 3;
+        app.documents[0].view.scroll_margin_lines = 0;
+        let pos = app.active_buffer().linecol_to_pos(2, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(3);
+        // No margin: cursor at line 2 (= row 2 inside viewport 0..2).
+        assert_eq!(app.documents[0].view.scroll_top_line, 0);
+        let pos = app.active_buffer().linecol_to_pos(3, 0).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.adjust_viewport(3);
+        // Cursor at line 3 (one past last visible row): trigger.
+        // new_top = cursor - vh + 1 = 3 - 3 + 1 = 1.
+        assert_eq!(app.documents[0].view.scroll_top_line, 1);
     }
 
     #[test]

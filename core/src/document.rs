@@ -44,6 +44,22 @@ pub struct ViewState {
     /// clamp always runs in `render`), but the GUI's
     /// `scroll_to_rect` logic does.
     pub last_seen_cursor: usize,
+    /// Scroll margin (Emacs `scroll-margin`). When the cursor moves
+    /// within this many lines of the viewport's top or bottom row, the
+    /// view pre-emptively scrolls so the cursor stops at this margin
+    /// from the edge (with N rows of buffer still visible above /
+    /// below). The user lands the cursor near the bottom and
+    /// continues pressing Down without the view jumping at the
+    /// last visible row.
+    ///
+    /// Default 3 — matches common Emacs configurations of
+    /// `scroll-margin: 3` and the `scroll-step`-with-margin variant
+    /// modern editors configure by default. Per-document so files
+    /// with different reading modes (long prose vs. dense code) can
+    /// pick their own. Set to 0 to disable the pre-scroll and only
+    /// scroll when the cursor actually leaves the viewport (the old
+    /// v0.1 behaviour).
+    pub scroll_margin_lines: usize,
     /// Indent mode for this document. When `use_spaces` is true,
     /// pressing Tab inserts `tab_width` space characters; when false,
     /// it inserts a single `\t`. Affects ONLY what Tab produces —
@@ -74,6 +90,7 @@ impl Default for ViewState {
             scroll_x_cols: 0,
             scroll_top_line: 0,
             last_seen_cursor: 0,
+            scroll_margin_lines: 3,
             use_spaces: true,
             tab_width: 4,
             soft_wrap: false,

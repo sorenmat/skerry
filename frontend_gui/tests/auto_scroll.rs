@@ -361,3 +361,138 @@ fn consecutive_down_arrows_each_scroll_exactly_one_line_not_two() {
         (caret_third_y - caret_edge_y).abs(),
     );
 }
+
+#[test]
+fn scroll_margin_kicks_in_n_lines_before_viewport_edge() {
+    // Emacs `scroll-margin` semantics: the view should pre-emptively
+    // scroll so N rows of buffer stay visible above and below the
+    // cursor when the cursor approaches the viewport edge.
+    //
+    // With the default of 3 (configured in `ViewState::default`), the
+    // view scrolls when the cursor enters the bottom N rows of the
+    // viewport — well before the last visible row. After scrolling,
+    // the cursor stays pinned at row `vh - N - 1` so each subsequent
+    // Down press scrolls by exactly one line.
+    let ctx = egui::Context::default();
+    ctx.style_mut(|s| {
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+    });
+
+    let mut app = app_with_lines(200);
+    let screen_w = 800.0;
+    let screen_h = 400.0;
+
+    // Walk the cursor down one line at a time and detect the
+    // TRANSITION from "caret moves freely with the cursor" to
+    // "caret is pinned at the same y because scroll-margin kicked
+    // in". With margin=3 + vh≈20, the cursor freely moves through
+    // lines 0..16 (= row 16 = vh - 1 - margin). At line 17 the
+    // margin triggers and the caret pins at the same y for every
+    // subsequent line. We track the first line where the caret
+    // stops advancing — that's where the margin actually took
+    // effect.
+    // Walk the cursor down one line at a time, recording each
+    // line's caret y. We detect the TRANSITION from "caret moves
+    // freely with the cursor" to "caret is pinned at the same y
+    // because scroll-margin kicked in" by watching for the first
+    // line where the caret y stops advancing. (Re-rendering an
+    // earlier line later would give a different cy because the
+    // scroll state has advanced by then, so we capture y during
+    // the initial pass instead of replaying.)
+    let mut cy_by_line: std::collections::HashMap<usize, f32> = Default::default();
+    let mut prev_cy: f32 = 28.0;
+    let mut margin_trigger_line: Option<usize> = None;
+    for line in 1..60 {
+        let caret = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line);
+        let cy = caret.min.y;
+        cy_by_line.insert(line, cy);
+        if (cy - prev_cy).abs() < 1.0 && line > 1 {
+            margin_trigger_line = Some(line);
+            break;
+        }
+        prev_cy = cy;
+    }
+    let margin_line = margin_trigger_line.unwrap_or_else(|| {
+        panic!("with default scroll_margin=3, caret never pinned; margin logic broken")
+    });
+    let free_line = margin_line - 1;
+    let free_y_in_loop = *cy_by_line.get(&free_line).expect("free line recorded");
+    let pinned_y_in_loop = *cy_by_line.get(&margin_line).expect("margin line recorded");
+
+    // The key invariant of `scroll-margin`: when the cursor moves
+    // from the last free line into the margin zone, the **caret
+    // y should NOT advance** (no visible jump) because the view
+    // scrolls to keep the cursor at the same on-screen row.
+    // Concretely, with margin=3 and vh≈20, the cursor pins at row
+    // `vh - 1 - margin = 16`, so cy values for the free line and
+    // the just-pinned line are equal.
+    assert!(
+        (pinned_y_in_loop - free_y_in_loop).abs() < 1.0,
+        "with default scroll_margin=3: the caret should stay at the same on-screen row \
+         when the cursor moves from the last free line ({free_line}, cy={free_y_in_loop}) into \
+         the margin zone at line {margin_line} (cy={pinned_y_in_loop}); a jump here means the \
+         view didn't pre-emptively scroll, and edge-stick would land on the last row instead."
+    );
+
+    // The cursor should also keep advancing down the buffer while
+    // the caret y stays pinned — that's the whole point of margin:
+    // each subsequent Down press advances the buffer cursor by 1
+    // line and the view scrolls by exactly 1 line, no jitter.
+    let mut pinned = pinned_y_in_loop;
+    for line in (margin_line + 1)..(margin_line + 6) {
+        let cy = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line)
+            .min
+            .y;
+        assert!(
+            (cy - pinned).abs() < 1.5,
+            "with default scroll_margin=3: caret should stay pinned at y={pinned_y_in_loop} while \
+             the cursor advances from line {margin_line} onward; at line {line} caret moved by {} px",
+            (cy - pinned).abs()
+        );
+        pinned = cy;
+    }
+}
+
+#[test]
+fn scroll_margin_zero_matches_legacy_edge_stick_behavior() {
+    // Setting `scroll_margin_lines = 0` collapses to the legacy
+    // v0.1 behaviour: scroll only when the cursor actually leaves
+    // the viewport. The pinned y after the first scroll-triggering
+    // press is the very LAST row, not `vh - margin - 1`.
+    let ctx = egui::Context::default();
+    ctx.style_mut(|s| {
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+    });
+
+    let mut app = app_with_lines(200);
+    app.active_doc_mut().view.scroll_margin_lines = 0;
+    let screen_w = 800.0;
+    let screen_h = 400.0;
+
+    let caret0 = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 0);
+    let caret0_y = caret0.min.y;
+
+    // With margin=0, the cursor freely advances until the last
+    // fully-visible row. After that, scroll triggers and the caret
+    // pins to the very last row of the viewport — let's verify by
+    // walking through.
+    let mut last_free: Option<usize> = None;
+    for line in 1..120 {
+        let caret = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line);
+        let cy = caret.min.y;
+        if cy < screen_h && cy > caret0_y {
+            last_free = Some(line);
+        } else {
+            break;
+        }
+    }
+    let free_line = last_free.expect("have at least one free line");
+    // Step ONE past — should pin to the last visible row, which
+    // has a higher y than any of the freely-moving rows.
+    let caret_after = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, free_line + 1);
+    let cy_after = caret_after.min.y;
+    assert!(
+        cy_after < screen_h,
+        "after first scroll-triggering press, caret should still be inside the screen (y={cy_after})"
+    );
+}

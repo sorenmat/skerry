@@ -779,10 +779,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                 }
             }
 
-            // Auto-scroll to cursor when it has moved off-screen. Only
-            // fires when the cursor position changed since the last
-            // frame (so manual wheel-scrolling past the cursor still
-            // works).
+            // Auto-scroll to cursor when it has moved off-screen, or
+            // within the configured margin of the viewport edge
+            // (Emacs `scroll-margin`). Only fires when the cursor
+            // position changed since the last frame (so manual
+            // wheel-scrolling past the cursor still works).
             //
             // We can't use egui's `scroll_to_rect(rect, None)` here —
             // its formula gives a delta proportional to how far the
@@ -793,16 +794,24 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
             // first scroll-triggering press, every subsequent press
             // jumps the cursor down by 2 lines instead of 1.
             //
-            // Instead we compute the desired offset directly. Edge-stick
-            // semantics: when the cursor moves past the viewport's
-            // bottom row, scroll by exactly ONE line of content so the
-            // cursor lands at the bottom row. When it moves past the
-            // viewport's top row, scroll up by exactly ONE line so the
-            // cursor lands at the top row. When it's already in view,
-            // do nothing — manual wheel scrolling away from the cursor
-            // is preserved across presses.
+            // Instead we compute the desired offset directly.
+            // Edge-stick semantics — when the cursor is within the
+            // margin (the default 3 lines) of the viewport's bottom
+            // row, scroll by exactly enough so the cursor lands at
+            // row `viewport_height - margin_lines - 1` (and likewise
+            // for the top edge). When the cursor is already inside
+            // the safe zone, do nothing — manual wheel scrolling
+            // away from the cursor is preserved across presses.
             if cursor_moved {
-                auto_scroll_to_cursor(ui, scroll_id, app.active, cursor_line, line_height, app.viewport_lines.max(1));
+                auto_scroll_to_cursor(
+                    ui,
+                    scroll_id,
+                    app.active,
+                    cursor_line,
+                    line_height,
+                    app.viewport_lines.max(1),
+                    app.active_doc().view.scroll_margin_lines,
+                );
             }
         });
 
@@ -813,7 +822,8 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     app.active_doc_mut().view.last_seen_cursor = current_cursor;
 }
 
-/// Auto-scroll the editor so the cursor stays inside the viewport.
+/// Auto-scroll the editor so the cursor stays inside the viewport's
+/// "safe zone" (within `margin_lines` of the top and bottom rows).
 ///
 /// Called from inside `ScrollArea::show`'s closure. The `ui` here is
 /// the inner UI, so `ui.scroll_with_delta_animation` queues into the
@@ -846,6 +856,7 @@ fn auto_scroll_to_cursor(
     cursor_line: usize,
     line_height: f32,
     viewport_lines: usize,
+    margin_lines: usize,
 ) {
     // Read the *current* vertical offset from the ScrollArea's
     // persisted state. `State` from `egui::containers::scroll_area`
@@ -864,31 +875,41 @@ fn auto_scroll_to_cursor(
     let _ = active_doc;
 
     // The viewport's height in content-y pixels. Use
-    // `viewport_lines * line_height` so that the cursor lands at the
-    // LAST visible row when scrolling down, and at the FIRST visible
-    // row when scrolling up. (A `viewport_lines.max(1)` floor keeps
-    // a degenerate viewport from triggering div-by-zero.)
+    // `viewport_lines * line_height`. A `viewport_lines.max(1)`
+    // floor keeps a degenerate viewport from triggering
+    // div-by-zero.
     let vh_lines = viewport_lines.max(1);
     let visible_height = (vh_lines as f32) * line_height;
+    // `scroll-margin` in Emacs speaks in lines; we scale by
+    // `line_height` so the math is in the same units as
+    // `current_offset_y`. `margin_px = 0` collapses to the legacy
+    // "scroll when cursor leaves the viewport" behaviour.
+    let margin_px = (margin_lines as f32) * line_height;
 
     // Cursor's content-y range.
     let cursor_top_y = (cursor_line as f32) * line_height;
     let cursor_bottom_y = cursor_top_y + line_height;
 
-    // Compute the desired top-of-viewport content-y so the cursor is
-    // pinned at the appropriate edge. Default to the current offset
-    // (no scroll) so that if the cursor is already in view, the
-    // call becomes a no-op.
+    // Compute the desired top-of-viewport content-y so the cursor
+    // sits at row `margin_lines` from the top and `margin_lines`
+    // from the bottom (i.e., row `viewport_height - margin_lines
+    // - 1`). Default to the current offset so that when the
+    // cursor is already inside the safe zone, the call becomes a
+    // no-op.
     let mut desired_top_y = current_offset_y;
 
-    if cursor_bottom_y > current_offset_y + visible_height {
-        // Cursor is past the bottom of the viewport. Scroll down so
-        // the cursor's TOP lands at the LAST visible row.
-        desired_top_y = cursor_bottom_y - visible_height;
-    } else if cursor_top_y < current_offset_y {
-        // Cursor is past the top of the viewport. Scroll up so the
-        // cursor's TOP lands at row 0 of the viewport.
-        desired_top_y = cursor_top_y;
+    // Trigger scroll DOWN once the cursor's BOTTOM is within the
+    // margin of the viewport's bottom row.
+    if cursor_bottom_y > current_offset_y + visible_height - margin_px {
+        // After scrolling, the cursor's TOP lands at row
+        // `(vh - margin - 1)`. Solve for the new offset:
+        //   cursor_top_y - new_offset = (vh - margin - 1) * lh
+        desired_top_y = cursor_top_y - (visible_height - line_height - margin_px);
+    } else if cursor_top_y < current_offset_y + margin_px {
+        // Cursor is within margin of the top row. Scroll up so the
+        // cursor's TOP lands at row `margin_lines`. Solve:
+        //   cursor_top_y - new_offset = margin * lh
+        desired_top_y = cursor_top_y - margin_px;
     }
     // Don't scroll past the very top of the document.
     desired_top_y = desired_top_y.max(0.0);
