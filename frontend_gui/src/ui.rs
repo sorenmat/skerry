@@ -771,23 +771,25 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
             // Auto-scroll to cursor when it has moved off-screen. Only
             // fires when the cursor position changed since the last
             // frame (so manual wheel-scrolling past the cursor still
-            // works). The cursor's content-space rect is the line at
-            // `cursor_line * line_height` — passing that to
-            // `scroll_to_rect` with `Align::Center` gives a PageUp/PageDown
-            // feel (cursor lands in the middle) which matches most
-            // editors' behavior.
+            // works).
+            //
+            // `scroll_to_rect` with `align: None` does the right thing:
+            // it's a no-op when the rect is already fully in view, and
+            // otherwise scrolls the minimum amount needed to bring it
+            // into view. Using `Some(Align::Center)` here would always
+            // recenter on every cursor move, blowing away manual
+            // wheel-scrolling away from the cursor.
+            //
+            // The rect is in content-space coordinates relative to the
+            // ScrollArea's inner UI (where (0, 0) is the top of the
+            // file) — `cursor_line * line_height` is the content-y of
+            // the line the cursor is on.
             if cursor_moved {
-                let cursor_content_y = cursor_line as f32 * line_height;
-                let cursor_screen_y = rect.top() + cursor_content_y;
-                let above = cursor_screen_y < rect.top();
-                let below = cursor_screen_y + line_height > rect.bottom();
-                if above || below {
-                    let cursor_rect = egui::Rect::from_min_size(
-                        egui::pos2(0.0, cursor_content_y),
-                        egui::vec2(rect.width(), line_height),
-                    );
-                    ui.scroll_to_rect(cursor_rect, Some(egui::Align::Center));
-                }
+                let cursor_rect = egui::Rect::from_min_size(
+                    egui::pos2(0.0, cursor_line as f32 * line_height),
+                    egui::vec2(rect.width(), line_height),
+                );
+                ui.scroll_to_rect(cursor_rect, None);
             }
         });
 
