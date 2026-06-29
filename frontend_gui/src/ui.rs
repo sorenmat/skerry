@@ -21,6 +21,11 @@ use crate::app::{CloseChoice, EditorApp};
 
 const FONT_SIZE: f32 = 14.0;
 const CARET_WIDTH: f32 = 2.0;
+/// Exponential-decay speed for caret animation (1/seconds). Higher =
+/// snappier. At 25, the time constant is 40 ms — the caret reaches
+/// ~70 % of the way in 3 frames (50 ms at 60 fps), which feels
+/// responsive without looking like a hard teleport.
+const CARET_ANIM_SPEED: f32 = 25.0;
 const TAB_ACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(60, 80, 140);
 const TAB_INACTIVE_FG: egui::Color32 = egui::Color32::from_rgb(150, 150, 150);
 const TAB_SEPARATOR: egui::Color32 = egui::Color32::from_rgb(80, 80, 80);
@@ -474,6 +479,28 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
         None
     };
 
+    // Animate the caret's vertical position so it slides between
+    // lines instead of teleporting. Three cases:
+    //
+    // 1. View scrolled (edge-stick) → snap. The scroll override
+    //    already moved the content; animating on top would make the
+    //    caret drift from the pin row.
+    // 2. Tab switch or first frame → snap. No slide from the old
+    //    tab's caret to the new one.
+    // 3. Cursor moved freely within the viewport → lerp toward the
+    //    target. The caret slides for ~50 ms, which feels smooth
+    //    without lagging behind rapid key repeats.
+    let target_caret_y = cursor_line as f32 * line_height;
+    let tab_switched = app.active != app.prev_active;
+    if scroll_override_y.is_some() || tab_switched || app.caret_anim_y.is_nan() {
+        app.caret_anim_y = target_caret_y;
+    } else {
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let lerp = 1.0 - (-CARET_ANIM_SPEED * dt).exp();
+        app.caret_anim_y += (target_caret_y - app.caret_anim_y) * lerp;
+    }
+    app.prev_active = app.active;
+
     let scroll_area = egui::ScrollArea::vertical()
         .id_salt(("editor_scroll", app.active))
         .auto_shrink([false; 2]);
@@ -765,25 +792,31 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                     }
                 }
 
-                // Character cursor caret (drawn last, on top).
-                // Only draw the caret when the selection is collapsed.
-                // When a non-empty selection exists, the selection rectangle
-                // already marks the head position — drawing the caret on top
-                // of it would cover the first character of the after-selection
-                // text on the head line, making it look like that character
-                // was eaten by the selection.
-                if line_idx == cursor_line && sel_range.is_none() {
-                    let char_col = byte_to_char_col(&line_text, cursor_byte_col);
-                    let caret_x = (text_x + char_col as f32 * char_width).round();
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(caret_x, y),
-                            egui::vec2(CARET_WIDTH, line_height),
-                        ),
-                        0.0,
-                        visuals.text_color(),
-                    );
-                }
+                // (Caret painting moved outside the loop — see below.)
+            }
+
+            // Character cursor caret — painted after the line loop so
+            // it sits on top of all text, at the animated y position.
+            // Only draw when the selection is collapsed; a non-empty
+            // selection rectangle already marks the head position.
+            if sel_range.is_none() && cursor_line < total_lines {
+                let caret_line_text = app.active_buffer().line_text(cursor_line)
+                    .map(|c| c.into_owned())
+                    .unwrap_or_default();
+                let char_col = byte_to_char_col(&caret_line_text, cursor_byte_col);
+                let text_x = (rect.left() + prefix_chars as f32 * char_width
+                    - app.active_doc().view.scroll_x_cols as f32 * char_width)
+                    .round();
+                let caret_x = (text_x + char_col as f32 * char_width).round();
+                let caret_y = (rect.top() + app.caret_anim_y).round();
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(caret_x, caret_y),
+                        egui::vec2(CARET_WIDTH, line_height),
+                    ),
+                    0.0,
+                    visuals.text_color(),
+                );
             }
 
             // Mouse handling: convert pointer position to byte position

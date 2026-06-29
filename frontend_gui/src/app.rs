@@ -37,6 +37,18 @@ pub struct EditorApp {
     /// a path; Enter loads it, Esc cancels. Mirrors the TUI's
     /// `open_file_dialog`.
     pub open_file_dialog: Option<OpenFileDialog>,
+    /// Animated caret vertical position in content-space pixels
+    /// (`cursor_line * line_height`). Lerps toward the target each
+    /// frame so the caret slides smoothly between lines instead of
+    /// teleporting. Snaps (no lerp) when the view scrolls (edge-stick
+    /// already handles smoothness) or when switching tabs. `NaN`
+    /// means "not initialized" — the first render snaps to the
+    /// cursor's actual position.
+    pub caret_anim_y: f32,
+    /// Previous `active` document index. Used to detect tab switches
+    /// so the caret animation snaps instead of sliding from the old
+    /// tab's caret position to the new one.
+    pub prev_active: usize,
 }
 
 /// The three choices offered when closing a dirty document. Mirrors
@@ -85,6 +97,8 @@ impl EditorApp {
             search: Search::new(),
             close_confirm: None,
             open_file_dialog: None,
+            caret_anim_y: f32::NAN,
+            prev_active: 0,
         }
     }
 
