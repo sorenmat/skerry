@@ -439,10 +439,52 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     let prefix_text = format!("{:>width$} \u{2502} ", 1, width = gutter_width);
     let prefix_chars = prefix_text.chars().count();
 
-    egui::ScrollArea::vertical()
+    // Compute the desired scroll offset BEFORE the ScrollArea so we
+    // can pass it via `.vertical_scroll_offset()`. egui bakes the
+    // offset into the inner UI's coordinate space at `begin` time
+    // (line 591 of scroll_area.rs: `inner_rect.min - state.offset`),
+    // so setting it on the builder makes the SAME frame's painting
+    // use the correct offset. This eliminates the one-frame lag that
+    // caused visible cursor jumpiness — the caret no longer dips a
+    // line below the pin row on each arrow press.
+    //
+    // We only override when the cursor actually moved; otherwise we
+    // leave the offset alone so manual wheel scrolling is preserved.
+    let scroll_override_y: Option<f32> = if cursor_moved {
+        let current_offset_y: f32 = ui
+            .ctx()
+            .data_mut(|d| {
+                d.get_persisted::<egui::containers::scroll_area::State>(scroll_id)
+                    .map(|s| s.offset.y)
+            })
+            .unwrap_or(0.0);
+        let desired = compute_desired_scroll_offset(
+            current_offset_y,
+            cursor_line,
+            line_height,
+            app.viewport_lines.max(1),
+            app.active_doc().view.scroll_margin_lines,
+        );
+        if (desired - current_offset_y).abs() > 0.01 {
+            Some(desired)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let scroll_area = egui::ScrollArea::vertical()
         .id_salt(("editor_scroll", app.active))
-        .auto_shrink([false; 2])
-        .show(ui, |ui| {
+        .auto_shrink([false; 2]);
+
+    let scroll_area = if let Some(y) = scroll_override_y {
+        scroll_area.vertical_scroll_offset(y)
+    } else {
+        scroll_area
+    };
+
+    scroll_area.show(ui, |ui| {
             let total_height = total_lines as f32 * line_height;
             let response = ui.allocate_response(
                 egui::vec2(ui.available_width(), total_height),
@@ -786,41 +828,6 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
                     app.active_doc_mut().view.scroll_x_cols = new_cols;
                 }
             }
-
-            // Auto-scroll to cursor when it has moved off-screen, or
-            // within the configured margin of the viewport edge
-            // (Emacs `scroll-margin`). Only fires when the cursor
-            // position changed since the last frame (so manual
-            // wheel-scrolling past the cursor still works).
-            //
-            // We can't use egui's `scroll_to_rect(rect, None)` here —
-            // its formula gives a delta proportional to how far the
-            // cursor is past `clip_end`, and `clip_end` is a fixed
-            // pixel value (the viewport's bottom, in screen-space),
-            // so as the user keeps pressing Down the per-press delta
-            // grows by ~1 line each time. Visible symptom: after the
-            // first scroll-triggering press, every subsequent press
-            // jumps the cursor down by 2 lines instead of 1.
-            //
-            // Instead we compute the desired offset directly.
-            // Edge-stick semantics — when the cursor is within the
-            // margin (the default 3 lines) of the viewport's bottom
-            // row, scroll by exactly enough so the cursor lands at
-            // row `viewport_height - margin_lines - 1` (and likewise
-            // for the top edge). When the cursor is already inside
-            // the safe zone, do nothing — manual wheel scrolling
-            // away from the cursor is preserved across presses.
-            if cursor_moved {
-                auto_scroll_to_cursor(
-                    ui,
-                    scroll_id,
-                    app.active,
-                    cursor_line,
-                    line_height,
-                    app.viewport_lines.max(1),
-                    app.active_doc().view.scroll_margin_lines,
-                );
-            }
         });
 
     // Mark the cursor position as seen so the next frame's
@@ -830,76 +837,36 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     app.active_doc_mut().view.last_seen_cursor = current_cursor;
 }
 
-/// Auto-scroll the editor so the cursor stays inside the viewport's
-/// "safe zone" (within `margin_lines` of the top and bottom rows).
+/// Compute the desired vertical scroll offset so the cursor stays
+/// inside the viewport's "safe zone" (within `margin_lines` of the
+/// top and bottom rows). Pure function — no side effects, no egui
+/// calls. The caller passes the result to
+/// `ScrollArea::vertical_scroll_offset()` BEFORE the ScrollArea
+/// closure, so egui bakes it into the inner UI's coordinate space
+/// at `begin` time and the same frame's painting uses it.
 ///
-/// Called from inside `ScrollArea::show`'s closure. The `ui` here is
-/// the inner UI, so `ui.scroll_with_delta_animation` queues into the
-/// SAME frame's `Prepared::end` consumption (it doesn't survive to
-/// the next frame — `pass_state.scroll_delta` is reset by
-/// `begin_pass`).
-///
-/// **Edge-stick semantics** (Emacs `scroll-step: 1` /
-/// `scroll-conservatively: 1`, matches VSCode / Sublime / Atom):
-/// when the cursor moves past the bottom row of the viewport, the
-/// view scrolls down by exactly one line so the cursor lands at the
-/// bottom row. Likewise, when it moves past the top row, the view
-/// scrolls up by exactly one line. When the cursor is already in
-/// view, do nothing — manual wheel scrolling away from the cursor is
-/// preserved across presses.
-///
-/// We can't use egui's `scroll_to_rect(rect, None)` here — its
-/// formula gives a delta proportional to how far the cursor's
-/// bottom is past `clip_end` (the viewport's bottom in screen
-/// pixels), and `clip_end` is fixed, so as the cursor advances each
-/// subsequent Down press accumulates an extra `~line_height +
-/// spacing` of scroll. Visible symptom: after the first
-/// scroll-triggering press, every following press jumps the cursor
-/// down by two lines. Computing the desired offset directly and
-/// applying it as a precise delta sidesteps the formula overshoot.
-fn auto_scroll_to_cursor(
-    ui: &egui::Ui,
-    scroll_id: egui::Id,
-    active_doc: usize,
+/// **Edge-stick / scroll-margin semantics** (Emacs `scroll-step: 1`
+/// with `scroll-margin`, matches VSCode / Sublime / Atom): when the
+/// cursor moves within `margin_lines` of the viewport's bottom row,
+/// scroll by exactly enough so the cursor lands at row
+/// `vh - margin - 1` (and likewise at the top). When the cursor is
+/// already inside the safe zone, the return value equals
+/// `current_offset_y` (no-op).
+fn compute_desired_scroll_offset(
+    current_offset_y: f32,
     cursor_line: usize,
     line_height: f32,
     viewport_lines: usize,
     margin_lines: usize,
-) {
-    // Read the *current* vertical offset from the ScrollArea's
-    // persisted state. `State` from `egui::containers::scroll_area`
-    // is stored in `IdTypeMap` keyed by the ScrollArea's id (which
-    // the caller computes up front via `ui.make_persistent_id(...)`).
-    // If the state isn't there yet (first frame, or fresh app start),
-    // treat as zero — `cursor_moved` from the View already skipped the
-    // very first frame.
-    let current_offset_y: f32 = ui
-        .ctx()
-        .data_mut(|d| {
-            d.get_persisted::<egui::containers::scroll_area::State>(scroll_id)
-                .map(|s| s.offset.y)
-        })
-        .unwrap_or(0.0);
-    let _ = active_doc;
-
-    // The viewport's height in content-y pixels. Use
-    // `viewport_lines * line_height`. A `viewport_lines.max(1)`
-    // floor keeps a degenerate viewport from triggering
-    // div-by-zero.
+) -> f32 {
     let vh_lines = viewport_lines.max(1);
     let visible_height = (vh_lines as f32) * line_height;
-    // `scroll-margin` in Emacs speaks in lines; we scale by
-    // `line_height` so the math is in the same units as
-    // `current_offset_y`.
-    //
+
     // **Edge case**: if `2 * margin + 1 > vh` the safe zone
-    // collapses to nothing (rows [margin, vh - 1 - margin] becomes
-    // `[margin, margin - 1]`) and every cursor position triggers a
-    // scroll. That makes a small window with default margin=3
-    // behave like "scroll on every keypress", which is what the
-    // user explicitly flagged. Fall back to legacy `margin=0`
-    // (scroll only when the cursor actually leaves the viewport)
-    // when the requested margin can't fit.
+    // (rows [margin, vh - 1 - margin]) collapses to nothing and
+    // every cursor position triggers a scroll. Fall back to
+    // `margin = 0` (legacy edge-stick) so small windows don't
+    // trip a scroll on every keypress.
     let effective_margin: usize = if vh_lines > 2 * margin_lines + 1 {
         margin_lines
     } else {
@@ -907,61 +874,24 @@ fn auto_scroll_to_cursor(
     };
     let margin_px = (effective_margin as f32) * line_height;
 
-    // Cursor's content-y range.
     let cursor_top_y = (cursor_line as f32) * line_height;
     let cursor_bottom_y = cursor_top_y + line_height;
 
-    // Compute the desired top-of-viewport content-y so the cursor
-    // sits at row `effective_margin` from the top and
-    // `effective_margin` from the bottom (i.e., row
-    // `viewport_height - effective_margin - 1`). Default to the
-    // current offset so that when the cursor is already inside
-    // the safe zone, the call becomes a no-op.
     let mut desired_top_y = current_offset_y;
 
-    // Trigger scroll DOWN once the cursor's BOTTOM is within the
-    // margin of the viewport's bottom row.
     if cursor_bottom_y > current_offset_y + visible_height - margin_px {
-        // After scrolling, the cursor's TOP lands at row
-        // `(vh - margin - 1)`. Solve for the new offset:
+        // Scroll DOWN: cursor's bottom entered the bottom margin.
+        // After scrolling, cursor's top lands at row (vh - margin - 1):
         //   cursor_top_y - new_offset = (vh - margin - 1) * lh
         desired_top_y = cursor_top_y - (visible_height - line_height - margin_px);
     } else if cursor_top_y < current_offset_y + margin_px {
-        // Cursor is within margin of the top row. Scroll up so the
-        // cursor's TOP lands at row `effective_margin`. Solve:
+        // Scroll UP: cursor's top entered the top margin.
+        // After scrolling, cursor's top lands at row `margin`:
         //   cursor_top_y - new_offset = margin * lh
         desired_top_y = cursor_top_y - margin_px;
     }
-    // Don't scroll past the very top of the document.
-    desired_top_y = desired_top_y.max(0.0);
 
-    let delta_y = desired_top_y - current_offset_y;
-
-    // Only emit a non-zero scroll when there's actually something to
-    // do. A no-op when the delta is zero keeps manual wheel scrolling
-    // away from the cursor intact.
-    //
-    // We use `ScrollAnimation::none()` here — NOT the default smooth
-    // animation. The cursor itself moves instantly in the buffer; if
-    // the view offset animated over ~100ms (egui's default), the
-    // caret would visibly dip one line below the pin row on each
-    // arrow press and then slide back up as the animation caught up.
-    // That dip-and-slide is the "jumpiness" the user reported. With
-    // `none()`, the offset snaps within one frame (16 ms at 60 fps),
-    // so the caret and view stay in lockstep. Wheel scrolling is
-    // unaffected — it goes through egui's own input path, not this
-    // delta.
-    if delta_y.abs() > 0.01 {
-        // Negate: egui's `scroll_with_delta` treats positive y as
-        // "scroll content up / scroll_offset decreases" (matches
-        // wheel-up convention); we want positive `delta_y` here to
-        // mean "scroll_offset increases" (we're scrolling DOWN past
-        // the bottom row, or up past the top row).
-        ui.scroll_with_delta_animation(
-            egui::vec2(0.0, -delta_y),
-            egui::style::ScrollAnimation::none(),
-        );
-    }
+    desired_top_y.max(0.0)
 }
 
 /// Convert a pointer position (relative to the editor window) to a byte
