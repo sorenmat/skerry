@@ -238,3 +238,126 @@ fn scrollable_editor_top(_ctx: &egui::Context, _n: usize) -> f32 {
     // is sane on the common layout.
     32.0
 }
+
+/// Snap the editor's view so the cursor is just inside the visible
+/// viewport given the current `editor_top_y` (header strip height).
+/// Returns the painted caret rect for inspection.
+fn render_with_cursor_at(
+    ctx: &egui::Context,
+    app: &mut frontend_gui::app::EditorApp,
+    screen_w: f32,
+    screen_h: f32,
+    cursor_line: usize,
+) -> egui::Rect {
+    let pos = app.active_buffer().linecol_to_pos(cursor_line, 0).unwrap();
+    app.handle_event(core::EditorEvent::SetCursor { pos });
+    let shapes = settle_scroll(ctx, app, screen_w, screen_h, 0.0);
+    find_caret_rect(&shapes).expect("caret rect missing")
+}
+
+#[test]
+fn consecutive_down_arrows_each_scroll_exactly_one_line_not_two() {
+    // The edge-stick contract: at viewport bottom edge, each Down arrow
+    // press scrolls by EXACTLY ONE line. Earlier reports described a
+    // regression where "the next movement moves down 2 lines" after the
+    // first scroll triggers. The fix is correct in arithmetic but the
+    // animation interaction on top of it can hide that, so we pin the
+    // contract here with the animation disabled.
+    let ctx = egui::Context::default();
+    ctx.style_mut(|s| {
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+    });
+
+    let mut app = app_with_lines(200);
+    let screen_w = 800.0;
+    let screen_h = 400.0;
+
+    // Baseline: cursor at line 0, no scroll. The caret paints at the
+    // very top of the visible editor area (the first content row).
+    let caret0 = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 0);
+    let caret0_y = caret0.min.y;
+    eprintln!("caret@line_0 y = {caret0_y}");
+
+    // Walk the cursor to the bottom edge of the viewport. With
+    // scroll_animation disabled, each step is instant.
+    //
+    // `visible_height_in_rows` is unknown up front; we sample to find
+    // the largest cursor_line at which the caret is still painted at a
+    // MOVING screen-y position (i.e. inside the viewport and not stuck
+    // at row N). Once the caret gets pinned at the bottom row by the
+    // edge-stick scroll, that row is our "bottom edge of viewport"
+    // marker for the rest of the test.
+    let mut last_visible_row_y = None;
+    let mut last_visible_row_caret_y = 0.0;
+    for line in 1..120 {
+        let caret = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line);
+        let cy = caret.min.y;
+        eprintln!("caret@line_{} y = {}", line, cy);
+        if cy < screen_h && cy > caret0_y {
+            // caret moved further down the screen — not yet stuck at edge
+            last_visible_row_y = Some(line);
+            last_visible_row_caret_y = cy;
+        } else {
+            // caret got pinned (or went off-screen). Stop sampling.
+            break;
+        }
+    }
+    let last_visible_row_line = last_visible_row_y.expect(
+        "should have at least one row where the caret moves without edge-stick yet",
+    );
+    let last_visible_row_caret = last_visible_row_caret_y;
+    eprintln!(
+        "edge-stick kicked in somewhere between row {:?} and {:?}",
+        last_visible_row_line - 1,
+        last_visible_row_line
+    );
+
+    // Now press Down one MORE line. The edge-stick scroll should fire,
+    // bringing the cursor back to the bottom row, but moved by exactly
+    // ONE line of scroll (not two).
+    let edge_line = last_visible_row_line + 1; // first line past the bottom edge
+    let caret_edge = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, edge_line);
+    let caret_edge_y = caret_edge.min.y;
+    assert!(
+        caret_edge_y < screen_h,
+        "BUG: caret jumped past the screen height {screen_h} at the first scroll-triggering press (y={caret_edge_y})"
+    );
+    let jump_after_first_press = (caret_edge_y - last_visible_row_caret).abs();
+    assert!(
+        jump_after_first_press < f32::EPSILON.max(40.0),
+        "BUG: at the first scroll-triggering press, the caret jumped by {jump_after_first_press}px (expected ~0 — the caret should stay pinned to the bottom row of the viewport). Got edge_caret={caret_edge_y}, bottom_row_caret={last_visible_row_caret}"
+    );
+
+    // Now press Down one MORE time. The caret should STILL be at the
+    // bottom row (since edge-stick keeps it pinned), and the *view*
+    // should have scrolled by exactly ONE line of content (which we
+    // can detect by sampling which line the middle of the viewport
+    // shows now vs. after the previous press).
+    let next_line = edge_line + 1;
+    let caret_next = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, next_line);
+    let caret_next_y = caret_next.min.y;
+    assert!(
+        caret_next_y < screen_h,
+        "BUG: caret is off-screen at the second press past the edge (y={caret_next_y}, screen_h={screen_h})"
+    );
+    let jump_after_second_press = (caret_next_y - caret_edge_y).abs();
+    assert!(
+        jump_after_second_press < f32::EPSILON.max(40.0),
+        "BUG: caret moved by {jump_after_second_press}px on the second edge-stick press (expected ~0). edge_y={caret_edge_y} next_y={caret_next_y}"
+    );
+
+    // And one MORE for good measure — three consecutive presses, all
+    // should leave the caret pinned to the bottom row.
+    let third_line = next_line + 1;
+    let caret_third = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, third_line);
+    let caret_third_y = caret_third.min.y;
+    assert!(
+        caret_third_y < screen_h,
+        "BUG: caret is off-screen at the third press past the edge (y={caret_third_y}, screen_h={screen_h})"
+    );
+    assert!(
+        (caret_third_y - caret_edge_y).abs() < 40.0,
+        "BUG: caret moved substantially on the third edge-stick press ({}px). Edge-stick should keep it pinned across consecutive presses.",
+        (caret_third_y - caret_edge_y).abs(),
+    );
+}

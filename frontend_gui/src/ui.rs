@@ -352,6 +352,17 @@ fn render_open_file_window(ctx: &egui::Context, app: &mut EditorApp) {
 }
 
 fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
+    // Compute the ScrollArea's persistent id up front so we can read
+    // its `State.offset` from inside the closure (where the auto-scroll
+    // helper needs the current offset to compute its delta). The
+    // ScrollArea itself wraps its salt in `Id::new(...)` first and then
+    // calls `ui.make_persistent_id(id_salt)`; we mirror that exactly
+    // here so the hashes match and `get_persisted` actually returns
+    // the State that's been stored under the same id. (Calling
+    // `ui.make_persistent_id(("editor_scroll", app.active))` directly
+    // would hash the raw tuple, NOT the Id-wrapped salt — different
+    // bytes into the hasher, different id, empty lookup.)
+    let scroll_id = ui.make_persistent_id(egui::Id::new(("editor_scroll", app.active)));
     let total_lines = app.active_buffer().line_count();
     let gutter_width = total_lines.to_string().len().max(2);
     let font_id = egui::FontId::monospace(FONT_SIZE);
@@ -773,23 +784,25 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
             // frame (so manual wheel-scrolling past the cursor still
             // works).
             //
-            // `scroll_to_rect` with `align: None` does the right thing:
-            // it's a no-op when the rect is already fully in view, and
-            // otherwise scrolls the minimum amount needed to bring it
-            // into view. Using `Some(Align::Center)` here would always
-            // recenter on every cursor move, blowing away manual
-            // wheel-scrolling away from the cursor.
+            // We can't use egui's `scroll_to_rect(rect, None)` here —
+            // its formula gives a delta proportional to how far the
+            // cursor is past `clip_end`, and `clip_end` is a fixed
+            // pixel value (the viewport's bottom, in screen-space),
+            // so as the user keeps pressing Down the per-press delta
+            // grows by ~1 line each time. Visible symptom: after the
+            // first scroll-triggering press, every subsequent press
+            // jumps the cursor down by 2 lines instead of 1.
             //
-            // The rect is in content-space coordinates relative to the
-            // ScrollArea's inner UI (where (0, 0) is the top of the
-            // file) — `cursor_line * line_height` is the content-y of
-            // the line the cursor is on.
+            // Instead we compute the desired offset directly. Edge-stick
+            // semantics: when the cursor moves past the viewport's
+            // bottom row, scroll by exactly ONE line of content so the
+            // cursor lands at the bottom row. When it moves past the
+            // viewport's top row, scroll up by exactly ONE line so the
+            // cursor lands at the top row. When it's already in view,
+            // do nothing — manual wheel scrolling away from the cursor
+            // is preserved across presses.
             if cursor_moved {
-                let cursor_rect = egui::Rect::from_min_size(
-                    egui::pos2(0.0, cursor_line as f32 * line_height),
-                    egui::vec2(rect.width(), line_height),
-                );
-                ui.scroll_to_rect(cursor_rect, None);
+                auto_scroll_to_cursor(ui, scroll_id, app.active, cursor_line, line_height, app.viewport_lines.max(1));
             }
         });
 
@@ -798,6 +811,103 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     // so we don't conflate "tab switched" with "cursor moved within
     // this doc" — see the comment at the top of `render_text`.
     app.active_doc_mut().view.last_seen_cursor = current_cursor;
+}
+
+/// Auto-scroll the editor so the cursor stays inside the viewport.
+///
+/// Called from inside `ScrollArea::show`'s closure. The `ui` here is
+/// the inner UI, so `ui.scroll_with_delta_animation` queues into the
+/// SAME frame's `Prepared::end` consumption (it doesn't survive to
+/// the next frame — `pass_state.scroll_delta` is reset by
+/// `begin_pass`).
+///
+/// **Edge-stick semantics** (Emacs `scroll-step: 1` /
+/// `scroll-conservatively: 1`, matches VSCode / Sublime / Atom):
+/// when the cursor moves past the bottom row of the viewport, the
+/// view scrolls down by exactly one line so the cursor lands at the
+/// bottom row. Likewise, when it moves past the top row, the view
+/// scrolls up by exactly one line. When the cursor is already in
+/// view, do nothing — manual wheel scrolling away from the cursor is
+/// preserved across presses.
+///
+/// We can't use egui's `scroll_to_rect(rect, None)` here — its
+/// formula gives a delta proportional to how far the cursor's
+/// bottom is past `clip_end` (the viewport's bottom in screen
+/// pixels), and `clip_end` is fixed, so as the cursor advances each
+/// subsequent Down press accumulates an extra `~line_height +
+/// spacing` of scroll. Visible symptom: after the first
+/// scroll-triggering press, every following press jumps the cursor
+/// down by two lines. Computing the desired offset directly and
+/// applying it as a precise delta sidesteps the formula overshoot.
+fn auto_scroll_to_cursor(
+    ui: &egui::Ui,
+    scroll_id: egui::Id,
+    active_doc: usize,
+    cursor_line: usize,
+    line_height: f32,
+    viewport_lines: usize,
+) {
+    // Read the *current* vertical offset from the ScrollArea's
+    // persisted state. `State` from `egui::containers::scroll_area`
+    // is stored in `IdTypeMap` keyed by the ScrollArea's id (which
+    // the caller computes up front via `ui.make_persistent_id(...)`).
+    // If the state isn't there yet (first frame, or fresh app start),
+    // treat as zero — `cursor_moved` from the View already skipped the
+    // very first frame.
+    let current_offset_y: f32 = ui
+        .ctx()
+        .data_mut(|d| {
+            d.get_persisted::<egui::containers::scroll_area::State>(scroll_id)
+                .map(|s| s.offset.y)
+        })
+        .unwrap_or(0.0);
+    let _ = active_doc;
+
+    // The viewport's height in content-y pixels. Use
+    // `viewport_lines * line_height` so that the cursor lands at the
+    // LAST visible row when scrolling down, and at the FIRST visible
+    // row when scrolling up. (A `viewport_lines.max(1)` floor keeps
+    // a degenerate viewport from triggering div-by-zero.)
+    let vh_lines = viewport_lines.max(1);
+    let visible_height = (vh_lines as f32) * line_height;
+
+    // Cursor's content-y range.
+    let cursor_top_y = (cursor_line as f32) * line_height;
+    let cursor_bottom_y = cursor_top_y + line_height;
+
+    // Compute the desired top-of-viewport content-y so the cursor is
+    // pinned at the appropriate edge. Default to the current offset
+    // (no scroll) so that if the cursor is already in view, the
+    // call becomes a no-op.
+    let mut desired_top_y = current_offset_y;
+
+    if cursor_bottom_y > current_offset_y + visible_height {
+        // Cursor is past the bottom of the viewport. Scroll down so
+        // the cursor's TOP lands at the LAST visible row.
+        desired_top_y = cursor_bottom_y - visible_height;
+    } else if cursor_top_y < current_offset_y {
+        // Cursor is past the top of the viewport. Scroll up so the
+        // cursor's TOP lands at row 0 of the viewport.
+        desired_top_y = cursor_top_y;
+    }
+    // Don't scroll past the very top of the document.
+    desired_top_y = desired_top_y.max(0.0);
+
+    let delta_y = desired_top_y - current_offset_y;
+
+    // Only emit a non-zero scroll when there's actually something to
+    // do. A no-op when the delta is zero keeps manual wheel scrolling
+    // away from the cursor intact (the user's last `scroll_offset`
+    // point is preserved, since `scroll_with_delta_animation` only
+    // runs when needed).
+    if delta_y.abs() > 0.01 {
+        // Negate: egui's `scroll_with_delta` treats positive y as
+        // "scroll content up / scroll_offset decreases" (matches
+        // wheel-up convention); we want positive `delta_y` here to
+        // mean "scroll_offset increases" (we're scrolling DOWN past
+        // the bottom row, or up past the top row).
+        ui.scroll_with_delta(egui::vec2(0.0, -delta_y));
+    }
 }
 
 /// Convert a pointer position (relative to the editor window) to a byte
