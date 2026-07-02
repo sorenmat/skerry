@@ -101,11 +101,15 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         };
     }
 
-    // Alt-modified keys (line move).
+    // Alt-modified keys. Alt+Up/Down moves lines; Alt+Left/Right (and
+    // Option+Left/Right on macOS) moves by word, since macOS reserves
+    // Ctrl+Left/Right for Mission Control.
     if modifiers.alt && !primary && !modifiers.ctrl && !shift {
         return match key {
             Key::ArrowUp => Some(EditorEvent::MoveLineUp),
             Key::ArrowDown => Some(EditorEvent::MoveLineDown),
+            Key::ArrowLeft => Some(movement(Movement::WordLeft, false)),
+            Key::ArrowRight => Some(movement(Movement::WordRight, false)),
             _ => None,
         };
     }
@@ -326,6 +330,13 @@ mod tests {
         }
     }
 
+    fn alt() -> Modifiers {
+        Modifiers {
+            alt: true,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn text_event_inserts_char() {
         let ev = Event::Text("x".to_string());
@@ -401,6 +412,18 @@ mod tests {
         );
         assert_eq!(
             translate_event(&key_event(Key::ArrowRight, true, ctrl())),
+            Some(EditorEvent::Move(Movement::WordRight))
+        );
+    }
+
+    #[test]
+    fn alt_arrows_move_by_word() {
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowLeft, true, alt())),
+            Some(EditorEvent::Move(Movement::WordLeft))
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowRight, true, alt())),
             Some(EditorEvent::Move(Movement::WordRight))
         );
     }
