@@ -1027,6 +1027,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         // caret doesn't hover slightly above/below the line forever.
         if (app.caret_anim_y - target_caret_y).abs() < 1.0 {
             app.caret_anim_y = target_caret_y;
+        } else {
+            // The caret is mid-slide; keep repainting until it lands so
+            // it doesn't get stuck between lines when the app is idle.
+            ui.ctx().request_repaint();
         }
     }
     app.prev_active = app.active;
