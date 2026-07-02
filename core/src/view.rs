@@ -34,8 +34,20 @@ pub fn selection_in_line(line: Range<usize>, selection: Range<usize>) -> Option<
 /// values. For ASCII line content these are the same; for multibyte
 /// content (e.g. emoji, CJK), they differ. Cursor positioning needs char
 /// columns for visual correctness.
+///
+/// `byte_col` is clamped to the line length and snapped to the nearest
+/// valid UTF-8 character boundary so callers never panic on a misaligned
+/// offset.
 pub fn byte_to_char_col(line_text: &str, byte_col: usize) -> usize {
-    line_text[..byte_col.min(line_text.len())].chars().count()
+    let len = line_text.len();
+    if len == 0 {
+        return 0;
+    }
+    let mut clamped = byte_col.min(len);
+    while clamped > 0 && !line_text.is_char_boundary(clamped) {
+        clamped -= 1;
+    }
+    line_text[..clamped].chars().count()
 }
 
 /// Convert a character column within a line into a byte offset.
@@ -169,7 +181,11 @@ mod tests {
         let s = "héllo"; // h=0, é=1, l=2, l=3, o=4 (chars); 0, 1, 3, 4, 5 (bytes); len 6
         assert_eq!(char_col_to_byte_col(s, 0), 0, "before 'h'");
         assert_eq!(char_col_to_byte_col(s, 1), 1, "start of 'é'");
-        assert_eq!(char_col_to_byte_col(s, 2), 3, "after 'é' (2 chars = 3 bytes)");
+        assert_eq!(
+            char_col_to_byte_col(s, 2),
+            3,
+            "after 'é' (2 chars = 3 bytes)"
+        );
         assert_eq!(char_col_to_byte_col(s, 4), 5, "after 'o'");
         assert_eq!(char_col_to_byte_col(s, 5), 6, "end of string");
     }

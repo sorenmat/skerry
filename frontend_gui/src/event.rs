@@ -63,6 +63,8 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::D => Some(EditorEvent::DuplicateLine),
             Key::T => Some(EditorEvent::NewDoc),
             Key::O => Some(EditorEvent::OpenFile(None)),
+            Key::G => Some(EditorEvent::GoToLine(None)),
+            Key::P => Some(EditorEvent::FuzzyFinder(None)),
             Key::W => Some(EditorEvent::CloseDoc),
             Key::Tab => Some(EditorEvent::NextDoc),
             _ => None,
@@ -70,21 +72,18 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
     }
 
     // Cmd/Ctrl+Shift-modified keys. Tab cycles the other direction;
-    // Shift+W toggles soft-wrap (W alone is close).
+    // Shift+W toggles soft-wrap (W alone is close); Shift+F opens
+    // project-wide search; Shift+P opens the command palette.
     if primary && shift {
         return match key {
             Key::Tab => Some(EditorEvent::PrevDoc),
             Key::W => Some(EditorEvent::ToggleSoftWrap),
-            _ => None,
-        };
-    }
-
-    // Cmd/Ctrl+Shift-modified keys. Tab cycles the other direction;
-    // Shift+W toggles soft-wrap (W alone is close).
-    if primary && shift {
-        return match key {
-            Key::Tab => Some(EditorEvent::PrevDoc),
-            Key::W => Some(EditorEvent::ToggleSoftWrap),
+            Key::F => Some(EditorEvent::ProjectSearch(None)),
+            Key::P => Some(EditorEvent::CommandPalette(None)),
+            Key::S => Some(EditorEvent::SaveAs(None)),
+            Key::R => Some(EditorEvent::ReloadFile),
+            Key::ArrowUp => Some(EditorEvent::PrevHunk),
+            Key::ArrowDown => Some(EditorEvent::NextHunk),
             _ => None,
         };
     }
@@ -106,6 +105,8 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         Key::Enter => Some(EditorEvent::Insert('\n')),
         Key::Tab => Some(EditorEvent::InsertTab),
         Key::Escape => Some(EditorEvent::Quit),
+        Key::F2 => Some(EditorEvent::ToggleProjectTree),
+        Key::F5 => Some(EditorEvent::CycleTheme),
         Key::ArrowLeft if shift => Some(EditorEvent::ScrollLeft),
         Key::ArrowRight if shift => Some(EditorEvent::ScrollRight),
         Key::ArrowLeft => Some(movement(Movement::Left, select)),
@@ -181,6 +182,83 @@ pub fn classify_clipboard_event(event: &Event, buffer: &dyn Buffer) -> Option<Cl
     } else {
         Some(ClipboardAction::Cut(text))
     }
+}
+
+/// Translate input events while the project-search dialog is open.
+/// Only navigation keys are intercepted here — text input and backspace
+/// are handled by egui's `TextEdit` widget, which updates the query via
+/// `ProjectSearchQueryChanged` when its contents change. Intercepting
+/// text events as well would double every typed character.
+pub fn project_search_translate(
+    event: &Event,
+    _query: &str,
+    confirm_replace: bool,
+) -> Option<EditorEvent> {
+    translate_modal(event, |key, modifiers| {
+        if confirm_replace {
+            return match key {
+                Key::Enter | Key::Y => Some(EditorEvent::ProjectSearchReplaceAllConfirm),
+                Key::Escape | Key::N => Some(EditorEvent::ProjectSearchReplaceAllCancel),
+                _ => None,
+            };
+        }
+        if is_primary_modifier(modifiers) {
+            return match key {
+                Key::Enter => Some(EditorEvent::ProjectSearchReplaceAll),
+                _ => None,
+            };
+        }
+        match key {
+            Key::Escape => Some(EditorEvent::ProjectSearchClose),
+            Key::Enter => Some(EditorEvent::ProjectSearchOpenResult),
+            Key::Tab => Some(EditorEvent::ProjectSearchToggleFocus),
+            Key::ArrowUp => Some(EditorEvent::ProjectSearchMove { delta: -1 }),
+            Key::ArrowDown => Some(EditorEvent::ProjectSearchMove { delta: 1 }),
+            _ => None,
+        }
+    })
+}
+
+/// Translate input events while the command palette is open.
+/// Text input and backspace are handled by egui's `TextEdit` widget.
+pub fn command_palette_translate(event: &Event) -> Option<EditorEvent> {
+    translate_modal(event, |key, _modifiers| match key {
+        Key::Escape => Some(EditorEvent::CommandPaletteClose),
+        Key::Enter => Some(EditorEvent::CommandPaletteExecute),
+        Key::ArrowUp => Some(EditorEvent::CommandPaletteMove { delta: -1 }),
+        Key::ArrowDown => Some(EditorEvent::CommandPaletteMove { delta: 1 }),
+        _ => None,
+    })
+}
+
+/// Translate navigation keys while the fuzzy file finder is open.
+pub fn fuzzy_finder_translate(event: &Event) -> Option<EditorEvent> {
+    translate_modal(event, |key, _modifiers| match key {
+        Key::Escape => Some(EditorEvent::FuzzyFinderClose),
+        Key::Enter => Some(EditorEvent::FuzzyFinderExecute),
+        Key::ArrowUp => Some(EditorEvent::FuzzyFinderMove { delta: -1 }),
+        Key::ArrowDown => Some(EditorEvent::FuzzyFinderMove { delta: 1 }),
+        _ => None,
+    })
+}
+
+fn translate_modal(
+    event: &Event,
+    f: impl FnOnce(Key, &Modifiers) -> Option<EditorEvent>,
+) -> Option<EditorEvent> {
+    let Event::Key {
+        key,
+        pressed: true,
+        modifiers,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    if modifiers.alt {
+        return None;
+    }
+    f(*key, modifiers)
 }
 
 fn movement(m: Movement, select: bool) -> EditorEvent {
@@ -340,10 +418,7 @@ mod tests {
         // Cmd/Ctrl+C is the OS clipboard shortcut, not Quit. It is
         // handled separately by classify_clipboard_event, so
         // translate_event should return None for it.
-        assert_eq!(
-            translate_event(&key_event(Key::C, true, primary())),
-            None
-        );
+        assert_eq!(translate_event(&key_event(Key::C, true, primary())), None);
     }
 
     #[test]
@@ -372,10 +447,7 @@ mod tests {
 
     #[test]
     fn unmapped_key_returns_none() {
-        assert_eq!(
-            translate_event(&key_event(Key::F1, true, no_mods())),
-            None
-        );
+        assert_eq!(translate_event(&key_event(Key::F1, true, no_mods())), None);
     }
 
     // ----- classify_clipboard_event -----
@@ -387,10 +459,7 @@ mod tests {
     #[test]
     fn copy_shortcut_with_selection_returns_copy_action() {
         let mut buf = buffer_with("hello world");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         let action = classify_clipboard_event(&key_event(Key::C, true, primary()), &buf);
         assert_eq!(action, Some(ClipboardAction::Copy("hello".to_string())));
     }
@@ -398,10 +467,7 @@ mod tests {
     #[test]
     fn cut_shortcut_with_selection_returns_cut_action() {
         let mut buf = buffer_with("hello world");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         let action = classify_clipboard_event(&key_event(Key::X, true, primary()), &buf);
         assert_eq!(action, Some(ClipboardAction::Cut("hello".to_string())));
     }
@@ -419,10 +485,7 @@ mod tests {
         // Shift+Cmd/Ctrl+C is a different action (in macOS: some apps
         // use it for "copy formatting"). Don't intercept.
         let mut buf = buffer_with("hello");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         let mut mods = primary();
         mods.shift = true;
         assert!(classify_clipboard_event(&key_event(Key::C, true, mods), &buf).is_none());
@@ -432,33 +495,22 @@ mod tests {
     fn plain_c_key_does_not_match_clipboard_shortcut() {
         // Without Cmd/Ctrl, 'C' is just a printable char.
         let mut buf = buffer_with("hello");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         assert!(classify_clipboard_event(&key_event(Key::C, true, no_mods()), &buf).is_none());
     }
 
     #[test]
     fn released_clipboard_key_returns_none() {
         let mut buf = buffer_with("hello");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
-        assert!(
-            classify_clipboard_event(&key_event(Key::C, false, primary()), &buf).is_none()
-        );
+        buf.set_selection(Selection { anchor: 0, head: 5 });
+        assert!(classify_clipboard_event(&key_event(Key::C, false, primary()), &buf).is_none());
     }
 
     #[test]
     fn paste_event_is_not_classified_as_clipboard_action() {
         // Paste events go through translate_event, not classify_clipboard_event.
         let mut buf = buffer_with("hello");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         assert!(classify_clipboard_event(&Event::Paste("x".into()), &buf).is_none());
     }
 
@@ -518,6 +570,22 @@ mod tests {
         assert_eq!(
             translate_event(&key_event(Key::I, true, primary())),
             Some(EditorEvent::CycleIndentMode)
+        );
+    }
+
+    #[test]
+    fn f5_cycles_theme() {
+        assert_eq!(
+            translate_event(&key_event(Key::F5, true, no_mods())),
+            Some(EditorEvent::CycleTheme)
+        );
+    }
+
+    #[test]
+    fn primary_g_opens_go_to_line() {
+        assert_eq!(
+            translate_event(&key_event(Key::G, true, primary())),
+            Some(EditorEvent::GoToLine(None))
         );
     }
 }

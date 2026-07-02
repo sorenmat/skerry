@@ -65,6 +65,10 @@ pub enum EditorEvent {
     FindNext,
     /// Move to the previous match BEFORE the cursor. Wraps around.
     FindPrev,
+    /// Toggle regex mode for the find bar. When on, the query is
+    /// interpreted as a Rust `regex` pattern; when off, it is a literal
+    /// substring. Default binding: Alt+R while the find bar is open.
+    ToggleFindRegex,
     /// Open the replace bar (text input for the replacement string).
     /// No-op if it's already open. Closing the find bar also closes
     /// the replace bar — they're a coupled pair. Default binding:
@@ -90,10 +94,7 @@ pub enum EditorEvent {
     /// existing `\t` characters in the buffer are not re-rendered.
     /// Default binding: Cmd/Ctrl+I cycles through
     /// (spaces:2, spaces:4, spaces:8, tabs).
-    SetIndentMode {
-        use_spaces: bool,
-        tab_width: usize,
-    },
+    SetIndentMode { use_spaces: bool, tab_width: usize },
     /// Cycle the indent mode of the active document. Walks through
     /// the four common presets: spaces:2 → spaces:4 → spaces:8 →
     /// tabs (width 4) → spaces:2. No-op when no documents are open.
@@ -104,6 +105,11 @@ pub enum EditorEvent {
     /// No-op when no documents are open. Default binding:
     /// Cmd/Ctrl+Shift+W (W for "wrap" — Cmd+W is close).
     ToggleSoftWrap,
+    /// Cycle to the next syntax-highlighting theme. Wraps around at
+    /// the end of the bundled theme list. Invalidates the syntax cache
+    /// for every open document so the new colors are visible
+    /// immediately. Default binding: F5.
+    CycleTheme,
     /// Move the cursor. Selection is collapsed to the new position.
     Move(Movement),
     /// Extend the selection by moving one end of it.
@@ -120,6 +126,14 @@ pub enum EditorEvent {
     Paste(String),
     /// Save the buffer.
     Save,
+    /// Save the buffer to a new path. `None` asks the frontend to show
+    /// a save dialog (GUI native dialog today; TUI reports that it's not
+    /// supported). `Some(path)` sets the buffer's source path and saves.
+    SaveAs(Option<std::path::PathBuf>),
+    /// Reload the active document from disk. If the buffer has unsaved
+    /// edits, the frontend should confirm with the user first. Default
+    /// binding: Ctrl+Shift+R.
+    ReloadFile,
     /// Undo the most recent edit.
     Undo,
     /// Redo the most recently undone edit.
@@ -153,6 +167,84 @@ pub enum EditorEvent {
     /// picker translates the user's selection back into
     /// `OpenFile(Some(path))`.
     OpenFile(Option<PathBuf>),
+    /// Jump the cursor to a specific 1-based line. `None` opens a
+    /// small input prompt; `Some(line)` performs the jump. Out-of-range
+    /// line numbers are clamped to the first or last line.
+    /// Default binding: Cmd/Ctrl+G.
+    GoToLine(Option<usize>),
+    /// Toggle the project file-tree sidebar. When the active document
+    /// belongs to a project, the sidebar shows the project's files and
+    /// lets the user open them. Default binding: F2.
+    ToggleProjectTree,
+    /// Move the project-tree selection up or down by `delta` rows.
+    ProjectTreeMove { delta: isize },
+    /// Open the currently-selected project-tree file. If the file is
+    /// already open, switches to that document; otherwise loads it as a
+    /// new document.
+    ProjectTreeOpen,
+    /// Open the project-wide search dialog. `None` toggles the dialog
+    /// open/closed; `Some(query)` sets the query and runs the search.
+    /// Default binding: Cmd/Ctrl+Shift+F.
+    ProjectSearch(Option<String>),
+    /// Update the project-search query while the dialog is open.
+    ProjectSearchQueryChanged(String),
+    /// Move the project-search result selection up or down by `delta`.
+    ProjectSearchMove { delta: isize },
+    /// Open the currently-selected project-search result. Loads the file
+    /// (or switches to it if already open) and jumps the cursor to the
+    /// match position.
+    ProjectSearchOpenResult,
+    /// Close the project-search dialog.
+    ProjectSearchClose,
+    /// Update the project-replace query while the dialog is open.
+    ProjectSearchReplaceQueryChanged(String),
+    /// Toggle focus between the find and replace fields in the
+    /// project-search dialog (TUI only; egui manages focus itself).
+    ProjectSearchToggleFocus,
+    /// Replace all occurrences of the project-search query with the
+    /// project-replace query across the project. The frontends should
+    /// show a preview first (via `Project::replace_preview`) and confirm
+    /// with the user before calling this event.
+    ProjectSearchReplaceAll,
+    /// Confirm the project-wide replace-all after the user has reviewed
+    /// the preview. Only valid while the project-search confirmation
+    /// prompt is shown.
+    ProjectSearchReplaceAllConfirm,
+    /// Cancel the project-wide replace-all confirmation prompt and return
+    /// to the preview.
+    ProjectSearchReplaceAllCancel,
+    /// Open the fuzzy file finder. `None` toggles the finder open/closed;
+    /// `Some(query)` sets the initial query.
+    /// Default binding: Cmd/Ctrl+P.
+    FuzzyFinder(Option<String>),
+    /// Update the fuzzy finder query while it's open.
+    FuzzyFinderQueryChanged(String),
+    /// Move the fuzzy finder selection up or down by `delta`.
+    FuzzyFinderMove { delta: isize },
+    /// Open the currently-selected fuzzy finder result.
+    FuzzyFinderExecute,
+    /// Close the fuzzy finder.
+    FuzzyFinderClose,
+    /// Toggle the git gutter on the active document.
+    ToggleGitGutter,
+    /// Refresh the git gutter for the active document.
+    RefreshGitGutter,
+    /// Jump to the next git hunk at or after the cursor.
+    NextHunk,
+    /// Jump to the previous git hunk before the cursor.
+    PrevHunk,
+    /// Open the command palette. `None` toggles the palette open/closed;
+    /// `Some(query)` sets the filter query.
+    /// Default binding: Cmd/Ctrl+Shift+P.
+    CommandPalette(Option<String>),
+    /// Update the command-palette query while it's open.
+    CommandPaletteQueryChanged(String),
+    /// Move the command-palette selection up or down by `delta`.
+    CommandPaletteMove { delta: isize },
+    /// Execute the currently-selected command in the palette.
+    CommandPaletteExecute,
+    /// Close the command palette.
+    CommandPaletteClose,
     /// Quit the editor. Frontend may prompt to save dirty buffers.
     Quit,
 }
@@ -244,6 +336,7 @@ mod tests {
         let _ = EditorEvent::PrevDoc;
         let _ = EditorEvent::FindNext;
         let _ = EditorEvent::FindPrev;
+        let _ = EditorEvent::ToggleFindRegex;
         let _ = EditorEvent::InsertTab;
         let _ = EditorEvent::ReplaceOpen;
         let _ = EditorEvent::ReplaceClose;
@@ -256,7 +349,21 @@ mod tests {
         };
         let _ = EditorEvent::CycleIndentMode;
         let _ = EditorEvent::ToggleSoftWrap;
+        let _ = EditorEvent::CycleTheme;
         let _ = EditorEvent::OpenFile(None);
         let _ = EditorEvent::OpenFile(Some(PathBuf::from("/tmp/example.rs")));
+        let _ = EditorEvent::GoToLine(None);
+        let _ = EditorEvent::GoToLine(Some(42));
+        let _ = EditorEvent::ProjectSearchReplaceAllConfirm;
+        let _ = EditorEvent::ProjectSearchReplaceAllCancel;
+        let _ = EditorEvent::FuzzyFinder(None);
+        let _ = EditorEvent::FuzzyFinderQueryChanged(String::new());
+        let _ = EditorEvent::FuzzyFinderMove { delta: 1 };
+        let _ = EditorEvent::FuzzyFinderExecute;
+        let _ = EditorEvent::FuzzyFinderClose;
+        let _ = EditorEvent::ToggleGitGutter;
+        let _ = EditorEvent::RefreshGitGutter;
+        let _ = EditorEvent::NextHunk;
+        let _ = EditorEvent::PrevHunk;
     }
 }

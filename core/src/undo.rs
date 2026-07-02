@@ -85,6 +85,15 @@ impl UndoState {
         Some(entry)
     }
 
+    /// Move the most recently undone entry back from the redo stack to
+    /// the undo stack. Used when applying the inverse action fails so
+    /// the undo entry is not lost.
+    pub fn restore_last_undo(&mut self) {
+        if let Some(entry) = self.redo_stack.pop() {
+            self.undo_stack.push(entry);
+        }
+    }
+
     /// Pop the most recently undone entry and push it back onto the
     /// undo stack.
     pub fn pop_for_redo(&mut self) -> Option<UndoEntry> {

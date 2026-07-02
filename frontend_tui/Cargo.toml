@@ -14,6 +14,9 @@ crossterm = "0.28"
 # Linux, Cocoa on macOS, Win32 on Windows). crossterm 0.28 dropped its
 # own clipboard module, so this is the standard replacement.
 arboard = "3"
+# Native file dialogs for the terminal frontend. Opens the platform
+# picker even when launched from a terminal on macOS/Linux.
+rfd = "0.15"
 
 [lints]
 workspace = true

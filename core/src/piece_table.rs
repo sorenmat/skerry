@@ -254,16 +254,35 @@ impl PieceTableBuffer {
         *self.cumulative_offsets.last().unwrap_or(&0)
     }
 
-    /// Recompute the dirty flag by comparing current bytes against the
-    /// last saved state. Called after undo/redo because those don't set
-    /// `dirty` directly — the buffer may or may not match the saved state
-    /// depending on how far back the user went.
+    /// Recompute the dirty flag by comparing the current buffer content
+    /// against the last saved state. Called after undo/redo because those
+    /// don't set `dirty` directly. This walks the pieces and compares
+    /// them against `saved_state` incrementally so multi-GB files don't
+    /// trigger a full `to_bytes()` allocation.
     fn recompute_dirty(&mut self) {
-        let current = self.to_bytes();
-        self.dirty = match &self.saved_state {
-            Some(saved) => saved.as_slice() != current.as_slice(),
-            None => !current.is_empty(),
+        self.dirty = !self.content_matches_saved_state();
+    }
+
+    /// Compare the current piece table content to `saved_state` without
+    /// materialising either as a single allocation.
+    fn content_matches_saved_state(&self) -> bool {
+        let Some(saved) = &self.saved_state else {
+            return self.total_len() == 0;
         };
+        if saved.len() != self.total_len() {
+            return false;
+        }
+        let mut saved_off = 0usize;
+        for piece in &self.pieces {
+            let source = self.piece_source_slice(piece);
+            let piece_slice = &source[piece.start..piece.start + piece.length];
+            let saved_slice = &saved[saved_off..saved_off + piece.length];
+            if piece_slice != saved_slice {
+                return false;
+            }
+            saved_off += piece.length;
+        }
+        true
     }
 
     fn rebuild_cumulative_offsets(&mut self) {
@@ -317,7 +336,9 @@ impl PieceTableBuffer {
             return (last_idx, self.pieces[last_idx].length);
         }
         // partition_point: first index where cumulative_offsets[idx] > byte_pos.
-        let idx = self.cumulative_offsets.partition_point(|&co| co <= byte_pos);
+        let idx = self
+            .cumulative_offsets
+            .partition_point(|&co| co <= byte_pos);
         let piece_idx = idx - 1;
         let offset = byte_pos - self.cumulative_offsets[piece_idx];
         (piece_idx, offset)
@@ -398,30 +419,31 @@ impl PieceTableBuffer {
 
     // === Newline index maintenance ===
 
-    fn newlines_in_text(text: &str) -> Vec<usize> {
-        text.bytes()
+    fn newlines_in_bytes(bytes: &[u8]) -> Vec<usize> {
+        bytes
+            .iter()
             .enumerate()
-            .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
+            .filter_map(|(i, b)| if *b == b'\n' { Some(i) } else { None })
             .collect()
     }
 
-    fn update_newlines_for_insert(&mut self, byte_pos: BytePos, text: &str) {
-        let new_positions = Self::newlines_in_text(text);
+    fn update_newlines_for_insert(&mut self, byte_pos: BytePos, bytes: &[u8]) {
+        let new_positions = Self::newlines_in_bytes(bytes);
         if new_positions.is_empty() {
             for nl in &mut self.newlines {
                 if *nl >= byte_pos {
-                    *nl += text.len();
+                    *nl += bytes.len();
                 }
             }
             return;
         }
-        // Existing newlines < byte_pos stay; newlines in `text` are at
-        // byte_pos + offset_in_text; existing newlines >= byte_pos shift by +text.len().
+        // Existing newlines < byte_pos stay; newlines in `bytes` are at
+        // byte_pos + offset_in_bytes; existing newlines >= byte_pos shift by +bytes.len().
         let split_at = self.newlines.partition_point(|&nl| nl < byte_pos);
         let inserted: Vec<usize> = new_positions.iter().map(|&i| byte_pos + i).collect();
         let tail: Vec<usize> = self.newlines[split_at..]
             .iter()
-            .map(|&nl| nl + text.len())
+            .map(|&nl| nl + bytes.len())
             .collect();
         self.newlines.truncate(split_at);
         self.newlines.extend(inserted);
@@ -446,6 +468,10 @@ impl PieceTableBuffer {
     // === Edit primitives ===
 
     fn do_insert(&mut self, byte_pos: BytePos, text: &str) -> Result<BytePos, EditError> {
+        self.do_insert_bytes(byte_pos, text.as_bytes())
+    }
+
+    fn do_insert_bytes(&mut self, byte_pos: BytePos, bytes: &[u8]) -> Result<BytePos, EditError> {
         let total = self.total_len();
         if byte_pos > total {
             return Err(EditError::OutOfBounds {
@@ -453,22 +479,22 @@ impl PieceTableBuffer {
                 len: total,
             });
         }
-        if text.is_empty() {
+        if bytes.is_empty() {
             return Ok(byte_pos);
         }
 
         if self.pieces.is_empty() {
             let start_in_delta = self.delta.len();
-            self.delta.extend_from_slice(text.as_bytes());
+            self.delta.extend_from_slice(bytes);
             self.pieces.push(Piece {
                 source: PieceSource::Delta,
                 start: start_in_delta,
-                length: text.len(),
+                length: bytes.len(),
             });
             self.rebuild_cumulative_offsets();
-            self.update_newlines_for_insert(byte_pos, text);
+            self.update_newlines_for_insert(byte_pos, bytes);
             self.dirty = true;
-            let new_cursor = byte_pos + text.len();
+            let new_cursor = byte_pos + bytes.len();
             self.cursor = new_cursor;
             self.selection = Selection::collapsed(new_cursor);
             return Ok(new_cursor);
@@ -501,20 +527,20 @@ impl PieceTableBuffer {
         };
 
         let start_in_delta = self.delta.len();
-        self.delta.extend_from_slice(text.as_bytes());
+        self.delta.extend_from_slice(bytes);
         self.pieces.insert(
             insert_at,
             Piece {
                 source: PieceSource::Delta,
                 start: start_in_delta,
-                length: text.len(),
+                length: bytes.len(),
             },
         );
         self.rebuild_cumulative_offsets();
-        self.update_newlines_for_insert(byte_pos, text);
+        self.update_newlines_for_insert(byte_pos, bytes);
         self.dirty = true;
 
-        let new_cursor = byte_pos + text.len();
+        let new_cursor = byte_pos + bytes.len();
         self.cursor = new_cursor;
         self.selection = Selection::collapsed(new_cursor);
 
@@ -655,6 +681,10 @@ impl Buffer for PieceTableBuffer {
         self.source_path.as_deref()
     }
 
+    fn set_source_path(&mut self, path: std::path::PathBuf) {
+        self.source_path = Some(path);
+    }
+
     fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -784,6 +814,9 @@ impl Buffer for PieceTableBuffer {
     }
 
     fn insert(&mut self, byte_pos: BytePos, text: &str) -> Result<BytePos, EditError> {
+        if text.is_empty() {
+            return Ok(byte_pos);
+        }
         let cursor_before = self.cursor;
         let bytes = text.as_bytes().to_vec();
         let result = self.do_insert(byte_pos, text);
@@ -802,6 +835,9 @@ impl Buffer for PieceTableBuffer {
     }
 
     fn delete(&mut self, range: Range<BytePos>) -> Result<BytePos, EditError> {
+        if range.start == range.end {
+            return Ok(self.cursor);
+        }
         let cursor_before = self.cursor;
         // Save the bytes that will be deleted so we can restore them on undo.
         let deleted = self
@@ -823,23 +859,15 @@ impl Buffer for PieceTableBuffer {
         result
     }
 
-    fn replace(
-        &mut self,
-        range: Range<BytePos>,
-        text: &str,
-    ) -> Result<BytePos, EditError> {
-        // Single atomic undo entry: if both ops succeed we record ONE
-        // entry, not two. We use a "silent" record path for the inner
-        // do_insert/do_delete so the public insert/delete don't push
-        // their own undo entries.
+    fn replace(&mut self, range: Range<BytePos>, text: &str) -> Result<BytePos, EditError> {
+        // Record the replace as one atomic undo group. The user expects
+        // a single Ctrl+Z to revert the whole operation, not two.
         let cursor_before = self.cursor;
         let deleted = self
             .get_slice(range.clone())
             .map(|cow| cow.into_owned())
             .unwrap_or_default();
-        // Delete first; if it fails, nothing was changed. We discard
-        // the new cursor pos from delete because the subsequent insert
-        // sets the cursor.
+        // Delete first; if it fails, nothing was changed.
         #[allow(clippy::question_mark)]
         if let Err(e) = self.do_delete(range.clone()) {
             return Err(e);
@@ -847,9 +875,8 @@ impl Buffer for PieceTableBuffer {
         let new_cursor_pos = range.start;
         let new_pos = self.do_insert(new_cursor_pos, text)?;
         let cursor_after = self.cursor;
-        // Record as DeleteRange + InsertText pair so undo restores the
-        // original bytes. Two entries is fine here — undo replays them
-        // in reverse and they round-trip cleanly.
+        let insert_text = text.as_bytes().to_vec();
+        self.begin_edit_group();
         self.undo_state.record(UndoEntry {
             cursor_before,
             cursor_after,
@@ -858,15 +885,19 @@ impl Buffer for PieceTableBuffer {
                 deleted,
             },
         });
-        let _ = cursor_before; // suppress unused warnings
+        self.undo_state.record(UndoEntry {
+            cursor_before,
+            cursor_after,
+            action: UndoAction::InsertText {
+                pos: range.start,
+                text: insert_text,
+            },
+        });
+        self.end_edit_group();
         Ok(new_pos)
     }
 
-    fn insert_silent(
-        &mut self,
-        byte_pos: BytePos,
-        text: &str,
-    ) -> Result<BytePos, EditError> {
+    fn insert_silent(&mut self, byte_pos: BytePos, text: &str) -> Result<BytePos, EditError> {
         // No undo entry — caller is composing a multi-step op.
         self.do_insert(byte_pos, text)
     }
@@ -879,17 +910,19 @@ impl Buffer for PieceTableBuffer {
         let Some(entry) = self.undo_state.pop_for_undo() else {
             return false;
         };
-        // Apply the inverse of the recorded action. We call do_insert /
+        // Apply the inverse of the recorded action. We call do_insert_bytes /
         // do_delete directly so we don't re-record (which would corrupt
-        // the undo/redo stacks).
-        match &entry.action {
+        // the undo/redo stacks). If the inverse fails, restore the entry
+        // to the undo stack so the user can retry; leave the buffer as-is.
+        let inverse_ok = match &entry.action {
             UndoAction::InsertText { pos, text } => {
-                let _ = self.do_delete(*pos..(*pos + text.len()));
+                self.do_delete(*pos..(*pos + text.len())).is_ok()
             }
-            UndoAction::DeleteRange { pos, deleted } => {
-                let s = String::from_utf8_lossy(deleted);
-                let _ = self.do_insert(*pos, &s);
-            }
+            UndoAction::DeleteRange { pos, deleted } => self.do_insert_bytes(*pos, deleted).is_ok(),
+        };
+        if !inverse_ok {
+            self.undo_state.restore_last_undo();
+            return false;
         }
         self.cursor = entry.cursor_before;
         self.selection = Selection::collapsed(entry.cursor_before);
@@ -903,15 +936,19 @@ impl Buffer for PieceTableBuffer {
         let Some(entry) = self.undo_state.pop_for_redo() else {
             return false;
         };
-        // Re-apply the original action.
-        match &entry.action {
-            UndoAction::InsertText { pos, text } => {
-                let s = String::from_utf8_lossy(text);
-                let _ = self.do_insert(*pos, &s);
-            }
+        // Re-apply the original action. If it fails, restore the entry
+        // to the redo stack so the user can retry.
+        let reapply_ok = match &entry.action {
+            UndoAction::InsertText { pos, text } => self.do_insert_bytes(*pos, text).is_ok(),
             UndoAction::DeleteRange { pos, deleted } => {
-                let _ = self.do_delete(*pos..(*pos + deleted.len()));
+                self.do_delete(*pos..(*pos + deleted.len())).is_ok()
             }
+        };
+        if !reapply_ok {
+            if let Some(e) = self.undo_state.undo_stack.pop() {
+                self.undo_state.redo_stack.push(e);
+            }
+            return false;
         }
         self.cursor = entry.cursor_after;
         self.selection = Selection::collapsed(entry.cursor_after);
@@ -1134,7 +1171,7 @@ mod tests {
         let mut buf = PieceTableBuffer::from_bytes(b"abcdefghij".to_vec());
         buf.delete(2..4).unwrap(); // remove "cd" — splits into 2 pieces
         buf.insert(8, "XYZ").unwrap(); // inserts "XYZ" at position 8 — now 3 pieces
-        // State: "ab" + "efgh" + "ijXYZ", reconstruct "abefghijXYZ"
+                                       // State: "ab" + "efgh" + "ijXYZ", reconstruct "abefghijXYZ"
         assert_eq!(reconstruct_str(&buf), "abefghijXYZ");
         assert_eq!(buf.pieces.len(), 3);
 
@@ -1314,10 +1351,7 @@ mod tests {
         let mut buf = PieceTableBuffer::new();
         buf.insert(0, "hello").unwrap();
         buf.set_cursor(2);
-        buf.set_selection(Selection {
-            anchor: 1,
-            head: 4,
-        });
+        buf.set_selection(Selection { anchor: 1, head: 4 });
         assert_eq!(buf.selection(), Selection { anchor: 1, head: 4 });
     }
 
@@ -1338,7 +1372,9 @@ mod tests {
         // Now do 100 random-ish inserts and deletes.
         let mut seed: u64 = 0xdeadbeef;
         let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             seed
         };
         for _ in 0..100 {
@@ -1412,13 +1448,14 @@ mod tests {
     #[test]
     fn save_roundtrip_writes_to_disk() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_save_roundtrip_{}.txt", std::process::id()));
+        let path = dir.join(format!(
+            "the_editor_save_roundtrip_{}.txt",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
 
-        let mut buf = PieceTableBuffer::from_bytes_with_path(
-            b"hello\nworld".to_vec(),
-            path.clone(),
-        );
+        let mut buf =
+            PieceTableBuffer::from_bytes_with_path(b"hello\nworld".to_vec(), path.clone());
         buf.insert(5, " beautiful").unwrap();
         buf.save().unwrap();
         assert!(!buf.is_dirty());
@@ -1432,13 +1469,14 @@ mod tests {
     #[test]
     fn save_overwrites_existing_content() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_save_overwrite_{}.txt", std::process::id()));
+        let path = dir.join(format!(
+            "the_editor_save_overwrite_{}.txt",
+            std::process::id()
+        ));
         std::fs::write(&path, b"original content\n").unwrap();
 
-        let mut buf = PieceTableBuffer::from_bytes_with_path(
-            std::fs::read(&path).unwrap(),
-            path.clone(),
-        );
+        let mut buf =
+            PieceTableBuffer::from_bytes_with_path(std::fs::read(&path).unwrap(), path.clone());
         buf.delete(0..buf.len()).unwrap();
         buf.insert(0, "replaced").unwrap();
         buf.save().unwrap();
@@ -1476,7 +1514,10 @@ mod tests {
     fn line_text_returns_borrowed_for_unedited_lines() {
         let buf = PieceTableBuffer::from_bytes(b"hello\nworld\nfoo".to_vec());
         let l0 = buf.line_text(0).unwrap();
-        assert!(matches!(l0, Cow::Borrowed(_)), "expected borrowed for unedited line");
+        assert!(
+            matches!(l0, Cow::Borrowed(_)),
+            "expected borrowed for unedited line"
+        );
         assert_eq!(l0, "hello");
     }
 
@@ -1543,7 +1584,10 @@ mod tests {
     #[test]
     fn from_path_errors_on_missing_file() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_mmap_nonexistent_{}.txt", std::process::id()));
+        let path = dir.join(format!(
+            "the_editor_mmap_nonexistent_{}.txt",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path); // ensure it doesn't exist
 
         let result = PieceTableBuffer::from_path(path);
@@ -1629,7 +1673,10 @@ mod tests {
         let mut temp_os = path.as_os_str().to_owned();
         temp_os.push(".tmp");
         let temp_path = std::path::PathBuf::from(temp_os);
-        assert!(!temp_path.exists(), "temp file should be cleaned up after rename");
+        assert!(
+            !temp_path.exists(),
+            "temp file should be cleaned up after rename"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1656,6 +1703,21 @@ mod tests {
         assert!(buf.undo());
         assert_eq!(reconstruct_str(&buf), "hello world");
         assert_eq!(buf.cursor(), 5, "cursor should be at pre-delete position");
+    }
+
+    #[test]
+    fn replace_undo_restores_original_text() {
+        // Regression: replace() previously recorded only DeleteRange,
+        // not InsertText. Undo left both old and new text in the buffer.
+        let mut buf = PieceTableBuffer::from_bytes(b"hello".to_vec());
+        buf.replace(0..2, "XY").unwrap();
+        assert_eq!(reconstruct_str(&buf), "XYllo");
+        // First undo removes the inserted "XY".
+        assert!(buf.undo());
+        assert_eq!(reconstruct_str(&buf), "llo");
+        // Second undo restores the deleted "he".
+        assert!(buf.undo());
+        assert_eq!(reconstruct_str(&buf), "hello");
     }
 
     #[test]
@@ -1696,7 +1758,7 @@ mod tests {
         buf.insert(0, "hello").unwrap();
         buf.undo();
         buf.undo(); // nothing to undo
-        // After undo, redo stack has the entry. A new edit should clear it.
+                    // After undo, redo stack has the entry. A new edit should clear it.
         buf.insert(0, "x").unwrap();
         assert!(!buf.redo(), "redo should be cleared after new edit");
         assert_eq!(reconstruct_str(&buf), "x");

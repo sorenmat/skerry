@@ -18,6 +18,7 @@ use core::{byte_to_char_col, format_position, selection_in_line, EditorEvent};
 use eframe::egui;
 
 use crate::app::{CloseChoice, EditorApp};
+use crate::theme::GuiTheme;
 
 const FONT_SIZE: f32 = 14.0;
 const CARET_WIDTH: f32 = 2.0;
@@ -27,25 +28,9 @@ const CARET_WIDTH: f32 = 2.0;
 /// responsive without looking like a hard teleport.
 const CARET_ANIM_SPEED: f32 = 25.0;
 
-/// Map a `TokenKind` to a GUI color. Uses a VS Code Dark+ inspired
-/// palette — readable on dark backgrounds, distinct enough to scan at
-/// a glance.
-fn syntax_color(kind: core::TokenKind) -> egui::Color32 {
-    match kind {
-        core::TokenKind::Keyword => egui::Color32::from_rgb(86, 156, 214),
-        core::TokenKind::Type => egui::Color32::from_rgb(78, 201, 176),
-        core::TokenKind::Function => egui::Color32::from_rgb(220, 220, 170),
-        core::TokenKind::String => egui::Color32::from_rgb(206, 145, 120),
-        core::TokenKind::Comment => egui::Color32::from_rgb(106, 153, 85),
-        core::TokenKind::Number => egui::Color32::from_rgb(181, 206, 168),
-        core::TokenKind::Punctuation | core::TokenKind::Identifier => {
-            egui::Color32::from_rgb(212, 212, 212)
-        }
-    }
+fn theme(app: &EditorApp) -> &GuiTheme {
+    &app.theme
 }
-const TAB_ACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(60, 80, 140);
-const TAB_INACTIVE_FG: egui::Color32 = egui::Color32::from_rgb(150, 150, 150);
-const TAB_SEPARATOR: egui::Color32 = egui::Color32::from_rgb(80, 80, 80);
 
 /// Render the header strip. For a single document, this is the legacy
 /// "filename + dirty marker" header. For multiple documents, it becomes
@@ -55,6 +40,7 @@ const TAB_SEPARATOR: egui::Color32 = egui::Color32::from_rgb(80, 80, 80);
 /// old, quieter look (just one filename) so users without tabs don't
 /// see a stray empty strip.
 fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
+    let theme = *theme(app);
     if app.doc_count() == 1 {
         let path = app
             .active_buffer()
@@ -62,18 +48,24 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
             .and_then(|p| p.to_str())
             .unwrap_or("[No Name]");
         let dirty = if app.is_dirty() { " [+]" } else { "" };
+        let stale = if app.active_doc().external_change {
+            " [!]"
+        } else {
+            ""
+        };
         ui.label(
-            egui::RichText::new(format!(" {path}{dirty}"))
+            egui::RichText::new(format!(" {path}{dirty}{stale}"))
                 .strong()
-                .monospace(),
+                .monospace()
+                .color(theme.panel_text),
         );
         return;
     }
 
     // Multi-doc tab strip. Each tab is its own label so egui tracks
-    // click responses per-tab. The active tab's label has a coloured
-    // background; inactive tabs are dimmed. Clicking an inactive tab
-    // switches `app.active`.
+    // click responses per-tab. The active tab uses the accent color;
+    // inactive tabs are dimmed. Clicking an inactive tab switches
+    // `app.active`.
     ui.horizontal(|ui| {
         ui.add_space(4.0);
         for i in 0..app.doc_count() {
@@ -81,18 +73,19 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
             let doc = &app.documents[i];
             let name = doc.display_name();
             let dirty = if doc.is_dirty() { "*" } else { "" };
-            let label = format!(" {}{} ", name, dirty);
+            let stale = if doc.external_change { "!" } else { "" };
+            let label = format!(" {}{}{} ", name, dirty, stale);
 
             let text = if is_active {
                 egui::RichText::new(&label)
                     .monospace()
                     .strong()
-                    .color(egui::Color32::WHITE)
-                    .background_color(TAB_ACTIVE_BG)
+                    .color(theme.accent_text)
+                    .background_color(theme.accent)
             } else {
                 egui::RichText::new(&label)
                     .monospace()
-                    .color(TAB_INACTIVE_FG)
+                    .color(theme.dim_text)
             };
 
             let response = ui.label(text);
@@ -105,11 +98,7 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
                 // us a uniform gap; the visual separator char keeps the
                 // tab boundary obvious.
                 ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new("│")
-                        .monospace()
-                        .color(TAB_SEPARATOR),
-                );
+                ui.label(egui::RichText::new("│").monospace().color(theme.separator));
                 ui.add_space(2.0);
             }
         }
@@ -117,122 +106,281 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
 }
 
 pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
+    let theme = *theme(app);
     let (status_message, status_pos) = {
         let msg = app.status_message.clone().unwrap_or_default();
         let cursor_pos = app.active_buffer().cursor();
-        let (line, col) = app.active_buffer().pos_to_linecol(cursor_pos)
+        let (line, col) = app
+            .active_buffer()
+            .pos_to_linecol(cursor_pos)
             .unwrap_or((0, 0));
-        let pos = format_position(line, col, app.active_buffer().line_count());
+        let mut pos = format_position(line, col, app.active_buffer().line_count());
+        if app.active_doc().view.git_gutter_enabled && app.active_doc().git_gutter.enabled() {
+            let (added, modified, removed) = app.active_doc().git_gutter.summary();
+            if added != 0 || modified != 0 || removed != 0 {
+                pos.push_str(&format!(
+                    "  |  +{added} ~{modified} -{removed}",
+                    added = added,
+                    modified = modified,
+                    removed = removed
+                ));
+            }
+        }
         (msg, pos)
     };
 
-    egui::TopBottomPanel::top("header").show(ctx, |ui| {
-        render_header_strip(ui, app);
-    });
+    egui::TopBottomPanel::top("header")
+        .frame(egui::Frame::none().fill(theme.panel_bg).inner_margin(6.0))
+        .show(ctx, |ui| {
+            render_header_strip(ui, app);
+        });
 
-    egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-        ui.label(
-            egui::RichText::new(format!(" {status_message}  |  {status_pos}"))
-                .monospace(),
-        );
-    });
+    egui::TopBottomPanel::bottom("status")
+        .frame(egui::Frame::none().fill(theme.status_bg).inner_margin(6.0))
+        .show(ctx, |ui| {
+            // Snapshot theme lists + current names as owned data so the
+            // ComboBox closures don't borrow `app`.
+            let syntax_theme_names: Vec<String> = app
+                .syntax
+                .theme_names()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+            let current_syntax_theme = app.syntax.theme_name().to_string();
+            let mut selected_syntax_theme: Option<String> = None;
+
+            let ui_theme_names: Vec<String> =
+                GuiTheme::all().iter().map(|t| t.name.to_string()).collect();
+            let current_ui_theme = app.theme.name.to_string();
+            let mut selected_ui_theme: Option<String> = None;
+
+            let mut toggle_tree = false;
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(" {status_message}  |  {status_pos}"))
+                        .monospace()
+                        .color(theme.status_text),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("syntax_theme_selector")
+                        .selected_text(&current_syntax_theme)
+                        .width(160.0)
+                        .show_ui(ui, |ui| {
+                            for name in &syntax_theme_names {
+                                let is_active = name == &current_syntax_theme;
+                                if ui.selectable_label(is_active, name).clicked() {
+                                    selected_syntax_theme = Some(name.clone());
+                                }
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("ui_theme_selector")
+                        .selected_text(&current_ui_theme)
+                        .width(100.0)
+                        .show_ui(ui, |ui| {
+                            for name in &ui_theme_names {
+                                let is_active = name == &current_ui_theme;
+                                if ui.selectable_label(is_active, name).clicked() {
+                                    selected_ui_theme = Some(name.clone());
+                                }
+                            }
+                        });
+                    let tree_label = if app.project_tree_open {
+                        "🌳 Tree"
+                    } else {
+                        "Tree"
+                    };
+                    if ui
+                        .selectable_label(app.project_tree_open, tree_label)
+                        .clicked()
+                    {
+                        toggle_tree = true;
+                    }
+                });
+            });
+
+            if toggle_tree {
+                app.handle_event(EditorEvent::ToggleProjectTree);
+            }
+
+            if let Some(name) = selected_syntax_theme {
+                if app.syntax.set_theme_by_name(&name) {
+                    for doc in &mut app.documents {
+                        doc.syntax.invalidate();
+                    }
+                    app.status_message = Some(format!("Syntax theme: {name}"));
+                }
+            }
+
+            if let Some(name) = selected_ui_theme {
+                app.set_ui_theme_by_name(&name);
+                app.status_message = Some(format!("UI theme: {name}"));
+            }
+        });
 
     // Find bar — appears above the status bar when open.
     if app.search.bar_open {
-        egui::TopBottomPanel::bottom("find_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(" Find: ").strong().monospace());
-                let mut query = app.search.query.clone();
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut query)
-                        .hint_text("type to search")
-                        .desired_width(300.0),
-                );
-                if response.changed() {
-                    app.handle_event(EditorEvent::FindQueryChanged(query));
-                }
-                // Auto-focus the text input so the user can type
-                // immediately. Only focus on first appearance to
-                // avoid stealing focus every frame. Skip auto-focus
-                // when the replace bar is also open — the user
-                // probably wants to type into the replacement.
-                if response.gained_focus()
-                    || (app.search.query.is_empty()
-                        && !response.has_focus()
-                        && !app.search.replace_bar_open)
-                {
-                    response.request_focus();
-                }
-                let total = app.search.matches.len();
-                let current = app.search.current.map(|i| i + 1).unwrap_or(0);
-                ui.label(
-                    egui::RichText::new(if total == 0 && !app.search.query.is_empty() {
-                        " (no matches)".to_string()
-                    } else {
-                        format!(" {current}/{total} ")
-                    })
-                    .monospace(),
-                );
-                if ui.button("Next").clicked() {
-                    app.handle_event(EditorEvent::FindNext);
-                }
-                if ui.button("Prev").clicked() {
-                    app.handle_event(EditorEvent::FindPrev);
-                }
-                let replace_toggle_label = if app.search.replace_bar_open {
-                    "Hide Replace"
-                } else {
-                    "Replace"
-                };
-                if ui.button(replace_toggle_label).clicked() {
-                    if app.search.replace_bar_open {
-                        app.handle_event(EditorEvent::ReplaceClose);
-                    } else {
-                        app.handle_event(EditorEvent::ReplaceOpen);
-                    }
-                }
-                if ui.button("Close").clicked() {
-                    app.handle_event(EditorEvent::FindClose);
-                }
-            });
-            // Replace row sits directly below the find row. Visible
-            // only when `replace_bar_open` is set. Tab / focus shifts
-            // are implicit via egui's text-input focus model.
-            if app.search.replace_bar_open {
+        egui::TopBottomPanel::bottom("find_bar")
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.panel_bg)
+                    .inner_margin(6.0)
+                    .stroke(egui::Stroke::new(1.0, theme.border)),
+            )
+            .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(" Replace: ").strong().monospace());
-                    let mut rq = app.search.replace_query.clone();
+                    ui.label(
+                        egui::RichText::new(" Find: ")
+                            .strong()
+                            .monospace()
+                            .color(theme.panel_text),
+                    );
+                    let mut query = app.search.query.clone();
                     let response = ui.add(
-                        egui::TextEdit::singleline(&mut rq)
-                            .hint_text("replacement")
+                        egui::TextEdit::singleline(&mut query)
+                            .hint_text("type to search")
                             .desired_width(300.0),
                     );
                     if response.changed() {
-                        app.handle_event(EditorEvent::ReplaceQueryChanged(rq));
+                        app.handle_event(EditorEvent::FindQueryChanged(query));
                     }
-                    // Auto-focus the replace input the first time the
-                    // bar appears so the user can type immediately.
-                    // Don't steal focus every frame.
+                    // Auto-focus the text input so the user can type
+                    // immediately. Only focus on first appearance to
+                    // avoid stealing focus every frame. Skip auto-focus
+                    // when the replace bar is also open — the user
+                    // probably wants to type into the replacement.
                     if response.gained_focus()
-                        || (app.search.replace_query.is_empty()
-                            && !response.has_focus())
+                        || (app.search.query.is_empty()
+                            && !response.has_focus()
+                            && !app.search.replace_bar_open)
                     {
                         response.request_focus();
                     }
-                    if ui.button("Replace").clicked() {
-                        app.handle_event(EditorEvent::ReplaceOne);
+                    let total = app.search.matches.len();
+                    let current = app.search.current.map(|i| i + 1).unwrap_or(0);
+                    let status_text = if let Some(ref err) = app.search.regex_error {
+                        format!(" invalid regex: {err} ")
+                    } else if total == 0 && !app.search.query.is_empty() {
+                        " (no matches)".to_string()
+                    } else {
+                        format!(" {current}/{total} ")
+                    };
+                    let status_color = if app.search.regex_error.is_some() {
+                        theme.error
+                    } else {
+                        theme.panel_text
+                    };
+                    ui.label(
+                        egui::RichText::new(status_text)
+                            .monospace()
+                            .color(status_color),
+                    );
+                    let regex_btn = ui.selectable_label(app.search.regex_mode, ".*");
+                    if regex_btn.clicked() {
+                        app.handle_event(EditorEvent::ToggleFindRegex);
                     }
-                    if ui.button("Replace All").clicked() {
-                        app.handle_event(EditorEvent::ReplaceAll);
+                    if ui.button("Next").clicked() {
+                        app.handle_event(EditorEvent::FindNext);
+                    }
+                    if ui.button("Prev").clicked() {
+                        app.handle_event(EditorEvent::FindPrev);
+                    }
+                    let replace_toggle_label = if app.search.replace_bar_open {
+                        "Hide Replace"
+                    } else {
+                        "Replace"
+                    };
+                    if ui.button(replace_toggle_label).clicked() {
+                        if app.search.replace_bar_open {
+                            app.handle_event(EditorEvent::ReplaceClose);
+                        } else {
+                            app.handle_event(EditorEvent::ReplaceOpen);
+                        }
+                    }
+                    if ui.button("Close").clicked() {
+                        app.handle_event(EditorEvent::FindClose);
                     }
                 });
-            }
-        });
+                // Replace row sits directly below the find row. Visible
+                // only when `replace_bar_open` is set. Tab / focus shifts
+                // are implicit via egui's text-input focus model.
+                if app.search.replace_bar_open {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(" Replace: ")
+                                .strong()
+                                .monospace()
+                                .color(theme.panel_text),
+                        );
+                        let mut rq = app.search.replace_query.clone();
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut rq)
+                                .hint_text("replacement")
+                                .desired_width(300.0),
+                        );
+                        if response.changed() {
+                            app.handle_event(EditorEvent::ReplaceQueryChanged(rq));
+                        }
+                        // Auto-focus the replace input the first time the
+                        // bar appears so the user can type immediately.
+                        // Don't steal focus every frame.
+                        if response.gained_focus()
+                            || (app.search.replace_query.is_empty() && !response.has_focus())
+                        {
+                            response.request_focus();
+                        }
+                        if ui.button("Replace").clicked() {
+                            app.handle_event(EditorEvent::ReplaceOne);
+                        }
+                        if ui.button("Replace All").clicked() {
+                            app.handle_event(EditorEvent::ReplaceAll);
+                        }
+                    });
+                }
+            });
     }
 
-    egui::CentralPanel::default().show(ctx, |ui| {
-        render_text(ui, app);
-    });
+    // Go-to-line bar — appears above the status bar when open.
+    if app.go_to_line_dialog.is_some() {
+        egui::TopBottomPanel::bottom("go_to_line_bar")
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.panel_bg)
+                    .inner_margin(6.0)
+                    .stroke(egui::Stroke::new(1.0, theme.border)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let query = app
+                        .go_to_line_dialog
+                        .as_ref()
+                        .map(|d| d.query.clone())
+                        .unwrap_or_default();
+                    ui.label(
+                        egui::RichText::new(" Go to line: ")
+                            .strong()
+                            .monospace()
+                            .color(theme.panel_text),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{query}█"))
+                            .monospace()
+                            .color(theme.panel_text),
+                    );
+                });
+            });
+    }
+
+    // Project-tree sidebar. Lives on the left, collapsible via F2.
+    if app.project_tree_open {
+        render_project_tree_sidebar(ctx, app);
+    }
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::none().fill(theme.editor_bg))
+        .show(ctx, |ui| {
+            render_text(ui, app, &theme);
+        });
 
     // Modal prompts render on top. Close-confirm is a centred dialog;
     // the open-file dialog is also centred. The order matters only if
@@ -242,9 +390,108 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     if app.close_confirm.is_some() {
         render_close_confirm_window(ctx, app);
     }
-    if app.open_file_dialog.is_some() {
-        render_open_file_window(ctx, app);
+    if app.project_search.open {
+        render_project_search_window(ctx, app);
     }
+    if app.command_palette.open {
+        render_command_palette_window(ctx, app);
+    }
+    if app.fuzzy_finder.open {
+        render_fuzzy_finder_window(ctx, app);
+    }
+}
+
+/// Render the project-tree sidebar on the left of the window.
+/// Directories are collapsible nodes; files open on click. Selected
+/// row is highlighted for keyboard navigation.
+fn render_project_tree_sidebar(ctx: &egui::Context, app: &mut EditorApp) {
+    let theme = *theme(app);
+    let project_root = app.active_doc().project.clone();
+    let rows: Vec<(usize, core::FsNode)> = app
+        .project_tree_rows()
+        .into_iter()
+        .map(|(d, n)| (d, n.clone()))
+        .collect();
+    let selected = app.project_tree_selected;
+
+    egui::SidePanel::left("project_tree")
+        .default_width(220.0)
+        .width_range(120.0..=400.0)
+        .frame(egui::Frame::none().fill(theme.sidebar_bg).inner_margin(6.0))
+        .show(ctx, |ui| {
+            ui.add_space(4.0);
+            let title = project_root
+                .as_ref()
+                .and_then(|p| p.root.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("Project");
+            ui.label(
+                egui::RichText::new(format!("📁 {title}"))
+                    .strong()
+                    .monospace()
+                    .color(theme.panel_text),
+            );
+            ui.separator();
+
+            if project_root.is_none() {
+                ui.label("No project detected.");
+                return;
+            }
+            if rows.is_empty() {
+                ui.label("No files found.");
+                return;
+            }
+
+            egui::ScrollArea::vertical()
+                .id_salt("project_tree_scroll")
+                .auto_shrink([false; 2])
+                .show_rows(
+                    ui,
+                    ui.text_style_height(&egui::TextStyle::Body),
+                    rows.len(),
+                    |ui, row_range| {
+                        for i in row_range {
+                            let (depth, node) = &rows[i];
+                            let is_selected = i == selected;
+                            let is_dir = node.is_dir();
+                            let expanded = app
+                                .project_tree
+                                .as_ref()
+                                .map(|t| t.expanded.contains(node.rel_path()))
+                                .unwrap_or(false);
+
+                            let indent = "  ".repeat(*depth);
+                            let icon = if is_dir {
+                                if expanded {
+                                    "📂"
+                                } else {
+                                    "📁"
+                                }
+                            } else {
+                                "  "
+                            };
+                            let label = format!("{indent}{icon} {}", node.name());
+                            let text = egui::RichText::new(label).monospace();
+                            let response = if is_selected {
+                                ui.selectable_label(true, text.strong())
+                            } else {
+                                ui.selectable_label(false, text)
+                            };
+                            if response.clicked() {
+                                app.project_tree_selected = i;
+                                if is_dir {
+                                    if let Some(tree) = app.project_tree.as_mut() {
+                                        tree.toggle(node.rel_path());
+                                    }
+                                } else if let Some(project) = project_root.as_ref() {
+                                    let path = project.root.join(node.rel_path());
+                                    app.open_or_switch_to_path(&path);
+                                }
+                            }
+                        }
+                    },
+                );
+        });
 }
 
 /// Render the close-on-dirty dialog as a centred egui::Window.
@@ -272,7 +519,7 @@ fn render_close_confirm_window(ctx: &egui::Context, app: &mut EditorApp) {
             ui.label(format!("'{doc_name}' has unsaved changes."));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if focused_button(ui, focused, CloseChoice::Save, "Save").clicked() {
+                if focused_button(ui, app, focused, CloseChoice::Save, "Save").clicked() {
                     app.close_confirm = None;
                     match app.active_buffer_mut().save() {
                         Ok(()) => {
@@ -282,11 +529,11 @@ fn render_close_confirm_window(ctx: &egui::Context, app: &mut EditorApp) {
                         Err(e) => app.status_message = Some(format!("Save error: {e}")),
                     }
                 }
-                if focused_button(ui, focused, CloseChoice::Discard, "Discard").clicked() {
+                if focused_button(ui, app, focused, CloseChoice::Discard, "Discard").clicked() {
                     app.close_confirm = None;
                     app.perform_close_active();
                 }
-                if focused_button(ui, focused, CloseChoice::Cancel, "Cancel").clicked() {
+                if focused_button(ui, app, focused, CloseChoice::Cancel, "Cancel").clicked() {
                     app.close_confirm = None;
                     app.status_message = Some("Close cancelled.".to_string());
                 }
@@ -311,69 +558,338 @@ fn render_close_confirm_window(ctx: &egui::Context, app: &mut EditorApp) {
 /// response so the caller can test `.clicked()`.
 fn focused_button(
     ui: &mut egui::Ui,
+    app: &EditorApp,
     focused: CloseChoice,
     this: CloseChoice,
     label: &str,
 ) -> egui::Response {
+    let theme = theme(app);
     let is_focused = focused == this;
     let text = if is_focused {
         egui::RichText::new(label)
             .strong()
-            .color(egui::Color32::WHITE)
-            .background_color(TAB_ACTIVE_BG)
+            .color(theme.accent_text)
+            .background_color(theme.accent)
     } else {
-        egui::RichText::new(label).color(TAB_INACTIVE_FG)
+        egui::RichText::new(label).color(theme.dim_text)
     };
     ui.button(text)
 }
 
-/// Render the open-file dialog as a centred egui::Window with a single
-/// text input for the path. Enter / Esc are intercepted in
-/// `dispatch_modal_event`.
-fn render_open_file_window(ctx: &egui::Context, app: &mut EditorApp) {
+/// Render the project-wide search / replace dialog as a centred window.
+/// Shows find and replace inputs, live results or replace preview, and
+/// a status hint.
+fn render_project_search_window(ctx: &egui::Context, app: &mut EditorApp) {
     let mut open = true;
-    egui::Window::new("Open file")
+    egui::Window::new("Project search & replace")
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
+        .default_size([520.0, 420.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Path:");
-            let mut query = app
-                .open_file_dialog
-                .as_ref()
-                .map(|d| d.query.clone())
-                .unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Find:").strong().monospace());
+                let mut query = app.project_search.query.clone();
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut query)
+                        .hint_text("search across project files")
+                        .desired_width(300.0),
+                );
+                if response.changed() {
+                    app.handle_event(EditorEvent::ProjectSearchQueryChanged(query));
+                }
+                if response.gained_focus()
+                    || (app.project_search.query.is_empty() && !response.has_focus())
+                {
+                    response.request_focus();
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Replace:").strong().monospace());
+                let mut replace_query = app.project_search.replace_query.clone();
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut replace_query)
+                        .hint_text("leave empty to search only")
+                        .desired_width(300.0),
+                );
+                if response.changed() {
+                    app.handle_event(EditorEvent::ProjectSearchReplaceQueryChanged(replace_query));
+                }
+            });
+            ui.separator();
+
+            let selected = app.project_search.selected;
+            let showing_replace = !app.project_search.replace_query.is_empty();
+            let (item_count, hint) = if showing_replace {
+                let line_count = app.project_search.replace_previews.len();
+                let occurrence_count: usize = app
+                    .project_search
+                    .replace_previews
+                    .iter()
+                    .map(|p| p.occurrence_count)
+                    .sum();
+                (
+                    line_count,
+                    format!(
+                        "{} lines · {} occurrences · Ctrl+Enter to confirm · Esc to close",
+                        line_count, occurrence_count
+                    ),
+                )
+            } else {
+                let count = app.project_search.results.len();
+                (
+                    count,
+                    format!("{} results · Enter to open · Up/Down · Esc to close", count),
+                )
+            };
+
+            egui::ScrollArea::vertical()
+                .id_salt("project_search_results")
+                .auto_shrink([false; 2])
+                .show_rows(
+                    ui,
+                    ui.text_style_height(&egui::TextStyle::Body),
+                    item_count,
+                    |ui, row_range| {
+                        if showing_replace {
+                            for i in row_range {
+                                let preview = &app.project_search.replace_previews[i];
+                                let label = format!(
+                                    "{}:{}  {} → {}",
+                                    preview.rel_path.to_string_lossy(),
+                                    preview.line,
+                                    preview.before,
+                                    preview.after
+                                );
+                                let is_selected = i == selected;
+                                let text = egui::RichText::new(label).monospace().size(13.0);
+                                if is_selected {
+                                    ui.label(text.strong());
+                                } else {
+                                    ui.label(text);
+                                }
+                            }
+                        } else {
+                            for i in row_range {
+                                let result = &app.project_search.results[i];
+                                let label = format!(
+                                    "{}:{}:{}",
+                                    result.rel_path.to_string_lossy(),
+                                    result.line,
+                                    result.text
+                                );
+                                let is_selected = i == selected;
+                                let text = egui::RichText::new(label).monospace().size(13.0);
+                                let response = if is_selected {
+                                    ui.selectable_label(true, text.strong())
+                                } else {
+                                    ui.selectable_label(false, text)
+                                };
+                                if response.clicked() {
+                                    app.project_search.selected = i;
+                                    app.handle_event(EditorEvent::ProjectSearchOpenResult);
+                                }
+                            }
+                        }
+                    },
+                );
+
+            ui.separator();
+            ui.label(egui::RichText::new(hint).small().weak());
+
+            if app.project_search.confirm_replace {
+                ui.separator();
+                let occurrence_count: usize = app
+                    .project_search
+                    .replace_previews
+                    .iter()
+                    .map(|p| p.occurrence_count)
+                    .sum();
+                let mut files: Vec<_> = app
+                    .project_search
+                    .replace_previews
+                    .iter()
+                    .map(|p| p.rel_path.clone())
+                    .collect();
+                files.sort();
+                files.dedup();
+                let file_count = files.len();
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Replace {occurrence_count} occurrences in {file_count} files?"
+                        ))
+                        .strong(),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Replace").clicked() {
+                            app.handle_event(EditorEvent::ProjectSearchReplaceAllConfirm);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            app.handle_event(EditorEvent::ProjectSearchReplaceAllCancel);
+                        }
+                    });
+                });
+            }
+        });
+
+    if !open {
+        app.handle_event(EditorEvent::ProjectSearchClose);
+    }
+}
+
+/// Render the command palette as a centred window. Shows a filter input
+/// and a scrollable list of matching commands.
+fn render_command_palette_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+    egui::Window::new("Command palette")
+        .collapsible(false)
+        .resizable(false)
+        .default_size([400.0, 320.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let mut query = app.command_palette.query.clone();
             let response = ui.add(
                 egui::TextEdit::singleline(&mut query)
-                    .hint_text("/path/to/file")
-                    .desired_width(400.0),
+                    .hint_text("type a command")
+                    .desired_width(350.0),
             );
             if response.changed() {
-                if let Some(d) = app.open_file_dialog.as_mut() {
-                    d.query = query;
-                }
+                app.handle_event(EditorEvent::CommandPaletteQueryChanged(query));
             }
             if response.gained_focus()
-                || (app.open_file_dialog.as_ref().map(|d| d.query.is_empty()).unwrap_or(false)
-                    && !response.has_focus())
+                || (app.command_palette.query.is_empty() && !response.has_focus())
             {
                 response.request_focus();
             }
-            ui.add_space(4.0);
+            ui.separator();
+
+            let selected = app.command_palette.selected;
+            let item_count = app.command_palette.items.len();
+            egui::ScrollArea::vertical()
+                .id_salt("command_palette_items")
+                .auto_shrink([false; 2])
+                .show_rows(
+                    ui,
+                    ui.text_style_height(&egui::TextStyle::Body),
+                    item_count,
+                    |ui, row_range| {
+                        for i in row_range {
+                            let command = &app.command_palette.items[i];
+                            let label = if command.keybinding.is_empty() {
+                                command.label.to_string()
+                            } else {
+                                format!("{}  ({})", command.label, command.keybinding)
+                            };
+                            let is_selected = i == selected;
+                            let text = egui::RichText::new(label).monospace().size(14.0);
+                            let response = if is_selected {
+                                ui.selectable_label(true, text.strong())
+                            } else {
+                                ui.selectable_label(false, text)
+                            };
+                            if response.clicked() {
+                                app.command_palette.selected = i;
+                                app.handle_event(EditorEvent::CommandPaletteExecute);
+                            }
+                        }
+                    },
+                );
+
+            ui.separator();
             ui.label(
-                egui::RichText::new("Enter to open · Esc to cancel")
-                    .small()
-                    .weak(),
+                egui::RichText::new(format!(
+                    "{} commands · Enter to run · Up/Down · Esc to close",
+                    item_count
+                ))
+                .small()
+                .weak(),
             );
         });
 
     if !open {
-        app.cancel_open_file_dialog();
+        app.handle_event(EditorEvent::CommandPaletteClose);
     }
 }
 
-fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
+fn render_fuzzy_finder_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+
+    egui::Window::new("Fuzzy finder")
+        .collapsible(false)
+        .resizable(false)
+        .default_size([500.0, 360.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let mut query = app.fuzzy_finder.query.clone();
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .hint_text("type a file name...")
+                    .desired_width(f32::INFINITY),
+            );
+            if response.changed() {
+                app.handle_event(EditorEvent::FuzzyFinderQueryChanged(query));
+            }
+            if response.gained_focus()
+                || (app.fuzzy_finder.query.is_empty() && !response.has_focus())
+            {
+                response.request_focus();
+            }
+            ui.separator();
+
+            let item_count = app.fuzzy_finder.filtered.len();
+            let selected = app.fuzzy_finder.selected;
+
+            egui::ScrollArea::vertical()
+                .id_salt("fuzzy_finder_items")
+                .auto_shrink([false; 2])
+                .show_rows(
+                    ui,
+                    ui.text_style_height(&egui::TextStyle::Body),
+                    item_count,
+                    |ui, row_range| {
+                        for row in row_range {
+                            let Some((idx, _)) = app.fuzzy_finder.filtered.get(row) else {
+                                continue;
+                            };
+                            let candidate = &app.fuzzy_finder.items[*idx];
+                            let is_selected = row == selected;
+                            let text = egui::RichText::new(&candidate.display)
+                                .monospace()
+                                .size(14.0);
+                            let response = if is_selected {
+                                ui.selectable_label(true, text.strong())
+                            } else {
+                                ui.selectable_label(false, text)
+                            };
+                            if response.clicked() {
+                                app.fuzzy_finder.selected = row;
+                                app.handle_event(EditorEvent::FuzzyFinderExecute);
+                            }
+                        }
+                    },
+                );
+
+            ui.separator();
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} files · Enter to open · Up/Down · Esc to close",
+                    item_count
+                ))
+                .small()
+                .weak(),
+            );
+        });
+
+    if !open {
+        app.handle_event(EditorEvent::FuzzyFinderClose);
+    }
+}
+
+fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     // Compute the ScrollArea's persistent id up front so we can read
     // its `State.offset` from inside the closure (where the auto-scroll
     // helper needs the current offset to compute its delta). The
@@ -429,7 +945,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
 
     // Cursor + selection state.
     let cursor_pos = app.active_buffer().cursor();
-    let (cursor_line, cursor_byte_col) = app.active_buffer().pos_to_linecol(cursor_pos)
+    let (cursor_line, cursor_byte_col) = app
+        .active_buffer()
+        .pos_to_linecol(cursor_pos)
         .unwrap_or((0, 0));
 
     let selection = app.active_buffer().selection();
@@ -439,25 +957,14 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
         Some(selection.range())
     };
 
-    // Find-match highlight. `current_match()` returns the start byte;
-    // the match length equals the query byte length (memchr operates
-    // on raw bytes, so start + query.len() is the correct end).
-    //
-    // Two intensities mirror VSCode / Sublime:
-    // - current_match_color: bright amber for the match the user
-    //   most recently navigated to (cursor sits at its start).
-    // - other_match_color: dimmer amber for every other match so the
-    //   eye can scan the cluster at a glance.
-    //
-    // Visible only when there's no selection — selection preempts
-    // matches so the user can see their drag without matches
-    // painting over it. Same precedence rule as the TUI frontend.
-    let query_byte_len = app.search.query.len();
+    // Find-match highlight colors come from the active theme. Two
+    // intensities mirror VSCode / Sublime: bright for the current
+    // match, dimmer for the rest.
+    let query_nonempty = !app.search.query.is_empty();
     let current_match_start = app.search.current_match();
-    let current_match_color = egui::Color32::from_rgb(200, 160, 40);
-    let other_match_color = egui::Color32::from_rgb(120, 100, 40);
+    let current_match_color = theme.match_current;
+    let other_match_color = theme.match_other;
 
-    let visuals = ui.style().visuals.clone();
     let prefix_text = format!("{:>width$} \u{2502} ", 1, width = gutter_width);
     let prefix_chars = prefix_text.chars().count();
 
@@ -528,451 +1035,555 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
         scroll_area
     };
 
+    // Captured outside the ScrollArea closure so we can draw the
+    // horizontal scrollbar overlay after the closure ends.
+    let mut hbar_viewport: Option<(f32, f32, egui::Rect)> = None;
+
     scroll_area.show(ui, |ui| {
-            let total_height = total_lines as f32 * line_height;
-            let response = ui.allocate_response(
-                egui::vec2(ui.available_width(), total_height),
-                egui::Sense::click_and_drag(),
+        // Create one highlighter for this render pass and reuse it for
+        // every visible line. This avoids per-line setup cost without
+        // leaking memory in `SyntaxEngine`.
+        let path = app.active_doc().path_buf();
+        let syntax = app.syntax.syntax_for_path(path.as_deref());
+        let mut highlighter = syntax.map(|s| app.syntax.highlighter_for(s));
+
+        let total_height = total_lines as f32 * line_height;
+        let response = ui.allocate_response(
+            egui::vec2(ui.available_width(), total_height),
+            egui::Sense::click_and_drag(),
+        );
+        let rect = response.rect;
+        let painter = ui.painter_at(rect);
+
+        // Tell the app how many lines fit in the visible viewport
+        // so PageUp/PageDown and the auto-scroll code can use the
+        // REAL viewport height. `ui.clip_rect()` is the actual
+        // visible region of the ScrollArea (what the user can see),
+        // which is the correct source of truth here. Earlier this
+        // used `ui.available_height().min(rect.height())`, but
+        // after `allocate_response(total_height)` the available
+        // height collapses to ~0 and `rect.height()` is the full
+        // allocated content — the `min` picked the wrong thing and
+        // `viewport_lines` got stuck at its default (20) forever.
+        // That made auto-scroll think vh=20 even in a 40-line
+        // window, so the cursor pinned at row 16 — the middle.
+        let visible_height = ui.clip_rect().height();
+        let visible_lines = (visible_height / line_height).floor() as usize;
+        if visible_lines > 0 {
+            app.viewport_lines = visible_lines;
+        }
+
+        // Compute the visible line range from the ScrollArea's clip
+        // rect. Rendering only visible lines keeps large files
+        // responsive; without this, every frame would tokenize and
+        // draw every line in the buffer.
+        let clip_top = ui.clip_rect().top();
+        let clip_bottom = ui.clip_rect().bottom();
+        let viewport_width = ui.clip_rect().width();
+        let first_visible = ((clip_top - rect.top()) / line_height).floor() as isize;
+        let last_visible = ((clip_bottom - rect.top()) / line_height).ceil() as isize;
+        let start_line = first_visible.max(0) as usize;
+        let end_line = (last_visible as usize).min(total_lines);
+
+        // Track the widest visible line so we can decide whether a
+        // horizontal scrollbar is needed and size it correctly.
+        let mut max_visible_line_cols: usize = 0;
+
+        // Editor background fills the entire allocated content area.
+        painter.rect_filled(rect, 0.0, theme.editor_bg);
+
+        // Draw cursor line background first (under everything).
+        if cursor_line >= start_line && cursor_line < end_line {
+            let y = (rect.top() + cursor_line as f32 * line_height).round();
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.left(), y),
+                    egui::vec2(rect.width(), line_height),
+                ),
+                0.0,
+                theme.line_highlight,
             );
-            let rect = response.rect;
-            let painter = ui.painter_at(rect);
+        }
 
-            // Tell the app how many lines fit in the visible viewport
-            // so PageUp/PageDown and the auto-scroll code can use the
-            // REAL viewport height. `ui.clip_rect()` is the actual
-            // visible region of the ScrollArea (what the user can see),
-            // which is the correct source of truth here. Earlier this
-            // used `ui.available_height().min(rect.height())`, but
-            // after `allocate_response(total_height)` the available
-            // height collapses to ~0 and `rect.height()` is the full
-            // allocated content — the `min` picked the wrong thing and
-            // `viewport_lines` got stuck at its default (20) forever.
-            // That made auto-scroll think vh=20 even in a 40-line
-            // window, so the cursor pinned at row 16 — the middle.
-            let visible_height = ui.clip_rect().height();
-            let visible_lines = (visible_height / line_height).floor() as usize;
-            if visible_lines > 0 {
-                app.viewport_lines = visible_lines;
+        // Draw each line: gutter, text segments (before/inside/after
+        // selection), and the cursor caret. Drawing the line as three
+        // separate text segments — instead of drawing the full line
+        // and then re-drawing the selected portion on top of the
+        // selection rectangle — eliminates the "ghost" / "shadow"
+        // effect that comes from any subpixel positioning mismatch
+        // between the two text draws.
+        for line_idx in start_line..end_line {
+            // Round y to integer pixels so glyphs align cleanly with
+            // the selection rectangle.
+            let y = (rect.top() + line_idx as f32 * line_height).round();
+
+            let line_text = app
+                .active_buffer()
+                .line_text(line_idx)
+                .map(|c| c.into_owned())
+                .unwrap_or_default();
+
+            let line_cols = line_text
+                .chars()
+                .map(|c| {
+                    if c == '\t' {
+                        app.active_doc().view.tab_width
+                    } else {
+                        1
+                    }
+                })
+                .sum::<usize>();
+            if line_cols > max_visible_line_cols {
+                max_visible_line_cols = line_cols;
             }
 
-            // Draw cursor line background first (under everything).
-            if cursor_line < total_lines {
-                let y = (rect.top() + cursor_line as f32 * line_height).round();
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(rect.left(), y),
-                        egui::vec2(rect.width(), line_height),
-                    ),
-                    0.0,
-                    visuals.faint_bg_color,
-                );
+            // Git gutter bar / deletion marker.
+            let git_enabled =
+                app.active_doc().view.git_gutter_enabled && app.active_doc().git_gutter.enabled();
+            if git_enabled {
+                let status = app.active_doc().git_gutter.status(line_idx);
+                let bar_color = match status {
+                    core::LineStatus::Added => Some(theme.git_added),
+                    core::LineStatus::Modified => Some(theme.git_modified),
+                    core::LineStatus::Unchanged => None,
+                };
+                if let Some(color) = bar_color {
+                    let bar_rect = egui::Rect::from_min_size(
+                        egui::pos2(rect.left() + 2.0, y + 3.0),
+                        egui::vec2(4.0, line_height - 6.0),
+                    );
+                    painter.rect_filled(bar_rect, 2.0, color);
+                }
+                let removed = app.active_doc().git_gutter.removed_blocks_before(line_idx);
+                if !removed.is_empty() {
+                    let total = removed.iter().map(|b| b.count).sum::<usize>();
+                    let marker = if total > 1 {
+                        format!("▼{total}")
+                    } else {
+                        "▼".to_string()
+                    };
+                    painter.text(
+                        egui::pos2(rect.left() + 4.0, y - line_height / 2.0),
+                        egui::Align2::CENTER_CENTER,
+                        marker,
+                        egui::FontId::proportional(8.0),
+                        theme.git_deleted,
+                    );
+                }
             }
 
-            // Draw each line: gutter, text segments (before/inside/after
-            // selection), and the cursor caret. Drawing the line as three
-            // separate text segments — instead of drawing the full line
-            // and then re-drawing the selected portion on top of the
-            // selection rectangle — eliminates the "ghost" / "shadow"
-            // effect that comes from any subpixel positioning mismatch
-            // between the two text draws.
-            for line_idx in 0..total_lines {
-                // Round y to integer pixels so glyphs align cleanly with
-                // the selection rectangle.
-                let y = (rect.top() + line_idx as f32 * line_height).round();
+            // Gutter (line number + separator).
+            let gutter = format!("{:>width$} \u{2502} ", line_idx + 1, width = gutter_width);
+            let gutter_color = if line_idx == cursor_line {
+                theme.line_number_active
+            } else {
+                theme.gutter_text
+            };
+            painter.text(
+                egui::pos2((rect.left()).round(), y),
+                egui::Align2::LEFT_TOP,
+                gutter,
+                font_id.clone(),
+                gutter_color,
+            );
 
-                let line_text = app.active_buffer().line_text(line_idx)
-                    .map(|c| c.into_owned())
-                    .unwrap_or_default();
+            let text_x = (rect.left() + prefix_chars as f32 * char_width
+                - app.active_doc().view.scroll_x_cols as f32 * char_width)
+                .round();
 
-                // Gutter (line number + separator).
-                let gutter = format!("{:>width$} \u{2502} ", line_idx + 1, width = gutter_width);
-                painter.text(
-                    egui::pos2((rect.left()).round(), y),
-                    egui::Align2::LEFT_TOP,
-                    gutter,
-                    font_id.clone(),
-                    visuals.weak_text_color(),
-                );
+            // Compute selection-in-this-line once. If there's no
+            // selection, `seg` stays at the default (None) and we
+            // draw the entire line as one piece. `line_byte_range`
+            // is bound in the outer scope so the match-highlights
+            // block below can read it without re-querying.
+            let line_byte_range = app
+                .active_buffer()
+                .line_byte_range(line_idx)
+                .unwrap_or(0..0);
+            let sel_in_line: Option<(usize, usize)> = sel_range.as_ref().and_then(|sr| {
+                let intersect = selection_in_line(line_byte_range.clone(), sr.clone())?;
+                let start = line_byte_range.start;
+                let total_chars = line_text.chars().count();
+                let take_lo =
+                    byte_to_char_col(&line_text, intersect.start - start).min(total_chars);
+                let take_hi = byte_to_char_col(&line_text, intersect.end - start).min(total_chars);
+                if take_hi > take_lo {
+                    Some((take_lo, take_hi))
+                } else {
+                    None
+                }
+            });
 
-                let text_x = (rect.left() + prefix_chars as f32 * char_width
-            - app.active_doc().view.scroll_x_cols as f32 * char_width)
-            .round();
-
-                // Compute selection-in-this-line once. If there's no
-                // selection, `seg` stays at the default (None) and we
-                // draw the entire line as one piece. `line_byte_range`
-                // is bound in the outer scope so the match-highlights
-                // block below can read it without re-querying.
-                let line_byte_range =
-                    app.active_buffer().line_byte_range(line_idx).unwrap_or(0..0);
-                let sel_in_line: Option<(usize, usize)> = sel_range.as_ref().and_then(|sr| {
-                    let intersect = selection_in_line(line_byte_range.clone(), sr.clone())?;
+            // Compute match highlights for this line. One entry per match that
+            // overlaps this line, each tagged with the colour
+            // (bright for current, dim for the rest). Same shape
+            // as `sel_in_line` (a char-col range) but it's a Vec
+            // because there can be many matches on a line. Skipped
+            // when a selection is present so the user can see
+            // their selection without matches painting over it.
+            //
+            // Matches are clipped to the line's byte range so
+            // multi-line regex matches still show their visible
+            // portion.
+            let mut match_highlights: Vec<(usize, usize, egui::Color32)> = Vec::new();
+            if sel_in_line.is_none() && query_nonempty {
+                let mut idx = app
+                    .search
+                    .matches
+                    .partition_point(|&(s, _)| s < line_byte_range.start);
+                if idx > 0 {
+                    // A match may start on the previous line but extend
+                    // into this one; include it if it overlaps.
+                    idx -= 1;
+                }
+                for &(m_start, m_end) in &app.search.matches[idx..] {
+                    if m_start >= line_byte_range.end {
+                        break;
+                    }
+                    if m_end <= line_byte_range.start {
+                        continue;
+                    }
+                    let intersect =
+                        line_byte_range.start.max(m_start)..line_byte_range.end.min(m_end);
                     let start = line_byte_range.start;
                     let total_chars = line_text.chars().count();
                     let take_lo =
                         byte_to_char_col(&line_text, intersect.start - start).min(total_chars);
                     let take_hi =
                         byte_to_char_col(&line_text, intersect.end - start).min(total_chars);
-                    if take_hi > take_lo {
-                        Some((take_lo, take_hi))
+                    if take_hi <= take_lo {
+                        continue;
+                    }
+                    let color = if Some(m_start) == current_match_start {
+                        current_match_color
                     } else {
-                        None
-                    }
-                });
+                        other_match_color
+                    };
+                    match_highlights.push((take_lo, take_hi, color));
+                }
+            }
 
-                // Compute match highlights for this line. One entry per match that
-                // starts on this line, each tagged with the colour
-                // (bright for current, dim for the rest). Same shape
-                // as `sel_in_line` (a char-col range) but it's a Vec
-                // because there can be many matches on a line. Skipped
-                // when a selection is present so the user can see
-                // their selection without matches painting over it.
-                //
-                // Skipping matches that start on a previous line keeps
-                // the v1 implementation simple — cross-line matches
-                // render their first-line portion only (rare in
-                // practice).
-                let mut match_highlights: Vec<(usize, usize, egui::Color32)> = Vec::new();
-                if sel_in_line.is_none() && query_byte_len > 0 {
-                    let start_idx = app.search.matches.partition_point(|&m| m < line_byte_range.start);
-                    for &m in &app.search.matches[start_idx..] {
-                        if m >= line_byte_range.end {
-                            break;
-                        }
-                        let end = (m + query_byte_len).min(line_byte_range.end);
-                        let intersect = (line_byte_range.start.max(m))..(line_byte_range.start.max(end));
-                        let start = line_byte_range.start;
-                        let total_chars = line_text.chars().count();
-                        let take_lo = byte_to_char_col(
-                            &line_text,
-                            intersect.start - start,
-                        )
-                        .min(total_chars);
-                        let take_hi = byte_to_char_col(
-                            &line_text,
-                            intersect.end - start,
-                        )
-                        .min(total_chars);
-                        if take_hi <= take_lo {
-                            continue;
-                        }
-                        let color = if Some(m) == current_match_start {
-                            current_match_color
-                        } else {
-                            other_match_color
-                        };
-                        match_highlights.push((take_lo, take_hi, color));
-                    }
+            if let Some((take_lo, take_hi)) = sel_in_line {
+                // Selection rendering: three segments
+                // (before / selected / after). Each is drawn
+                // exactly once at an integer-rounded x to avoid
+                // sub-pixel ghosting on the selection rectangle.
+                let before: String = line_text.chars().take(take_lo).collect();
+                let selected: String = line_text
+                    .chars()
+                    .skip(take_lo)
+                    .take(take_hi - take_lo)
+                    .collect();
+                let after: String = line_text.chars().skip(take_hi).collect();
+
+                let sel_x = (text_x + width_of(&before)).round();
+                let sel_w = width_of(&selected).round();
+
+                if !before.is_empty() {
+                    painter.text(
+                        egui::pos2(text_x, y),
+                        egui::Align2::LEFT_TOP,
+                        before,
+                        font_id.clone(),
+                        theme.text,
+                    );
                 }
 
-                if let Some((take_lo, take_hi)) = sel_in_line {
-                    // Selection rendering: three segments
-                    // (before / selected / after). Each is drawn
-                    // exactly once at an integer-rounded x to avoid
-                    // sub-pixel ghosting on the selection rectangle.
-                    let before: String =
-                        line_text.chars().take(take_lo).collect();
-                    let selected: String = line_text
-                        .chars()
-                        .skip(take_lo)
-                        .take(take_hi - take_lo)
-                        .collect();
-                    let after: String =
-                        line_text.chars().skip(take_hi).collect();
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(sel_x, y), egui::vec2(sel_w, line_height)),
+                    0.0,
+                    theme.selection_bg,
+                );
+                painter.text(
+                    egui::pos2(sel_x, y),
+                    egui::Align2::LEFT_TOP,
+                    selected,
+                    font_id.clone(),
+                    theme.text,
+                );
 
-                    let sel_x = (text_x + width_of(&before)).round();
-                    let sel_w = width_of(&selected).round();
-
-                    if !before.is_empty() {
-                        painter.text(
-                            egui::pos2(text_x, y),
-                            egui::Align2::LEFT_TOP,
-                            before,
-                            font_id.clone(),
-                            visuals.text_color(),
-                        );
-                    }
-
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(sel_x, y),
-                            egui::vec2(sel_w, line_height),
-                        ),
-                        0.0,
-                        visuals.selection.bg_fill,
-                    );
+                if !after.is_empty() {
                     painter.text(
-                        egui::pos2(sel_x, y),
+                        egui::pos2((sel_x + sel_w).round(), y),
                         egui::Align2::LEFT_TOP,
-                        selected,
+                        after,
                         font_id.clone(),
-                        visuals.text_color(),
+                        theme.text,
                     );
-
-                    if !after.is_empty() {
-                        painter.text(
-                            egui::pos2((sel_x + sel_w).round(), y),
-                            egui::Align2::LEFT_TOP,
-                            after,
-                            font_id.clone(),
-                            visuals.text_color(),
-                        );
-                    }
-                } else if match_highlights.is_empty() {
-                    // Plain line — check for syntax highlighting.
-                    // Tokens come from the per-document SyntaxCache,
-                    // lazily populated. Only lines without selection
-                    // and without match highlights get syntax colors
-                    // (precedence: selection > matches > syntax).
-                    let tokens = get_syntax_tokens(app, line_idx, &line_text);
-                    if tokens.is_empty() {
-                        // No syntax (unknown extension, too large, or
-                        // passthrough) — draw as before.
-                        painter.text(
-                            egui::pos2(text_x, y),
-                            egui::Align2::LEFT_TOP,
-                            &line_text,
-                            font_id.clone(),
-                            visuals.text_color(),
-                        );
-                    } else {
-                        // Walk tokens left-to-right, drawing each
-                        // segment in its syntax color. Gaps between
-                        // tokens (whitespace) use the default color.
-                        let mut char_cursor = 0usize;
-                        for tok in &tokens {
-                            let tok_lo =
-                                byte_to_char_col(&line_text, tok.range.start);
-                            let tok_hi =
-                                byte_to_char_col(&line_text, tok.range.end);
-                            // Draw gap before this token.
-                            if tok_lo > char_cursor {
-                                let gap: String = line_text
-                                    .chars()
-                                    .skip(char_cursor)
-                                    .take(tok_lo - char_cursor)
-                                    .collect();
-                                if !gap.is_empty() {
-                                    let gap_x = (text_x
-                                        + width_of(
-                                            &line_text
-                                                .chars()
-                                                .take(char_cursor)
-                                                .collect::<String>(),
-                                        ))
-                                    .round();
-                                    painter.text(
-                                        egui::pos2(gap_x, y),
-                                        egui::Align2::LEFT_TOP,
-                                        gap,
-                                        font_id.clone(),
-                                        visuals.text_color(),
-                                    );
-                                }
-                            }
-                            // Draw the token itself.
-                            let seg: String = line_text
-                                .chars()
-                                .skip(tok_lo)
-                                .take(tok_hi - tok_lo)
-                                .collect();
-                            if !seg.is_empty() {
-                                let seg_x = (text_x
-                                    + width_of(
-                                        &line_text
-                                            .chars()
-                                            .take(tok_lo)
-                                            .collect::<String>(),
-                                    ))
-                                .round();
-                                painter.text(
-                                    egui::pos2(seg_x, y),
-                                    egui::Align2::LEFT_TOP,
-                                    seg,
-                                    font_id.clone(),
-                                    syntax_color(tok.kind),
-                                );
-                            }
-                            char_cursor = tok_hi;
-                        }
-                        // Trailing gap after last token.
-                        let total_chars = line_text.chars().count();
-                        if char_cursor < total_chars {
-                            let tail: String = line_text
+                }
+            } else if match_highlights.is_empty() {
+                // Plain line — check for syntax highlighting.
+                // Tokens come from the per-document SyntaxCache,
+                // lazily populated. Only lines without selection
+                // and without match highlights get syntax colors
+                // (precedence: selection > matches > syntax).
+                let doc = &mut app.documents[app.active];
+                let segments = get_syntax_segments(
+                    &app.syntax,
+                    &mut doc.syntax,
+                    &mut highlighter,
+                    line_idx,
+                    &line_text,
+                );
+                if segments.is_empty() {
+                    // No syntax (unknown extension, too large, or
+                    // passthrough) — draw as before.
+                    painter.text(
+                        egui::pos2(text_x, y),
+                        egui::Align2::LEFT_TOP,
+                        &line_text,
+                        font_id.clone(),
+                        theme.text,
+                    );
+                } else {
+                    // Walk segments left-to-right, drawing each
+                    // in its syntect theme color. Since segments
+                    // cover the entire line (no gaps), we just
+                    // draw each one sequentially.
+                    let mut char_cursor = 0usize;
+                    for seg in &segments {
+                        let seg_lo = byte_to_char_col(&line_text, seg.range.start);
+                        let seg_hi = byte_to_char_col(&line_text, seg.range.end);
+                        // Draw gap before this segment (shouldn't
+                        // happen — segments cover the full line —
+                        // but kept as a safety net).
+                        if seg_lo > char_cursor {
+                            let gap: String = line_text
                                 .chars()
                                 .skip(char_cursor)
+                                .take(seg_lo - char_cursor)
                                 .collect();
-                            if !tail.is_empty() {
-                                let tail_x = (text_x
+                            if !gap.is_empty() {
+                                let gap_x = (text_x
                                     + width_of(
-                                        &line_text
-                                            .chars()
-                                            .take(char_cursor)
-                                            .collect::<String>(),
+                                        &line_text.chars().take(char_cursor).collect::<String>(),
                                     ))
                                 .round();
                                 painter.text(
-                                    egui::pos2(tail_x, y),
+                                    egui::pos2(gap_x, y),
                                     egui::Align2::LEFT_TOP,
-                                    tail,
+                                    gap,
                                     font_id.clone(),
-                                    visuals.text_color(),
+                                    theme.text,
                                 );
                             }
                         }
-                    }
-                } else {
-                    // Multi-match highlights. Walk the line text
-                    // left-to-right, emitting plain / styled /
-                    // plain / styled / ... segments. Each styled
-                    // segment gets its own background rectangle so
-                    // adjacent matches render as adjacent coloured
-                    // bars.
-                    let mut highlights = match_highlights;
-                    // Stable sort by start (matches on the same
-                    // char-col keep insertion order — shouldn't
-                    // happen in practice since memchr matches are
-                    // non-overlapping).
-                    highlights.sort_by_key(|h| h.0);
-
-                    let mut cursor = 0usize;
-                    let total_chars = line_text.chars().count();
-                    for (lo, hi, color) in highlights {
-                        if lo > cursor {
-                            let plain: String = line_text
-                                .chars()
-                                .skip(cursor)
-                                .take(lo - cursor)
-                                .collect();
-                            if !plain.is_empty() {
-                                painter.text(
-                                    egui::pos2(text_x, y),
-                                    egui::Align2::LEFT_TOP,
-                                    plain,
-                                    font_id.clone(),
-                                    visuals.text_color(),
-                                );
-                            }
-                        }
-                        let matched: String = line_text
+                        // Draw the colored segment.
+                        let text: String = line_text
                             .chars()
-                            .skip(lo)
-                            .take(hi - lo)
+                            .skip(seg_lo)
+                            .take(seg_hi - seg_lo)
                             .collect();
-                        if !matched.is_empty() {
-                            // Width must be measured from `text_x` so
-                            // we account for the chars before this
-                            // segment too — `width_of(&matched)` alone
-                            // would be wrong if a previous segment
-                            // included tabs (tab advance ≠ 1 char).
-                            let matched_x = (text_x + width_of(
-                                &line_text.chars().take(lo).collect::<String>(),
-                            ))
+                        if !text.is_empty() {
+                            let seg_x = (text_x
+                                + width_of(&line_text.chars().take(seg_lo).collect::<String>()))
                             .round();
-                            let matched_w = width_of(&matched).round();
-                            painter.rect_filled(
-                                egui::Rect::from_min_size(
-                                    egui::pos2(matched_x, y),
-                                    egui::vec2(matched_w, line_height),
-                                ),
-                                0.0,
-                                color,
-                            );
+                            let c = seg.color;
                             painter.text(
-                                egui::pos2(matched_x, y),
+                                egui::pos2(seg_x, y),
                                 egui::Align2::LEFT_TOP,
-                                matched,
+                                text,
                                 font_id.clone(),
-                                visuals.text_color(),
+                                egui::Color32::from_rgb(c.r, c.g, c.b),
                             );
                         }
-                        cursor = hi;
+                        char_cursor = seg_hi;
                     }
-                    if cursor < total_chars {
-                        let tail: String =
-                            line_text.chars().skip(cursor).collect();
+                    // Trailing gap after last segment.
+                    let total_chars = line_text.chars().count();
+                    if char_cursor < total_chars {
+                        let tail: String = line_text.chars().skip(char_cursor).collect();
                         if !tail.is_empty() {
+                            let tail_x = (text_x
+                                + width_of(
+                                    &line_text.chars().take(char_cursor).collect::<String>(),
+                                ))
+                            .round();
                             painter.text(
-                                egui::pos2(text_x, y),
+                                egui::pos2(tail_x, y),
                                 egui::Align2::LEFT_TOP,
                                 tail,
                                 font_id.clone(),
-                                visuals.text_color(),
+                                theme.text,
                             );
                         }
                     }
                 }
+            } else {
+                // Multi-match highlights. Walk the line text
+                // left-to-right, emitting plain / styled /
+                // plain / styled / ... segments. Each styled
+                // segment gets its own background rectangle so
+                // adjacent matches render as adjacent coloured
+                // bars.
+                let mut highlights = match_highlights;
+                // Stable sort by start (matches on the same
+                // char-col keep insertion order — shouldn't
+                // happen in practice since memchr matches are
+                // non-overlapping).
+                highlights.sort_by_key(|h| h.0);
 
-                // (Caret painting moved outside the loop — see below.)
-            }
-
-            // Character cursor caret — painted after the line loop so
-            // it sits on top of all text, at the animated y position.
-            // Only draw when the selection is collapsed; a non-empty
-            // selection rectangle already marks the head position.
-            if sel_range.is_none() && cursor_line < total_lines {
-                let caret_line_text = app.active_buffer().line_text(cursor_line)
-                    .map(|c| c.into_owned())
-                    .unwrap_or_default();
-                let char_col = byte_to_char_col(&caret_line_text, cursor_byte_col);
-                let text_x = (rect.left() + prefix_chars as f32 * char_width
-                    - app.active_doc().view.scroll_x_cols as f32 * char_width)
-                    .round();
-                let caret_x = (text_x + char_col as f32 * char_width).round();
-                let caret_y = (rect.top() + app.caret_anim_y).round();
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(caret_x, caret_y),
-                        egui::vec2(CARET_WIDTH, line_height),
-                    ),
-                    0.0,
-                    visuals.text_color(),
-                );
-            }
-
-            // Mouse handling: convert pointer position to byte position
-            // and dispatch SetCursor (click) or SelectExtendTo (drag).
-            // text_x is the SCREEN position of the text origin (gutter
-            // right-edge minus horizontal scroll). pixel_to_byte_pos
-            // uses it to map pointer.x → char_col.
-            let text_x = rect.left() + prefix_chars as f32 * char_width
-                - app.active_doc().view.scroll_x_cols as f32 * char_width;
-            if response.clicked() || response.drag_started() || response.dragged() {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    if let Some(byte_pos) = pixel_to_byte_pos(
-                        app,
-                        pos,
-                        rect,
-                        text_x,
-                        char_width,
-                        line_height,
-                        prefix_chars,
-                        gutter_width,
-                    ) {
-                        if response.drag_started() || response.dragged() {
-                            app.handle_event(EditorEvent::SelectExtendTo { pos: byte_pos });
-                        } else {
-                            app.handle_event(EditorEvent::SetCursor { pos: byte_pos });
+                let mut cursor = 0usize;
+                let total_chars = line_text.chars().count();
+                for (lo, hi, color) in highlights {
+                    if lo > cursor {
+                        let plain: String =
+                            line_text.chars().skip(cursor).take(lo - cursor).collect();
+                        if !plain.is_empty() {
+                            painter.text(
+                                egui::pos2(text_x, y),
+                                egui::Align2::LEFT_TOP,
+                                plain,
+                                font_id.clone(),
+                                theme.text,
+                            );
                         }
+                    }
+                    let matched: String = line_text.chars().skip(lo).take(hi - lo).collect();
+                    if !matched.is_empty() {
+                        // Width must be measured from `text_x` so
+                        // we account for the chars before this
+                        // segment too — `width_of(&matched)` alone
+                        // would be wrong if a previous segment
+                        // included tabs (tab advance ≠ 1 char).
+                        let matched_x = (text_x
+                            + width_of(&line_text.chars().take(lo).collect::<String>()))
+                        .round();
+                        let matched_w = width_of(&matched).round();
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(matched_x, y),
+                                egui::vec2(matched_w, line_height),
+                            ),
+                            0.0,
+                            color,
+                        );
+                        let match_text_color = if color == current_match_color {
+                            theme.match_current_text
+                        } else {
+                            theme.match_other_text
+                        };
+                        painter.text(
+                            egui::pos2(matched_x, y),
+                            egui::Align2::LEFT_TOP,
+                            matched,
+                            font_id.clone(),
+                            match_text_color,
+                        );
+                    }
+                    cursor = hi;
+                }
+                if cursor < total_chars {
+                    let tail: String = line_text.chars().skip(cursor).collect();
+                    if !tail.is_empty() {
+                        painter.text(
+                            egui::pos2(text_x, y),
+                            egui::Align2::LEFT_TOP,
+                            tail,
+                            font_id.clone(),
+                            theme.text,
+                        );
                     }
                 }
             }
 
-            // Horizontal scroll: Shift+scroll wheel scrolls left/right
-            // instead of up/down. egui's ScrollArea already eats the
-            // wheel for vertical scroll; we hijack the modifier.
-            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-            if scroll_delta != egui::Vec2::ZERO {
-                let shift = ui.input(|i| i.modifiers.shift);
-                if shift {
-                    // Shift+wheel: horizontal scroll. Convert pixel
-                    // delta to column delta using char_width.
-                    let cols_delta = (scroll_delta.y / char_width).round() as i32;
-                    let new_cols = (app.active_doc().view.scroll_x_cols as i32 + cols_delta).max(0) as usize;
-                    app.active_doc_mut().view.scroll_x_cols = new_cols;
+            // (Caret painting moved outside the loop — see below.)
+        }
+
+        // Character cursor caret — painted after the line loop so
+        // it sits on top of all text, at the animated y position.
+        // Only draw when the selection is collapsed; a non-empty
+        // selection rectangle already marks the head position.
+        if sel_range.is_none() && cursor_line < total_lines {
+            let caret_line_text = app
+                .active_buffer()
+                .line_text(cursor_line)
+                .map(|c| c.into_owned())
+                .unwrap_or_default();
+            let char_col = byte_to_char_col(&caret_line_text, cursor_byte_col);
+            let text_x = (rect.left() + prefix_chars as f32 * char_width
+                - app.active_doc().view.scroll_x_cols as f32 * char_width)
+                .round();
+            let caret_x = (text_x + char_col as f32 * char_width).round();
+            let caret_y = (rect.top() + app.caret_anim_y).round();
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(caret_x, caret_y),
+                    egui::vec2(CARET_WIDTH, line_height),
+                ),
+                0.0,
+                theme.caret,
+            );
+        }
+
+        // Mouse handling: convert pointer position to byte position
+        // and dispatch SetCursor (click) or SelectExtendTo (drag).
+        // text_x is the SCREEN position of the text origin (gutter
+        // right-edge minus horizontal scroll). pixel_to_byte_pos
+        // uses it to map pointer.x → char_col.
+        let text_x = rect.left() + prefix_chars as f32 * char_width
+            - app.active_doc().view.scroll_x_cols as f32 * char_width;
+        if response.clicked() || response.drag_started() || response.dragged() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                if let Some(byte_pos) = pixel_to_byte_pos(
+                    app,
+                    pos,
+                    rect,
+                    text_x,
+                    char_width,
+                    line_height,
+                    prefix_chars,
+                    gutter_width,
+                ) {
+                    if response.drag_started() || response.dragged() {
+                        app.handle_event(EditorEvent::SelectExtendTo { pos: byte_pos });
+                    } else {
+                        app.handle_event(EditorEvent::SetCursor { pos: byte_pos });
+                    }
                 }
             }
-        });
+        }
+
+        // Horizontal scroll: trackpad horizontal swipe (scroll_delta.x)
+        // or Shift+vertical wheel scrolls left/right. egui's
+        // ScrollArea is vertical-only, so any horizontal scroll delta
+        // is free for us to consume.
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+        if scroll_delta != egui::Vec2::ZERO {
+            let shift = ui.input(|i| i.modifiers.shift);
+            let h_delta = if shift {
+                scroll_delta.y
+            } else {
+                scroll_delta.x
+            };
+            if h_delta != 0.0 {
+                let cols_delta = (h_delta / char_width).round() as i32;
+                let new_cols =
+                    (app.active_doc().view.scroll_x_cols as i32 + cols_delta).max(0) as usize;
+                app.active_doc_mut().view.scroll_x_cols = new_cols;
+            }
+        }
+
+        // Decide whether a horizontal scrollbar is needed based on the
+        // widest line currently visible.
+        let content_width = prefix_chars as f32 * char_width
+            + max_visible_line_cols as f32 * char_width
+            + 4.0 * char_width;
+        if content_width > viewport_width {
+            hbar_viewport = Some((viewport_width, content_width, ui.clip_rect()));
+        }
+    });
+
+    if let Some((viewport_width, content_width, clip_rect)) = hbar_viewport {
+        render_horizontal_scrollbar(
+            ui,
+            app,
+            clip_rect,
+            viewport_width,
+            content_width,
+            char_width,
+        );
+    }
 
     // Mark the cursor position as seen so the next frame's
     // `cursor_moved` check correctly detects fresh motion. Per-doc
@@ -981,41 +1592,102 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp) {
     app.active_doc_mut().view.last_seen_cursor = current_cursor;
 }
 
-/// Get syntax tokens for a line, using the per-document cache.
-/// Tokenizes on cache miss (lazy population). Returns an empty Vec
-/// when syntax highlighting is disabled (file too large, unknown
-/// extension, or no path).
-fn get_syntax_tokens(
+/// Draw a horizontal scrollbar overlay at the bottom of the editor
+/// viewport when at least one visible line is wider than the viewport.
+/// Handles drag and click-to-jump.
+fn render_horizontal_scrollbar(
+    ui: &mut egui::Ui,
     app: &mut EditorApp,
-    line_idx: usize,
-    line_text: &str,
-) -> Vec<core::Token> {
-    // Size gate — skip tokenization for very large files.
-    if app.active_buffer().len() > core::SYNTAX_SIZE_LIMIT {
-        return Vec::new();
+    viewport_rect: egui::Rect,
+    viewport_width: f32,
+    content_width: f32,
+    char_width: f32,
+) {
+    let theme = *theme(app);
+    let bar_height = 10.0;
+    let track_rect = egui::Rect::from_min_size(
+        egui::pos2(viewport_rect.left(), viewport_rect.bottom() - bar_height),
+        egui::vec2(viewport_width, bar_height),
+    );
+
+    let ratio = viewport_width / content_width;
+    let thumb_width = (viewport_width * ratio).max(20.0).min(viewport_width);
+    let max_scroll_px = content_width - viewport_width;
+    let current_scroll_px = app.active_doc().view.scroll_x_cols as f32 * char_width;
+    let scroll_frac = if max_scroll_px > 0.0 {
+        (current_scroll_px / max_scroll_px).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let thumb_x = track_rect.left() + scroll_frac * (track_rect.width() - thumb_width);
+    let thumb_rect = egui::Rect::from_min_size(
+        egui::pos2(thumb_x, track_rect.top()),
+        egui::vec2(thumb_width, bar_height),
+    );
+
+    let response = ui.interact(
+        track_rect,
+        egui::Id::new("hscrollbar"),
+        egui::Sense::click_and_drag(),
+    );
+
+    if response.dragged() {
+        let delta = response.drag_delta().x;
+        let content_delta = delta / ratio;
+        let cols_delta = (content_delta / char_width).round() as i32;
+        let new_cols = (app.active_doc().view.scroll_x_cols as i32 + cols_delta).max(0) as usize;
+        app.active_doc_mut().view.scroll_x_cols = new_cols;
     }
 
-    // Check the cache first.
-    if !app.active_doc().syntax.dirty {
-        if let Some(tokens) = app.active_doc().syntax.lines.get(&line_idx) {
-            return tokens.clone();
+    if response.clicked() && !response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let frac = ((pos.x - track_rect.left()) / track_rect.width()).clamp(0.0, 1.0);
+            let max_scroll_cols = (max_scroll_px / char_width).round() as usize;
+            app.active_doc_mut().view.scroll_x_cols =
+                (frac * max_scroll_cols as f32).round() as usize;
         }
     }
 
-    // Cache miss or dirty — tokenize this line.
-    let path = app.active_doc().path();
-    let tokens = core::tokenize_line(path, line_text.as_bytes());
+    let painter = ui.painter();
+    painter.rect_filled(track_rect, 4.0, theme.panel_bg);
+    painter.rect_filled(thumb_rect, 4.0, theme.dim_text);
+}
 
-    // Cache the result. If the cache was dirty, this is the first
-    // line of a fresh population pass — clear dirty so subsequent
-    // lines use the cache.
-    let doc = app.active_doc_mut();
-    if doc.syntax.dirty {
-        doc.syntax.lines.clear();
-        doc.syntax.dirty = false;
+/// Get syntax tokens for a line, using the per-document cache.
+/// Tokenizes on cache miss (lazy population). Returns an empty Vec
+/// Get syntax color segments for a line, using the per-document
+/// cache and the global `SyntaxEngine`. Tokenizes on cache miss
+/// (lazy population). Returns an empty Vec when syntax highlighting
+/// is disabled (file too large, unknown extension, or no path).
+///
+/// `highlighter` is created once per render pass and reused for each
+/// visible line; the caller owns it so we don't need a self-referential
+/// `SyntaxEngine`.
+fn get_syntax_segments(
+    syntax_engine: &core::SyntaxEngine,
+    cache: &mut core::SyntaxCache,
+    highlighter: &mut Option<core::HighlightLines<'_>>,
+    line_idx: usize,
+    line_text: &str,
+) -> Vec<core::ColorSegment> {
+    if !cache.dirty {
+        if let Some(segs) = cache.lines.get(&line_idx) {
+            return segs.clone();
+        }
     }
-    doc.syntax.lines.insert(line_idx, tokens.clone());
-    tokens
+
+    let segments = if let Some(ref mut h) = highlighter {
+        syntax_engine.highlight_line_with(h, line_text)
+    } else {
+        Vec::new()
+    };
+
+    if cache.dirty {
+        cache.lines.clear();
+        cache.dirty = false;
+    }
+    cache.lines.insert(line_idx, segments.clone());
+    segments
 }
 
 /// Compute the desired vertical scroll offset so the cursor stays
@@ -1103,15 +1775,17 @@ fn pixel_to_byte_pos(
 
     // Determine char column from x. If the click is in the gutter, snap
     // to the start of the line.
-let text_x_relative = text_x - rect.left();
-        let char_col = if rel_x < text_x_relative {
-            0usize
-        } else {
-            ((rel_x - text_x_relative) / char_width) as usize
-        };
-        let _ = (prefix_chars, gutter_width); // currently unused; reserved for future
+    let text_x_relative = text_x - rect.left();
+    let char_col = if rel_x < text_x_relative {
+        0usize
+    } else {
+        ((rel_x - text_x_relative) / char_width) as usize
+    };
+    let _ = (prefix_chars, gutter_width); // currently unused; reserved for future
 
-    let line_text = app.active_buffer().line_text(line_offset)
+    let line_text = app
+        .active_buffer()
+        .line_text(line_offset)
         .map(|c| c.into_owned())
         .unwrap_or_default();
     let total_chars = line_text.chars().count();

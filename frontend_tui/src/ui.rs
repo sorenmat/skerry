@@ -21,56 +21,48 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
 use crate::app::{App, CloseChoice};
 
-/// Map a `TokenKind` to a ratatui `Color`. Uses a palette similar to
-/// the GUI's (VS Code Dark+ inspired), adjusted for terminal
-/// visibility.
-fn syntax_color(kind: core::TokenKind) -> Color {
-    match kind {
-        core::TokenKind::Keyword => Color::Rgb(86, 156, 214),
-        core::TokenKind::Type => Color::Rgb(78, 201, 176),
-        core::TokenKind::Function => Color::Rgb(220, 220, 170),
-        core::TokenKind::String => Color::Rgb(206, 145, 120),
-        core::TokenKind::Comment => Color::Rgb(106, 153, 85),
-        core::TokenKind::Number => Color::Rgb(181, 206, 168),
-        core::TokenKind::Punctuation | core::TokenKind::Identifier => Color::Reset,
-    }
-}
-
-/// Get syntax tokens for a line, using the per-document cache.
-fn get_syntax_tokens(app: &mut App, line_idx: usize, line_text: &str) -> Vec<core::Token> {
-    if app.active_buffer().len() > core::SYNTAX_SIZE_LIMIT {
-        return Vec::new();
-    }
-    if !app.active_doc().syntax.dirty {
-        if let Some(tokens) = app.active_doc().syntax.lines.get(&line_idx) {
-            return tokens.clone();
+/// Get syntax color segments for a line, using the per-document
+/// cache and the global `SyntaxEngine`. `highlighter` is created once
+/// per render pass and reused for each visible line.
+fn get_syntax_segments(
+    syntax_engine: &core::SyntaxEngine,
+    cache: &mut core::SyntaxCache,
+    highlighter: &mut Option<core::HighlightLines<'_>>,
+    line_idx: usize,
+    line_text: &str,
+) -> Vec<core::ColorSegment> {
+    if !cache.dirty {
+        if let Some(segs) = cache.lines.get(&line_idx) {
+            return segs.clone();
         }
     }
-    let path = app.active_doc().path();
-    let tokens = core::tokenize_line(path, line_text.as_bytes());
-    let doc = app.active_doc_mut();
-    if doc.syntax.dirty {
-        doc.syntax.lines.clear();
-        doc.syntax.dirty = false;
+    let segments = if let Some(ref mut h) = highlighter {
+        syntax_engine.highlight_line_with(h, line_text)
+    } else {
+        Vec::new()
+    };
+    if cache.dirty {
+        cache.lines.clear();
+        cache.dirty = false;
     }
-    doc.syntax.lines.insert(line_idx, tokens.clone());
-    tokens
+    cache.lines.insert(line_idx, segments.clone());
+    segments
 }
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
     // Vertical chunks: header, content, status, and a row each for the
-    // find bar, replace bar, close-confirm prompt, and open-file
-    // dialog (whichever are open). Modals take priority: we always
-    // reserve their row when their state is set so opening/closing
-    // one doesn't make the rest of the layout jump.
+    // find bar, replace bar, close-confirm prompt, open-file dialog,
+    // and go-to-line dialog (whichever are open). Modals take priority:
+    // we always reserve their row when their state is set so
+    // opening/closing one doesn't make the rest of the layout jump.
     let mut constraints = vec![
         Constraint::Length(1),
         Constraint::Min(3),
@@ -85,7 +77,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.close_confirm.is_some() {
         constraints.push(Constraint::Length(1));
     }
-    if app.open_file_dialog.is_some() {
+    if app.go_to_line_dialog.is_some() {
         constraints.push(Constraint::Length(1));
     }
     let chunks = Layout::default()
@@ -96,10 +88,31 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let header = render_header(app);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    app.adjust_viewport(chunks[1].height);
-    let content = render_content(app, chunks[1].width);    f.render_widget(Paragraph::new(content), chunks[1]);
+    // When the project tree is open, split the content area into a
+    // left sidebar and the main editor area.
+    let (tree_area, content_area) = if app.project_tree_open {
+        let hchunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+            .split(chunks[1]);
+        (Some(hchunks[0]), hchunks[1])
+    } else {
+        (None, chunks[1])
+    };
 
-    let status = render_status(app);
+    if let Some(area) = tree_area {
+        app.tree_width = area.width;
+        let tree_lines = render_project_tree(app, area.width);
+        f.render_widget(Paragraph::new(tree_lines), area);
+    } else {
+        app.tree_width = 0;
+    }
+
+    app.adjust_viewport(content_area.height);
+    let content = render_content(app, content_area.width);
+    f.render_widget(Paragraph::new(content), content_area);
+
+    let status = render_status(app, chunks[2].width);
     f.render_widget(Paragraph::new(status), chunks[2]);
 
     // Modal rows, in order. Index = 3 + (1 per preceding modal that's
@@ -121,38 +134,58 @@ pub fn render(f: &mut Frame, app: &mut App) {
         f.render_widget(Paragraph::new(line), chunks[idx]);
         idx += 1;
     }
-    if let Some(dialog) = &app.open_file_dialog {
-        let line = render_open_file_dialog(dialog);
+    if let Some(dialog) = &app.go_to_line_dialog {
+        let line = render_go_to_line_dialog(dialog);
         f.render_widget(Paragraph::new(line), chunks[idx]);
         // No further modals to index after this.
     }
 
     // Position the terminal cursor. The find bar, replace bar, and
-    // open-file dialog all have a text input — they want the cursor
-    // at end of their query string. Close-confirm has no input;
-    // cursor stays on the buffer if visible. Replace bar takes
-    // priority over find bar (it's the more recently opened
+    // go-to-line dialog all have a text input — they want the cursor at
+    // end of their query string. Close-confirm has no input; cursor
+    // stays on the buffer if visible. Replace bar
+    // takes priority over find bar (it's the more recently opened
     // modal); find bar takes priority over no modal.
-    if app.search.replace_bar_open {
+    if app.command_palette.open {
+        let overlay_rect = command_palette_rect(area);
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(overlay_rect);
+        let prefix_chars = "▸ ".chars().count() as u16;
+        let cursor_x = inner.x + prefix_chars + app.command_palette.query.chars().count() as u16;
+        f.set_cursor_position(Position::new(cursor_x, inner.y));
+    } else if app.project_search.open {
+        let overlay_rect = project_search_rect(area);
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(overlay_rect);
+        if app.project_search.replace_focused {
+            let prefix_chars = "▸ Replace: ".chars().count() as u16;
+            let cursor_x =
+                inner.x + prefix_chars + app.project_search.replace_query.chars().count() as u16;
+            f.set_cursor_position(Position::new(cursor_x, inner.y + 1));
+        } else {
+            let prefix_chars = "▸ Find: ".chars().count() as u16;
+            let cursor_x = inner.x + prefix_chars + app.project_search.query.chars().count() as u16;
+            f.set_cursor_position(Position::new(cursor_x, inner.y));
+        }
+    } else if app.search.replace_bar_open {
         let replace_idx = if app.search.bar_open { 4 } else { 3 };
         let prefix_chars = " Replace: ".chars().count() as u16;
-        let cursor_x = chunks[replace_idx].x + prefix_chars
-            + app.search.replace_query.chars().count() as u16;
+        let cursor_x =
+            chunks[replace_idx].x + prefix_chars + app.search.replace_query.chars().count() as u16;
         f.set_cursor_position(Position::new(cursor_x, chunks[replace_idx].y));
     } else if app.search.bar_open {
         let find_idx = 3;
         let query_prefix_chars = " Find: ".chars().count() as u16;
-        let cursor_x = chunks[find_idx].x + query_prefix_chars
-            + app.search.query.chars().count() as u16;
+        let cursor_x =
+            chunks[find_idx].x + query_prefix_chars + app.search.query.chars().count() as u16;
         f.set_cursor_position(Position::new(cursor_x, chunks[find_idx].y));
-    } else if let Some(dialog) = app.open_file_dialog.as_ref() {
+    } else if let Some(dialog) = app.go_to_line_dialog.as_ref() {
         // The dialog row sits at the last allocated chunk — chunks is
         // built in declaration order so the dialog row is always the
         // final entry. `unwrap` is safe: we just rendered into it.
         let last = chunks.last().unwrap();
-        let prefix_chars = " Open: ".chars().count() as u16;
-        let cursor_x = last.x + prefix_chars
-            + dialog.query.chars().count() as u16;
+        let prefix_chars = " Go to line: ".chars().count() as u16;
+        let cursor_x = last.x + prefix_chars + dialog.query.chars().count() as u16;
         f.set_cursor_position(Position::new(cursor_x, last.y));
     } else if let Some(pos) = compute_cursor_screen_pos(app, chunks[1]) {
         f.set_cursor_position(pos);
@@ -165,22 +198,37 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(confirm) = &app.close_confirm {
         render_close_confirm_overlay(f, area, confirm);
     }
+
+    // Project-wide search draws as a centered overlay so the results
+    // list has enough room.
+    if app.project_search.open {
+        render_project_search_overlay(f, area, app);
+    }
+
+    // Command palette draws on top of everything else.
+    if app.command_palette.open {
+        render_command_palette_overlay(f, area, app);
+    }
+
+    // Fuzzy file finder draws on top of everything else.
+    if app.fuzzy_finder.open {
+        render_fuzzy_finder_overlay(f, area, app);
+    }
 }
 
 /// Render the close-on-dirty prompt as a single line at the bottom.
 /// The line shows the three choices with the focused one highlighted
 /// by reverse video. Also includes a hint about the key bindings.
-fn render_close_confirm(
-    confirm: &crate::app::CloseConfirm,
-    doc: &core::Document,
-) -> Line<'static> {
+fn render_close_confirm(confirm: &crate::app::CloseConfirm, doc: &core::Document) -> Line<'static> {
     let doc_name = doc.display_name();
     let dirty_msg = format!("'{doc_name}' has unsaved changes.");
     let choice_label = |c: CloseChoice, label: &str| -> Span<'static> {
         let focused = confirm.choice == c;
         let mut style = Style::default();
         if focused {
-            style = style.bg(Color::Rgb(60, 80, 140)).fg(Color::White)
+            style = style
+                .bg(Color::Rgb(60, 80, 140))
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD);
         } else {
             style = style.fg(Color::DarkGray);
@@ -201,11 +249,7 @@ fn render_close_confirm(
 /// choices in reverse video on the focused one. We render this AFTER
 /// the content so it visually sits on top of the buffer text — makes
 /// the prompt unmissable.
-fn render_close_confirm_overlay(
-    f: &mut Frame,
-    area: Rect,
-    confirm: &crate::app::CloseConfirm,
-) {
+fn render_close_confirm_overlay(f: &mut Frame, area: Rect, confirm: &crate::app::CloseConfirm) {
     // Centre horizontally on the available area, with one row of padding
     // above and below.
     let label_w = 60usize.min(area.width as usize);
@@ -216,19 +260,25 @@ fn render_close_confirm_overlay(
 
     let focused = confirm.choice;
     let save_style = if focused == CloseChoice::Save {
-        Style::default().bg(Color::Rgb(60, 80, 140)).fg(Color::White)
+        Style::default()
+            .bg(Color::Rgb(60, 80, 140))
+            .fg(Color::White)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let discard_style = if focused == CloseChoice::Discard {
-        Style::default().bg(Color::Rgb(60, 80, 140)).fg(Color::White)
+        Style::default()
+            .bg(Color::Rgb(60, 80, 140))
+            .fg(Color::White)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let cancel_style = if focused == CloseChoice::Cancel {
-        Style::default().bg(Color::Rgb(60, 80, 140)).fg(Color::White)
+        Style::default()
+            .bg(Color::Rgb(60, 80, 140))
+            .fg(Color::White)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
@@ -245,21 +295,334 @@ fn render_close_confirm_overlay(
     f.render_widget(Paragraph::new(prompt), overlay_rect);
 }
 
-/// Render the open-file text-input prompt.
-fn render_open_file_dialog(dialog: &crate::app::OpenFileDialog) -> Line<'static> {
-    Line::from(format!(" Open: {}█", dialog.query))
+/// Render the project-wide search / replace overlay as a centred popup.
+/// Shows find and replace inputs, live results or replace preview, and
+/// a hint row.
+fn render_project_search_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let overlay_rect = project_search_rect(area);
+
+    f.render_widget(Clear, overlay_rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Project Search & Replace ");
+    let inner = block.inner(overlay_rect);
+    f.render_widget(block, overlay_rect);
+
+    let showing_replace = !app.project_search.replace_query.is_empty();
+    let find_focus_marker = if app.project_search.replace_focused {
+        " "
+    } else {
+        "▸"
+    };
+    let replace_focus_marker = if app.project_search.replace_focused {
+        "▸"
+    } else {
+        " "
+    };
+    let find_line = Line::from(format!(
+        "{} Find: {}█  ({} results)",
+        find_focus_marker,
+        app.project_search.query,
+        app.project_search.results.len()
+    ));
+    let replace_line = Line::from(format!(
+        "{} Replace: {}█",
+        replace_focus_marker, app.project_search.replace_query
+    ));
+    f.render_widget(Paragraph::new(find_line), inner);
+    let replace_area = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: 1,
+    };
+    f.render_widget(Paragraph::new(replace_line), replace_area);
+
+    // Reserve top two rows for inputs and bottom row for hint.
+    let results_area = Rect {
+        x: inner.x,
+        y: inner.y + 2,
+        width: inner.width,
+        height: inner.height.saturating_sub(3),
+    };
+
+    let selected = app.project_search.selected;
+    let selected_style = Style::default()
+        .bg(Color::Rgb(60, 80, 140))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if showing_replace {
+        for (i, preview) in app.project_search.replace_previews.iter().enumerate() {
+            if lines.len() >= results_area.height as usize {
+                break;
+            }
+            let label = format!(
+                " {}:{}  {} → {}",
+                preview.rel_path.to_string_lossy(),
+                preview.line,
+                preview.before,
+                preview.after
+            );
+            let truncated = label
+                .chars()
+                .take(results_area.width as usize)
+                .collect::<String>();
+            let line = if i == selected {
+                Line::from(Span::styled(truncated, selected_style))
+            } else {
+                Line::from(truncated)
+            };
+            lines.push(line);
+        }
+    } else {
+        for (i, result) in app.project_search.results.iter().enumerate() {
+            if lines.len() >= results_area.height as usize {
+                break;
+            }
+            let label = format!(
+                " {}:{} {}",
+                result.rel_path.to_string_lossy(),
+                result.line,
+                result.text
+            );
+            let truncated = label
+                .chars()
+                .take(results_area.width as usize)
+                .collect::<String>();
+            let line = if i == selected {
+                Line::from(Span::styled(truncated, selected_style))
+            } else {
+                Line::from(truncated)
+            };
+            lines.push(line);
+        }
+    }
+
+    f.render_widget(Paragraph::new(lines), results_area);
+
+    let hint_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height - 1,
+        width: inner.width,
+        height: 1,
+    };
+    let hint_text = if app.project_search.confirm_replace {
+        let occurrence_count: usize = app
+            .project_search
+            .replace_previews
+            .iter()
+            .map(|p| p.occurrence_count)
+            .sum();
+        let mut files: Vec<_> = app
+            .project_search
+            .replace_previews
+            .iter()
+            .map(|p| p.rel_path.clone())
+            .collect();
+        files.sort();
+        files.dedup();
+        format!(
+            " Replace {} occurrences in {} files? Enter = yes, Esc = no ",
+            occurrence_count,
+            files.len()
+        )
+    } else if showing_replace {
+        let line_count = app.project_search.replace_previews.len();
+        let occurrence_count: usize = app
+            .project_search
+            .replace_previews
+            .iter()
+            .map(|p| p.occurrence_count)
+            .sum();
+        format!(
+            " {} lines · {} occurrences · Tab focus · Ctrl+Enter confirm · Esc close ",
+            line_count, occurrence_count
+        )
+    } else {
+        format!(
+            " {} results · Enter open · Up/Down · Tab focus · Esc close ",
+            app.project_search.results.len()
+        )
+    };
+    let hint = Line::from(hint_text);
+    f.render_widget(Paragraph::new(hint), hint_area);
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect {
+        x,
+        y,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    }
+}
+
+fn project_search_rect(area: Rect) -> Rect {
+    let width = (area.width as f32 * 0.75).clamp(40.0, 80.0) as u16;
+    let height = (area.height as f32 * 0.75).clamp(10.0, 30.0) as u16;
+    centered_rect(width, height, area)
+}
+
+fn command_palette_rect(area: Rect) -> Rect {
+    let width = (area.width as f32 * 0.6).clamp(40.0, 70.0) as u16;
+    let height = (area.height as f32 * 0.6).clamp(10.0, 25.0) as u16;
+    centered_rect(width, height, area)
+}
+
+/// Render the command palette as a centred popup.
+fn render_command_palette_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let overlay_rect = command_palette_rect(area);
+
+    f.render_widget(Clear, overlay_rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta))
+        .title(" Command Palette ");
+    let inner = block.inner(overlay_rect);
+    f.render_widget(block, overlay_rect);
+
+    let query_line = Line::from(format!(
+        "▸ {}█  ({} commands)",
+        app.command_palette.query,
+        app.command_palette.items.len()
+    ));
+    f.render_widget(Paragraph::new(query_line), inner);
+
+    // Reserve top row for query and bottom row for hint.
+    let items_area = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: inner.height.saturating_sub(2),
+    };
+
+    let selected = app.command_palette.selected;
+    let selected_style = Style::default()
+        .bg(Color::Rgb(100, 60, 140))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, command) in app.command_palette.items.iter().enumerate() {
+        if lines.len() >= items_area.height as usize {
+            break;
+        }
+        let label = if command.keybinding.is_empty() {
+            format!(" {}", command.label)
+        } else {
+            format!(" {}  ({})", command.label, command.keybinding)
+        };
+        let truncated = label
+            .chars()
+            .take(items_area.width as usize)
+            .collect::<String>();
+        let line = if i == selected {
+            Line::from(Span::styled(truncated, selected_style))
+        } else {
+            Line::from(truncated)
+        };
+        lines.push(line);
+    }
+
+    f.render_widget(Paragraph::new(lines), items_area);
+
+    let hint_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height - 1,
+        width: inner.width,
+        height: 1,
+    };
+    let hint = Line::from(" Enter to run · Up/Down · Esc to close ".to_string());
+    f.render_widget(Paragraph::new(hint), hint_area);
+}
+
+/// Render the fuzzy file finder as a centred popup.
+fn render_fuzzy_finder_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let overlay_rect = command_palette_rect(area);
+
+    f.render_widget(Clear, overlay_rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Fuzzy Finder ");
+    let inner = block.inner(overlay_rect);
+    f.render_widget(block, overlay_rect);
+
+    let count = app.fuzzy_finder.filtered.len();
+    let query_line = Line::from(format!("▸ {}█  ({} files)", app.fuzzy_finder.query, count));
+    f.render_widget(Paragraph::new(query_line), inner);
+
+    // Reserve top row for query and bottom row for hint.
+    let items_area = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: inner.height.saturating_sub(2),
+    };
+
+    let selected = app.fuzzy_finder.selected;
+    let selected_style = Style::default()
+        .bg(Color::Rgb(60, 100, 140))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (row, (idx, _)) in app.fuzzy_finder.filtered.iter().enumerate() {
+        if lines.len() >= items_area.height as usize {
+            break;
+        }
+        let candidate = &app.fuzzy_finder.items[*idx];
+        let label = format!(" {}", candidate.display);
+        let truncated = label
+            .chars()
+            .take(items_area.width as usize)
+            .collect::<String>();
+        let line = if row == selected {
+            Line::from(Span::styled(truncated, selected_style))
+        } else {
+            Line::from(truncated)
+        };
+        lines.push(line);
+    }
+
+    f.render_widget(Paragraph::new(lines), items_area);
+
+    let hint_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height - 1,
+        width: inner.width,
+        height: 1,
+    };
+    let hint = Line::from(" Enter to open · Up/Down · Esc to close ".to_string());
+    f.render_widget(Paragraph::new(hint), hint_area);
+}
+
+fn render_go_to_line_dialog(dialog: &crate::app::GoToLineDialog) -> Line<'static> {
+    Line::from(format!(" Go to line: {}█", dialog.query))
 }
 
 fn render_find_bar(app: &App) -> Line<'static> {
     let total = app.search.matches.len();
     let current = app.search.current.map(|i| i + 1).unwrap_or(0);
-    let count = if total == 0 && !app.search.query.is_empty() {
+    let mode = if app.search.regex_mode {
+        " [regex]"
+    } else {
+        ""
+    };
+    let count = if let Some(ref err) = app.search.regex_error {
+        format!(" (invalid regex: {err})")
+    } else if total == 0 && !app.search.query.is_empty() {
         " (no matches)".to_string()
     } else {
         format!(" {current}/{total}")
     };
     let line = format!("/{}", app.search.query);
-    Line::from(format!(" Find: {line}{count} "))
+    Line::from(format!(" Find: {line}{count}{mode} "))
 }
 
 /// Render the replace bar (single-line text input for the replacement
@@ -276,6 +639,66 @@ fn render_replace_bar(app: &App) -> Line<'static> {
     Line::from(format!(" Replace: {}{hint} ", app.search.replace_query))
 }
 
+/// Render the project-tree sidebar as a collapsible tree. The selected
+/// row is highlighted and the list is truncated to the available height.
+fn render_project_tree(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let title = app
+        .active_doc()
+        .project
+        .as_ref()
+        .and_then(|p| p.root.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("Project");
+    lines.push(Line::from(format!(" 📁 {title}")));
+    lines.push(Line::from("─".repeat(width as usize)));
+
+    if app.active_doc().project.is_none() {
+        lines.push(Line::from(" No project detected."));
+        return lines;
+    }
+
+    let rows = app.project_tree_rows();
+    if rows.is_empty() {
+        lines.push(Line::from(" No files found."));
+        return lines;
+    }
+
+    let selected_style = Style::default()
+        .bg(Color::Rgb(60, 80, 140))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    for (i, (depth, node)) in rows.iter().enumerate() {
+        let is_dir = node.is_dir();
+        let expanded = app
+            .project_tree
+            .as_ref()
+            .map(|t| t.expanded.contains(node.rel_path()))
+            .unwrap_or(false);
+        let indent = "  ".repeat(*depth);
+        let icon = if is_dir {
+            if expanded {
+                "▾"
+            } else {
+                "▸"
+            }
+        } else {
+            " "
+        };
+        let label = format!(" {indent}{icon} {}", node.name());
+        let truncated = label.chars().take(width as usize).collect::<String>();
+        let line = if i == app.project_tree_selected {
+            Line::from(Span::styled(truncated, selected_style))
+        } else {
+            Line::from(truncated)
+        };
+        lines.push(line);
+    }
+
+    lines
+}
+
 fn render_header(app: &App) -> Line<'static> {
     // Single-doc header: just filename + dirty marker. We deliberately
     // don't render the tab strip with one entry — the label would just
@@ -288,7 +711,12 @@ fn render_header(app: &App) -> Line<'static> {
             .and_then(|p| p.to_str())
             .unwrap_or("[No Name]");
         let dirty = if app.is_dirty() { " [+]" } else { "" };
-        return Line::from(format!(" {path}{dirty}"));
+        let stale = if app.active_doc().external_change {
+            " [!]"
+        } else {
+            ""
+        };
+        return Line::from(format!(" {path}{dirty}{stale}"));
     }
 
     // Multi-doc tab strip: one labelled cell per open doc. The active
@@ -306,7 +734,8 @@ fn render_header(app: &App) -> Line<'static> {
     for (i, doc) in app.documents.iter().enumerate() {
         let name = doc.display_name();
         let dirty = if doc.is_dirty() { "*" } else { "" };
-        let label = format!(" {}{} ", name, dirty);
+        let stale = if doc.external_change { "!" } else { "" };
+        let label = format!(" {}{}{} ", name, dirty, stale);
         let style = if i == app.active {
             active_style
         } else {
@@ -320,10 +749,12 @@ fn render_header(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-fn render_status(app: &App) -> Line<'static> {
+fn render_status(app: &App, area_width: u16) -> Line<'static> {
     let message = app.status_message.as_deref().unwrap_or("");
     let cursor_pos = app.active_buffer().cursor();
-    let (line, col) = app.active_buffer().pos_to_linecol(cursor_pos)
+    let (line, col) = app
+        .active_buffer()
+        .pos_to_linecol(cursor_pos)
         .unwrap_or((0, 0));
     let pos = core::format_position(line, col, app.active_buffer().line_count());
     // Soft-wrap indicator: shows "wrap" when on so the user has a
@@ -335,7 +766,38 @@ fn render_status(app: &App) -> Line<'static> {
     } else {
         ""
     };
-    Line::from(format!(" {message}  |  {pos}{wrap_indicator}"))
+    let git_indicator =
+        if app.active_doc().view.git_gutter_enabled && app.active_doc().git_gutter.enabled() {
+            let (added, modified, removed) = app.active_doc().git_gutter.summary();
+            if added != 0 || modified != 0 || removed != 0 {
+                format!("  |  +{added} ~{modified} -{removed}")
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+    let left = format!(" {message}  |  {pos}{wrap_indicator}{git_indicator}");
+    let theme = format!(" {theme} ", theme = app.syntax.theme_name());
+    let tree_label = " Tree ";
+    let width = area_width as usize;
+    let padding = width.saturating_sub(left.len() + tree_label.len() + theme.len());
+
+    let tree_style = if app.project_tree_open {
+        Style::default()
+            .bg(Color::Rgb(60, 80, 140))
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    Line::from(vec![
+        Span::raw(left),
+        Span::raw(" ".repeat(padding)),
+        Span::styled(tree_label.to_string(), tree_style),
+        Span::raw(theme),
+    ])
 }
 
 fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
@@ -374,7 +836,7 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
     // doesn't have to look it up. `current_match_start` is the byte
     // position of the active match (or None when there's no current
     // match — empty query, no matches, or before the first FindNext).
-    let query_byte_len = app.search.query.len();
+    let query_nonempty = !app.search.query.is_empty();
     let current_match_start = app.search.current_match();
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -382,17 +844,51 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
     let top_line = app.active_doc().view.scroll_top_line;
     let end_line = (top_line + vh).min(total_lines);
 
+    // Create one highlighter for this render pass and reuse it for
+    // every visible line. This avoids per-line setup cost without
+    // leaking memory in `SyntaxEngine`.
+    let path = app.active_doc().path_buf();
+    let syntax_engine = &app.syntax;
+    let syntax = syntax_engine.syntax_for_path(path.as_deref());
+    let mut highlighter = syntax.map(|s| syntax_engine.highlighter_for(s));
+
     for line_idx in top_line..end_line {
-        let line_text = app.active_buffer().line_text(line_idx)
+        let line_text = app
+            .active_buffer()
+            .line_text(line_idx)
             .map(|cow| cow.into_owned())
             .unwrap_or_default();
 
-        let prefix = format!("{:>width$} │ ", line_idx + 1, width = gutter_width);
-        let prefix_chars = prefix.chars().count();
+        let git_enabled =
+            app.active_doc().view.git_gutter_enabled && app.active_doc().git_gutter.enabled();
+        let status = app.active_doc().git_gutter.status(line_idx);
+        let removed = app.active_doc().git_gutter.removed_blocks_before(line_idx);
+        let marker = if git_enabled && !removed.is_empty() {
+            '▲'
+        } else if git_enabled {
+            match status {
+                core::LineStatus::Added => '+',
+                core::LineStatus::Modified => '~',
+                core::LineStatus::Unchanged => ' ',
+            }
+        } else {
+            ' '
+        };
+        let marker_style = match marker {
+            '+' => Style::default().fg(Color::Green),
+            '~' => Style::default().fg(Color::Yellow),
+            '▲' => Style::default().fg(Color::Red),
+            _ => gutter_style,
+        };
+        let number_prefix = format!("{:>width$} │ ", line_idx + 1, width = gutter_width);
+        let prefix_chars = 1 + number_prefix.chars().count();
         let avail = (viewport_width as usize).saturating_sub(prefix_chars);
 
         // Compute the selected sub-range within this line, if any.
-        let line_byte_range = app.active_buffer().line_byte_range(line_idx).unwrap_or(0..0);
+        let line_byte_range = app
+            .active_buffer()
+            .line_byte_range(line_idx)
+            .unwrap_or(0..0);
         let selected_in_line = sel_range
             .as_ref()
             .and_then(|sr| selection_in_line(line_byte_range.clone(), sr.clone()));
@@ -400,27 +896,37 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         // no active selection — selection takes priority visually so the
         // user can see their drag without matches painting over it.
         //
-        // For each match start that falls on this line (binary-search
-        // the first one, then iterate forward until past line end), emit
-        // a (byte_range, style) tuple. Style is `current_match_style`
-        // for the match the cursor is on, `other_match_style` for the
-        // rest. Skipping matches that start on a previous line keeps the
-        // v1 implementation simple — cross-line matches render their
-        // first-line portion only (rare in practice).
+        // For each match that overlaps this line, emit a (byte_range,
+        // style) tuple. Style is `current_match_style` for the match the
+        // cursor is on, `other_match_style` for the rest. Matches are
+        // clipped to the line's byte range so multi-line regex matches
+        // still show their visible portion.
         let mut match_highlights: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
-        if sel_range.is_none() && query_byte_len > 0 {
-            let start_idx = app.search.matches.partition_point(|&m| m < line_byte_range.start);
-            for &m in &app.search.matches[start_idx..] {
-                if m >= line_byte_range.end {
+        if sel_range.is_none() && query_nonempty {
+            let mut idx = app
+                .search
+                .matches
+                .partition_point(|&(s, _)| s < line_byte_range.start);
+            if idx > 0 {
+                // A match may start on the previous line but extend
+                // into this one; include it if it overlaps.
+                idx -= 1;
+            }
+            for &(m_start, m_end) in &app.search.matches[idx..] {
+                if m_start >= line_byte_range.end {
                     break;
                 }
-                let end = (m + query_byte_len).min(line_byte_range.end);
-                let style = if Some(m) == current_match_start {
+                if m_end <= line_byte_range.start {
+                    continue;
+                }
+                let hl_start = m_start.max(line_byte_range.start);
+                let hl_end = m_end.min(line_byte_range.end);
+                let style = if Some(m_start) == current_match_start {
                     current_match_style
                 } else {
                     other_match_style
                 };
-                match_highlights.push((m..end, style));
+                match_highlights.push((hl_start..hl_end, style));
             }
         }
 
@@ -432,10 +938,20 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         // line so selection math can work in bytes.
         let scroll_bytes = core::char_col_to_byte_col(&line_text, scroll_x);
 
-        let mut spans: Vec<Span<'static>> = vec![Span::styled(prefix, gutter_style)];
+        let mut spans: Vec<Span<'static>> = vec![
+            Span::styled(marker.to_string(), marker_style),
+            Span::styled(number_prefix, gutter_style),
+        ];
 
-        // Get syntax tokens for this line (lazy cache population).
-        let syntax_tokens = get_syntax_tokens(app, line_idx, &line_text);
+        // Get syntax segments for this line (lazy cache population).
+        let doc = &mut app.documents[app.active];
+        let syntax_segments = get_syntax_segments(
+            syntax_engine,
+            &mut doc.syntax,
+            &mut highlighter,
+            line_idx,
+            &line_text,
+        );
 
         push_line_spans(
             &mut spans,
@@ -446,7 +962,7 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             selection_style,
             &match_highlights,
             scroll_bytes,
-            &syntax_tokens,
+            &syntax_segments,
         );
         lines.push(Line::from(spans));
     }
@@ -484,7 +1000,7 @@ fn push_line_spans(
     selection_style: Style,
     match_highlights: &[(std::ops::Range<usize>, Style)],
     scroll_bytes: usize,
-    syntax_tokens: &[core::Token],
+    syntax_segments: &[core::ColorSegment],
 ) {
     let line_byte_start = line_byte_range.start;
 
@@ -507,16 +1023,10 @@ fn push_line_spans(
     // to syntax-colored text. `match_highlights` is already
     // pre-filtered to matches that start on this line.
     if match_highlights.is_empty() {
-        if syntax_tokens.is_empty() {
-            // No syntax (unknown extension, too large, or passthrough).
+        if syntax_segments.is_empty() {
             spans.push(Span::raw(truncated.to_string()));
         } else {
-            push_syntax_spans(
-                spans,
-                truncated,
-                syntax_tokens,
-                scroll_bytes,
-            );
+            push_syntax_spans(spans, truncated, syntax_segments, scroll_bytes);
         }
         return;
     }
@@ -566,7 +1076,10 @@ fn push_selection_spans(
         if !selected.is_empty() {
             spans.push(Span::styled(selected, selection_style));
         }
-        let after = truncated.chars().skip(char_sel_hi_clamped).collect::<String>();
+        let after = truncated
+            .chars()
+            .skip(char_sel_hi_clamped)
+            .collect::<String>();
         if !after.is_empty() {
             spans.push(Span::raw(after));
         }
@@ -579,7 +1092,9 @@ fn push_selection_spans(
         spans.push(Span::raw(truncated.to_string()));
         return;
     }
-    let sel_byte_hi_clamped = sel_byte_hi_full.saturating_sub(scroll_bytes).min(trunc_byte_len);
+    let sel_byte_hi_clamped = sel_byte_hi_full
+        .saturating_sub(scroll_bytes)
+        .min(trunc_byte_len);
 
     let char_count = truncated.chars().count();
     let char_sel_lo = core::byte_to_char_col(truncated, sel_byte_lo_in_trunc);
@@ -598,7 +1113,10 @@ fn push_selection_spans(
         .skip(char_sel_lo)
         .take(char_sel_hi_clamped.saturating_sub(char_sel_lo))
         .collect::<String>();
-    let after = truncated.chars().skip(char_sel_hi_clamped).collect::<String>();
+    let after = truncated
+        .chars()
+        .skip(char_sel_hi_clamped)
+        .collect::<String>();
 
     if !before.is_empty() {
         spans.push(Span::raw(before));
@@ -664,20 +1182,12 @@ fn push_highlight_spans(
     let mut cursor = 0usize;
     for (lo, hi, style) in merged {
         if lo > cursor {
-            let plain: String = truncated
-                .chars()
-                .skip(cursor)
-                .take(lo - cursor)
-                .collect();
+            let plain: String = truncated.chars().skip(cursor).take(lo - cursor).collect();
             if !plain.is_empty() {
                 spans.push(Span::raw(plain));
             }
         }
-        let inside: String = truncated
-            .chars()
-            .skip(lo)
-            .take(hi - lo)
-            .collect();
+        let inside: String = truncated.chars().skip(lo).take(hi - lo).collect();
         if !inside.is_empty() {
             spans.push(Span::styled(inside, style));
         }
@@ -693,9 +1203,7 @@ fn push_highlight_spans(
 
 /// Merge adjacent segments with the same style. Assumes segments are
 /// sorted by start. Returns a new Vec; does not mutate the input.
-fn merge_adjacent_same_style(
-    segments: Vec<(usize, usize, Style)>,
-) -> Vec<(usize, usize, Style)> {
+fn merge_adjacent_same_style(segments: Vec<(usize, usize, Style)>) -> Vec<(usize, usize, Style)> {
     let mut out: Vec<(usize, usize, Style)> = Vec::with_capacity(segments.len());
     for seg in segments {
         if let Some(last) = out.last_mut() {
@@ -733,7 +1241,9 @@ fn push_single_range(
         return;
     }
     let range_lo_in_trunc = range_lo_full.saturating_sub(scroll_bytes);
-    let range_hi_in_trunc = range_hi_full.saturating_sub(scroll_bytes).min(trunc_byte_len);
+    let range_hi_in_trunc = range_hi_full
+        .saturating_sub(scroll_bytes)
+        .min(trunc_byte_len);
 
     if range_hi_in_trunc == 0 {
         // Range is entirely to the left of the visible window.
@@ -781,18 +1291,17 @@ fn push_single_range(
 fn push_syntax_spans(
     spans: &mut Vec<Span<'static>>,
     truncated: &str,
-    tokens: &[core::Token],
+    segments: &[core::ColorSegment],
     scroll_bytes: usize,
 ) {
     let trunc_len = truncated.len();
-    let mut char_cursor = 0usize; // char position in truncated
+    let mut char_cursor = 0usize;
 
-    for tok in tokens {
-        // Map token byte range (in full line) to byte range in truncated.
-        let vis_start = tok.range.start.saturating_sub(scroll_bytes);
-        let vis_end = tok.range.end.saturating_sub(scroll_bytes);
+    for seg in segments {
+        let vis_start = seg.range.start.saturating_sub(scroll_bytes);
+        let vis_end = seg.range.end.saturating_sub(scroll_bytes);
         if vis_end == 0 || vis_start >= trunc_len {
-            continue; // entirely off-screen
+            continue;
         }
         let vis_start = vis_start.min(trunc_len);
         let vis_end = vis_end.min(trunc_len);
@@ -800,23 +1309,32 @@ fn push_syntax_spans(
         let char_lo = core::byte_to_char_col(truncated, vis_start);
         let char_hi = core::byte_to_char_col(truncated, vis_end);
 
-        // Gap before this token.
         if char_lo > char_cursor {
-            let gap: String = truncated.chars().skip(char_cursor).take(char_lo - char_cursor).collect();
+            let gap: String = truncated
+                .chars()
+                .skip(char_cursor)
+                .take(char_lo - char_cursor)
+                .collect();
             if !gap.is_empty() {
                 spans.push(Span::raw(gap));
             }
         }
 
-        // The token itself.
-        let seg: String = truncated.chars().skip(char_lo).take(char_hi.saturating_sub(char_lo)).collect();
-        if !seg.is_empty() {
-            spans.push(Span::styled(seg, Style::default().fg(syntax_color(tok.kind))));
+        let text: String = truncated
+            .chars()
+            .skip(char_lo)
+            .take(char_hi.saturating_sub(char_lo))
+            .collect();
+        if !text.is_empty() {
+            let c = seg.color;
+            spans.push(Span::styled(
+                text,
+                Style::default().fg(Color::Rgb(c.r, c.g, c.b)),
+            ));
         }
         char_cursor = char_hi;
     }
 
-    // Trailing gap.
     let total_chars = truncated.chars().count();
     if char_cursor < total_chars {
         let tail: String = truncated.chars().skip(char_cursor).collect();
@@ -844,7 +1362,9 @@ fn compute_cursor_screen_pos(app: &App, area: Rect) -> Option<Position> {
     let prefix_chars = prefix.chars().count();
 
     // Convert byte column to char column for the cursor's line.
-    let line_text = app.active_buffer().line_text(cursor_line)
+    let line_text = app
+        .active_buffer()
+        .line_text(cursor_line)
         .map(|c| c.into_owned())
         .unwrap_or_default();
     let char_col = core::byte_to_char_col(&line_text, cursor_byte_col);

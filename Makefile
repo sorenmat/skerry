@@ -6,7 +6,7 @@
 #   make run_tui ARGS="Cargo.toml"
 #   make run_gui ARGS="src/lib.rs"
 
-.PHONY: help run_tui run_gui build build-release test check clippy fmt clean
+.PHONY: help run_tui run_gui build build-release test check clippy fmt clean app-bundle register-app
 
 help:
 	@echo "the_editor — convenience make targets"
@@ -25,6 +25,10 @@ help:
 	@echo "  make clippy         cargo clippy --workspace --all-targets -- -D warnings"
 	@echo "  make fmt            cargo fmt --all"
 	@echo "  make clean          cargo clean"
+	@echo ""
+	@echo "macOS app bundle:"
+	@echo "  make app-bundle     Build target/the_editor.app from debug binary"
+	@echo "  make register-app   Register bundle as default app for .rs and .go"
 
 run_tui:
 	cargo run -p frontend_tui -- $(ARGS)
@@ -52,3 +56,12 @@ fmt:
 
 clean:
 	cargo clean
+
+app-bundle: build
+	@./scripts/build-app-bundle.sh
+
+register-app: app-bundle
+	@/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -u "$$(pwd)/target/the_editor.app" 2>/dev/null || true
+	@/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$$(pwd)/target/the_editor.app"
+	@open -a "$$(pwd)/target/the_editor.app"
+	@echo "Registered target/the_editor.app for .rs, .go, and .json"

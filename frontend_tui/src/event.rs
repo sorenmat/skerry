@@ -24,8 +24,37 @@ use crate::app::App;
 /// we can append to the live query.
 pub fn translate_key(key: KeyEvent, app: Option<&App>) -> Option<EditorEvent> {
     if let Some(app) = app {
-        if app.search.bar_open {
-            return find_bar_translate(key, app);
+        if app.fuzzy_finder.open {
+            if let Some(fuzzy_event) = fuzzy_finder_translate(key, app) {
+                return Some(fuzzy_event);
+            }
+            // Unmapped keys fall through to the normal buffer bindings.
+        } else if app.command_palette.open {
+            if let Some(palette_event) = command_palette_translate(key, app) {
+                return Some(palette_event);
+            }
+            // Unmapped keys fall through to the normal buffer bindings.
+        } else if app.project_search.open {
+            if let Some(search_event) = project_search_translate(key, app) {
+                return Some(search_event);
+            }
+            // Unmapped keys fall through to the normal buffer bindings.
+        } else if app.search.bar_open {
+            if let Some(find_event) = find_bar_translate(key, app) {
+                return Some(find_event);
+            }
+            // Unmapped keys (Ctrl+S, Ctrl+Z, Ctrl+Q, etc.) fall through
+            // to the normal buffer bindings instead of being swallowed.
+        } else if app.project_tree_open && app.project_tree.is_some() {
+            // Only intercept keys for the project tree when it's open
+            // AND a project is actually loaded. Without this guard, the
+            // default project_tree_open=true silently swallows ALL keys
+            // (typing, Ctrl+S, etc.) on startup before any project is
+            // opened — making the editor appear non-functional.
+            if let Some(tree_event) = project_tree_translate(key) {
+                return Some(tree_event);
+            }
+            // Unmapped keys fall through to the normal buffer bindings.
         }
     }
     translate_buffer_key(key)
@@ -36,6 +65,10 @@ fn find_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
     // the replace bar regardless of whether the find bar is also open.
     if app.search.replace_bar_open {
         return replace_bar_translate(key, app);
+    }
+    // Alt+R toggles regex mode before any char appends to the query.
+    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::ALT) {
+        return Some(EditorEvent::ToggleFindRegex);
     }
     match key.code {
         KeyCode::Esc => Some(EditorEvent::FindClose),
@@ -92,6 +125,115 @@ fn replace_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
     }
 }
 
+fn project_tree_translate(key: KeyEvent) -> Option<EditorEvent> {
+    match key.code {
+        KeyCode::Esc => Some(EditorEvent::ToggleProjectTree),
+        KeyCode::Up => Some(EditorEvent::ProjectTreeMove { delta: -1 }),
+        KeyCode::Down => Some(EditorEvent::ProjectTreeMove { delta: 1 }),
+        KeyCode::Enter => Some(EditorEvent::ProjectTreeOpen),
+        _ => None,
+    }
+}
+
+/// Translate a key event while the command palette is open.
+fn command_palette_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
+    match key.code {
+        KeyCode::Esc => Some(EditorEvent::CommandPaletteClose),
+        KeyCode::Enter => Some(EditorEvent::CommandPaletteExecute),
+        KeyCode::Up => Some(EditorEvent::CommandPaletteMove { delta: -1 }),
+        KeyCode::Down => Some(EditorEvent::CommandPaletteMove { delta: 1 }),
+        KeyCode::Backspace => {
+            let mut q = app.command_palette.query.clone();
+            q.pop();
+            Some(EditorEvent::CommandPaletteQueryChanged(q))
+        }
+        KeyCode::Char(c) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                return None;
+            }
+            let mut q = app.command_palette.query.clone();
+            q.push(c);
+            Some(EditorEvent::CommandPaletteQueryChanged(q))
+        }
+        _ => None,
+    }
+}
+
+/// Translate a key event while the fuzzy file finder is open.
+fn fuzzy_finder_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
+    match key.code {
+        KeyCode::Esc => Some(EditorEvent::FuzzyFinderClose),
+        KeyCode::Enter => Some(EditorEvent::FuzzyFinderExecute),
+        KeyCode::Up => Some(EditorEvent::FuzzyFinderMove { delta: -1 }),
+        KeyCode::Down => Some(EditorEvent::FuzzyFinderMove { delta: 1 }),
+        KeyCode::Backspace => {
+            let mut q = app.fuzzy_finder.query.clone();
+            q.pop();
+            Some(EditorEvent::FuzzyFinderQueryChanged(q))
+        }
+        KeyCode::Char(c) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                return None;
+            }
+            let mut q = app.fuzzy_finder.query.clone();
+            q.push(c);
+            Some(EditorEvent::FuzzyFinderQueryChanged(q))
+        }
+        _ => None,
+    }
+}
+
+/// Translate a key event while the project-search dialog is open.
+/// Tab toggles focus between the find and replace fields. Typing and
+/// Backspace edit the focused field. Ctrl+Enter replaces all.
+fn project_search_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if app.project_search.confirm_replace {
+        return match key.code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                Some(EditorEvent::ProjectSearchReplaceAllConfirm)
+            }
+            KeyCode::Esc
+            | KeyCode::Char('n')
+            | KeyCode::Char('N')
+            | KeyCode::Char('q')
+            | KeyCode::Char('Q') => Some(EditorEvent::ProjectSearchReplaceAllCancel),
+            _ => None,
+        };
+    }
+    match key.code {
+        KeyCode::Esc => Some(EditorEvent::ProjectSearchClose),
+        KeyCode::Enter if ctrl => Some(EditorEvent::ProjectSearchReplaceAll),
+        KeyCode::Enter => Some(EditorEvent::ProjectSearchOpenResult),
+        KeyCode::Up => Some(EditorEvent::ProjectSearchMove { delta: -1 }),
+        KeyCode::Down => Some(EditorEvent::ProjectSearchMove { delta: 1 }),
+        KeyCode::Tab => Some(EditorEvent::ProjectSearchToggleFocus),
+        KeyCode::Backspace => {
+            if app.project_search.replace_focused {
+                let mut q = app.project_search.replace_query.clone();
+                q.pop();
+                Some(EditorEvent::ProjectSearchReplaceQueryChanged(q))
+            } else {
+                let mut q = app.project_search.query.clone();
+                q.pop();
+                Some(EditorEvent::ProjectSearchQueryChanged(q))
+            }
+        }
+        KeyCode::Char(c) => {
+            if app.project_search.replace_focused {
+                let mut q = app.project_search.replace_query.clone();
+                q.push(c);
+                Some(EditorEvent::ProjectSearchReplaceQueryChanged(q))
+            } else {
+                let mut q = app.project_search.query.clone();
+                q.push(c);
+                Some(EditorEvent::ProjectSearchQueryChanged(q))
+            }
+        }
+        _ => None,
+    }
+}
+
 fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -112,6 +254,8 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('t') => Some(EditorEvent::NewDoc),
             KeyCode::Char('w') => Some(EditorEvent::CloseDoc),
             KeyCode::Char('o') => Some(EditorEvent::OpenFile(None)),
+            KeyCode::Char('g') => Some(EditorEvent::GoToLine(None)),
+            KeyCode::Char('p') => Some(EditorEvent::FuzzyFinder(None)),
             KeyCode::Tab => Some(EditorEvent::NextDoc),
             KeyCode::Backspace => Some(EditorEvent::DeleteWordLeft),
             KeyCode::Delete => Some(EditorEvent::DeleteWordRight),
@@ -122,11 +266,18 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
     }
 
     // Ctrl+Shift-modified keys. Tab cycles the other direction; Shift+W
-    // toggles soft-wrap (W alone is close).
+    // toggles soft-wrap (W alone is close); Shift+F opens project search;
+    // Shift+P opens the command palette.
     if ctrl && shift {
         return match key.code {
             KeyCode::Tab => Some(EditorEvent::PrevDoc),
             KeyCode::Char('W') => Some(EditorEvent::ToggleSoftWrap),
+            KeyCode::Char('F') => Some(EditorEvent::ProjectSearch(None)),
+            KeyCode::Char('P') => Some(EditorEvent::CommandPalette(None)),
+            KeyCode::Char('S') => Some(EditorEvent::SaveAs(None)),
+            KeyCode::Char('R') => Some(EditorEvent::ReloadFile),
+            KeyCode::Up => Some(EditorEvent::PrevHunk),
+            KeyCode::Down => Some(EditorEvent::NextHunk),
             _ => None,
         };
     }
@@ -148,7 +299,9 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
         KeyCode::Delete => Some(EditorEvent::DeleteRight),
         KeyCode::Enter => Some(EditorEvent::Insert('\n')),
         KeyCode::Tab => Some(EditorEvent::InsertTab),
-        KeyCode::Esc => Some(EditorEvent::Quit),
+        KeyCode::Esc => Some(EditorEvent::CloseDoc),
+        KeyCode::F(2) => Some(EditorEvent::ToggleProjectTree),
+        KeyCode::F(5) => Some(EditorEvent::CycleTheme),
         KeyCode::Left if shift => Some(EditorEvent::ScrollLeft),
         KeyCode::Right if shift => Some(EditorEvent::ScrollRight),
         KeyCode::Left => Some(movement(Movement::Left, select)),
@@ -174,17 +327,27 @@ pub enum ClipboardAction {
     /// Ctrl+X: copy the selection text to the OS clipboard, then delete
     /// the selection from the buffer.
     Cut(String),
+    /// Ctrl+V: paste clipboard text into the buffer at the cursor.
+    Paste,
 }
 
-/// If the key event is a clipboard shortcut (Ctrl+C / Ctrl+X) and the
-/// current selection is non-empty, return the corresponding
-/// [`ClipboardAction`]. Otherwise `None`.
+/// If the key event is a clipboard shortcut (Ctrl+C / Ctrl+X / Ctrl+V),
+/// return the corresponding [`ClipboardAction`]. Otherwise `None`.
+///
+/// Copy and Cut require a non-empty selection. Paste works regardless
+/// of selection state — the handler replaces the selection if one
+/// exists, or inserts at the cursor if collapsed.
 pub fn classify_clipboard_key(key: KeyEvent, buffer: &dyn Buffer) -> Option<ClipboardAction> {
     if !key.modifiers.contains(KeyModifiers::CONTROL) {
         return None;
     }
     if key.modifiers.contains(KeyModifiers::SHIFT) {
         return None;
+    }
+    // Paste doesn't need a selection — handle it before the selection
+    // check below.
+    if key.code == KeyCode::Char('v') {
+        return Some(ClipboardAction::Paste);
     }
     let target = match key.code {
         KeyCode::Char('c') => 'c',
@@ -252,32 +415,60 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::SHIFT)
     }
 
+    fn key_alt(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
     #[test]
     fn printable_char_inserts() {
-        assert_eq!(translate_key(key(KeyCode::Char('a')), None), Some(EditorEvent::Insert('a')));
+        assert_eq!(
+            translate_key(key(KeyCode::Char('a')), None),
+            Some(EditorEvent::Insert('a'))
+        );
     }
 
     #[test]
     fn enter_inserts_newline() {
-        assert_eq!(translate_key(key(KeyCode::Enter), None), Some(EditorEvent::Insert('\n')));
+        assert_eq!(
+            translate_key(key(KeyCode::Enter), None),
+            Some(EditorEvent::Insert('\n'))
+        );
     }
 
     #[test]
     fn backspace_deletes_left() {
-        assert_eq!(translate_key(key(KeyCode::Backspace), None), Some(EditorEvent::DeleteLeft));
+        assert_eq!(
+            translate_key(key(KeyCode::Backspace), None),
+            Some(EditorEvent::DeleteLeft)
+        );
     }
 
     #[test]
     fn delete_deletes_right() {
-        assert_eq!(translate_key(key(KeyCode::Delete), None), Some(EditorEvent::DeleteRight));
+        assert_eq!(
+            translate_key(key(KeyCode::Delete), None),
+            Some(EditorEvent::DeleteRight)
+        );
     }
 
     #[test]
     fn arrows_move() {
-        assert_eq!(translate_key(key(KeyCode::Left), None), Some(EditorEvent::Move(Movement::Left)));
-        assert_eq!(translate_key(key(KeyCode::Right), None), Some(EditorEvent::Move(Movement::Right)));
-        assert_eq!(translate_key(key(KeyCode::Up), None), Some(EditorEvent::Move(Movement::Up)));
-        assert_eq!(translate_key(key(KeyCode::Down), None), Some(EditorEvent::Move(Movement::Down)));
+        assert_eq!(
+            translate_key(key(KeyCode::Left), None),
+            Some(EditorEvent::Move(Movement::Left))
+        );
+        assert_eq!(
+            translate_key(key(KeyCode::Right), None),
+            Some(EditorEvent::Move(Movement::Right))
+        );
+        assert_eq!(
+            translate_key(key(KeyCode::Up), None),
+            Some(EditorEvent::Move(Movement::Up))
+        );
+        assert_eq!(
+            translate_key(key(KeyCode::Down), None),
+            Some(EditorEvent::Move(Movement::Down))
+        );
     }
 
     #[test]
@@ -326,13 +517,26 @@ mod tests {
     }
 
     #[test]
-    fn esc_quits() {
-        assert_eq!(translate_key(key(KeyCode::Esc), None), Some(EditorEvent::Quit));
+    fn esc_closes_doc() {
+        assert_eq!(
+            translate_key(key(KeyCode::Esc), None),
+            Some(EditorEvent::CloseDoc)
+        );
     }
 
     #[test]
     fn unmapped_key_returns_none() {
         assert_eq!(translate_key(key(KeyCode::F(1)), None), None);
+    }
+
+    #[test]
+    fn alt_r_in_find_bar_toggles_regex() {
+        let mut app = app_with("hello world");
+        app.handle_event(EditorEvent::FindOpen);
+        assert_eq!(
+            translate_key(key_alt(KeyCode::Char('r')), Some(&app)),
+            Some(EditorEvent::ToggleFindRegex)
+        );
     }
 
     // ----- mouse event translation -----
@@ -404,10 +608,7 @@ mod tests {
     #[test]
     fn scroll_returns_none() {
         let app = app_with("hello");
-        let ev = translate_mouse(
-            mouse_event(MouseEventKind::ScrollUp, 5, 1),
-            &app,
-        );
+        let ev = translate_mouse(mouse_event(MouseEventKind::ScrollUp, 5, 1), &app);
         assert!(ev.is_none());
     }
 
@@ -433,10 +634,7 @@ mod tests {
     #[test]
     fn ctrl_c_with_selection_returns_copy_action() {
         let mut buf = buf_with("hello world");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         let ev = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(
             classify_clipboard_key(ev, &buf),
@@ -447,10 +645,7 @@ mod tests {
     #[test]
     fn ctrl_x_with_selection_returns_cut_action() {
         let mut buf = buf_with("hello world");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         let ev = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(
             classify_clipboard_key(ev, &buf),
@@ -468,10 +663,7 @@ mod tests {
     #[test]
     fn plain_c_does_not_match_clipboard_shortcut() {
         let mut buf = buf_with("hello");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         let ev = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
         assert_eq!(classify_clipboard_key(ev, &buf), None);
     }
@@ -479,10 +671,7 @@ mod tests {
     #[test]
     fn ctrl_shift_c_is_not_clipboard_shortcut() {
         let mut buf = buf_with("hello");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         let ev = KeyEvent::new(
             KeyCode::Char('c'),
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
@@ -491,18 +680,24 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_v_is_handled_separately_not_by_classify() {
-        // Ctrl+V is not a Copy/Cut action — it triggers a paste, which
-        // happens via EditorEvent::Paste after the OS clipboard is
-        // read in the event loop. classify_clipboard_key returns
-        // None for it.
+    fn ctrl_v_classifies_as_paste() {
+        // Ctrl+V returns ClipboardAction::Paste regardless of
+        // selection state. The event loop reads the OS clipboard and
+        // fires EditorEvent::Paste.
         let mut buf = buf_with("hello");
-        buf.set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        buf.set_selection(Selection { anchor: 0, head: 5 });
         let ev = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-        assert_eq!(classify_clipboard_key(ev, &buf), None);
+        assert_eq!(
+            classify_clipboard_key(ev, &buf),
+            Some(ClipboardAction::Paste)
+        );
+        // Paste also works with a collapsed (empty) selection.
+        buf.set_selection(Selection::collapsed(3));
+        let ev2 = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert_eq!(
+            classify_clipboard_key(ev2, &buf),
+            Some(ClipboardAction::Paste)
+        );
     }
 
     // ----- multi-buffer key bindings -----
@@ -526,10 +721,7 @@ mod tests {
     #[test]
     fn ctrl_tab_cycles_next_doc() {
         assert_eq!(
-            translate_key(
-                KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL),
-                None
-            ),
+            translate_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL), None),
             Some(EditorEvent::NextDoc)
         );
     }
@@ -560,8 +752,30 @@ mod tests {
     #[test]
     fn ctrl_i_translates_to_cycle_indent_mode() {
         assert_eq!(
-            translate_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL), None),
+            translate_key(
+                KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL),
+                None
+            ),
             Some(EditorEvent::CycleIndentMode)
+        );
+    }
+
+    #[test]
+    fn f5_translates_to_cycle_theme() {
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE), None),
+            Some(EditorEvent::CycleTheme)
+        );
+    }
+
+    #[test]
+    fn ctrl_g_opens_go_to_line() {
+        assert_eq!(
+            translate_key(
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+                None
+            ),
+            Some(EditorEvent::GoToLine(None))
         );
     }
 }

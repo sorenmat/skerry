@@ -10,6 +10,7 @@ description = "GUI frontend for the_editor (egui + eframe, swappable renderer)."
 core = { path = "../core" }
 egui = "0.30"
 eframe = "0.30"
+rfd = "0.15"
 
 [lints]
 workspace = true

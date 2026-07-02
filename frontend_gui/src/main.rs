@@ -13,12 +13,25 @@ use eframe::egui;
 use frontend_gui::app::EditorApp;
 
 fn main() -> eframe::Result<()> {
-    let paths: Vec<PathBuf> = env::args().skip(1).map(PathBuf::from).collect();
-    let documents = load_documents(&paths);
+    let config = core::Config::load();
+    let args: Vec<PathBuf> = env::args().skip(1).map(PathBuf::from).collect();
+    let documents = if args.is_empty() && !config.recent_files.is_empty() {
+        config
+            .recent_files
+            .iter()
+            .map(|p| load_document(p.as_path(), &config))
+            .collect()
+    } else {
+        load_documents(&args, &config)
+    };
 
+    let initial_size = match (config.window_width, config.window_height) {
+        (Some(w), Some(h)) => [w as f32, h as f32],
+        _ => [800.0, 600.0],
+    };
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 600.0])
+            .with_inner_size(initial_size)
             .with_title("the_editor"),
         ..Default::default()
     };
@@ -26,7 +39,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "the_editor",
         native_options,
-        Box::new(|_cc| Ok(Box::new(EditorApp::new_with_documents(documents)))),
+        Box::new(|_cc| Ok(Box::new(EditorApp::new_with_documents(documents, config)))),
     )
 }
 
@@ -35,21 +48,30 @@ fn main() -> eframe::Result<()> {
 /// multi-GB-file path); paths that don't exist yet get a fresh empty
 /// buffer that will save back to that path. With no paths, returns a
 /// single empty document so the editor still has somewhere to land.
-fn load_documents(paths: &[PathBuf]) -> Vec<Document> {
+fn load_documents(paths: &[PathBuf], config: &core::Config) -> Vec<Document> {
     if paths.is_empty() {
-        return vec![Document::empty()];
+        return vec![Document::new_with_config(
+            Box::new(PieceTableBuffer::new()),
+            config,
+        )];
     }
-    paths.iter().map(|p| load_document(p.as_path())).collect()
+    paths
+        .iter()
+        .map(|p| load_document(p.as_path(), config))
+        .collect()
 }
 
-fn load_document(path: &Path) -> Document {
+fn load_document(path: &Path, config: &core::Config) -> Document {
     let buffer: Box<dyn Buffer> = if path.exists() {
         Box::new(
             PieceTableBuffer::from_path(path.to_path_buf())
                 .unwrap_or_else(|_| PieceTableBuffer::new()),
         )
     } else {
-        Box::new(PieceTableBuffer::from_bytes_with_path(Vec::new(), path.to_path_buf()))
+        Box::new(PieceTableBuffer::from_bytes_with_path(
+            Vec::new(),
+            path.to_path_buf(),
+        ))
     };
-    Document::new(buffer)
+    Document::new_with_config(buffer, config)
 }

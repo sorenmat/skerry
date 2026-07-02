@@ -18,9 +18,7 @@ mod tests {
         let mut app = App::new(buf);
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| ui::render(frame, &mut app))
-            .unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -76,6 +74,26 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_shows_active_theme_name() {
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::new());
+        let app = App::new(buf);
+        let theme_name = app.syntax.theme_name().to_string();
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let mut a = app;
+                ui::render(frame, &mut a)
+            })
+            .unwrap();
+        let out = terminal.backend().to_string();
+        assert!(
+            out.contains(&theme_name),
+            "expected theme name '{theme_name}' in status bar: {out:?}"
+        );
+    }
+
+    #[test]
     fn header_shows_tab_strip_with_multiple_docs() {
         // Three named docs → the header becomes a tab strip with all
         // three filenames visible, separated by "│". The active tab is
@@ -85,28 +103,30 @@ mod tests {
             .iter()
             .map(|name| {
                 let path = std::path::PathBuf::from(format!("/tmp/{name}"));
-                let buf: Box<dyn Buffer> = Box::new(
-                    PieceTableBuffer::from_bytes_with_path(
-                        b"".to_vec(),
-                        path,
-                    ),
-                );
+                let buf: Box<dyn Buffer> =
+                    Box::new(PieceTableBuffer::from_bytes_with_path(b"".to_vec(), path));
                 Document::new(buf)
             })
             .collect();
-        let mut app = App::new_with_documents(docs);
+        let mut app = App::new_with_documents(docs, core::Config::default());
 
         let backend = TestBackend::new(80, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(out.contains("alpha.txt"), "expected tab 'alpha.txt': {out:?}");
+        assert!(
+            out.contains("alpha.txt"),
+            "expected tab 'alpha.txt': {out:?}"
+        );
         assert!(out.contains("beta.rs"), "expected tab 'beta.rs': {out:?}");
         assert!(out.contains("gamma.md"), "expected tab 'gamma.md': {out:?}");
         assert!(out.contains("│"), "expected tab separator: {out:?}");
         // The legacy "(1/3)" counter is gone — the tabs themselves
         // communicate position now.
-        assert!(!out.contains("(1/3)"), "counter no longer rendered: {out:?}");
+        assert!(
+            !out.contains("(1/3)"),
+            "counter no longer rendered: {out:?}"
+        );
 
         // Cycle to the middle doc and re-render. Every tab is still
         // visible; only the highlight moves.
@@ -115,9 +135,18 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(out.contains("alpha.txt"), "tabs persist on tab switch: {out:?}");
-        assert!(out.contains("beta.rs"), "tabs persist on tab switch: {out:?}");
-        assert!(out.contains("gamma.md"), "tabs persist on tab switch: {out:?}");
+        assert!(
+            out.contains("alpha.txt"),
+            "tabs persist on tab switch: {out:?}"
+        );
+        assert!(
+            out.contains("beta.rs"),
+            "tabs persist on tab switch: {out:?}"
+        );
+        assert!(
+            out.contains("gamma.md"),
+            "tabs persist on tab switch: {out:?}"
+        );
     }
 
     #[test]
@@ -134,13 +163,17 @@ mod tests {
         // The header row (first line of output) should just contain
         // "[No Name]" — no tab separator, no other doc names.
         let header_line = out.lines().next().unwrap_or("");
-        assert!(header_line.contains("[No Name]"),
-                "expected single-doc header: {header_line:?}");
+        assert!(
+            header_line.contains("[No Name]"),
+            "expected single-doc header: {header_line:?}"
+        );
         // No tab separator in the single-doc header line. The content
         // area's line-number gutter also uses "│", so we only look at
         // the first (header) line.
-        assert!(!header_line.contains("│"),
-                "single-doc header has no tab strip: {header_line:?}");
+        assert!(
+            !header_line.contains("│"),
+            "single-doc header has no tab strip: {header_line:?}"
+        );
     }
 
     #[test]
@@ -150,16 +183,12 @@ mod tests {
             .iter()
             .map(|name| {
                 let path = std::path::PathBuf::from(format!("/tmp/{name}"));
-                let buf: Box<dyn Buffer> = Box::new(
-                    PieceTableBuffer::from_bytes_with_path(
-                        b"".to_vec(),
-                        path,
-                    ),
-                );
+                let buf: Box<dyn Buffer> =
+                    Box::new(PieceTableBuffer::from_bytes_with_path(b"".to_vec(), path));
                 Document::new(buf)
             })
             .collect();
-        let mut app = App::new_with_documents(docs);
+        let mut app = App::new_with_documents(docs, core::Config::default());
         app.active = 1;
         app.handle_event(core::EditorEvent::Insert('x'));
         let backend = TestBackend::new(80, 5);
@@ -167,13 +196,19 @@ mod tests {
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
         // "beta" tab should be marked dirty — either "beta.rs*" or "beta.rs *".
-        assert!(out.contains("beta.rs*") || out.contains("beta.rs *"),
-                "expected dirty marker on beta tab: {out:?}");
+        assert!(
+            out.contains("beta.rs*") || out.contains("beta.rs *"),
+            "expected dirty marker on beta tab: {out:?}"
+        );
         // Untouched tabs should NOT have the marker.
-        assert!(!out.contains("alpha.txt*") && !out.contains("alpha.txt *"),
-                "alpha tab is clean: {out:?}");
-        assert!(!out.contains("gamma.md*") && !out.contains("gamma.md *"),
-                "gamma tab is clean: {out:?}");
+        assert!(
+            !out.contains("alpha.txt*") && !out.contains("alpha.txt *"),
+            "alpha tab is clean: {out:?}"
+        );
+        assert!(
+            !out.contains("gamma.md*") && !out.contains("gamma.md *"),
+            "gamma tab is clean: {out:?}"
+        );
     }
 
     // ----- close-on-dirty prompt rendering -----
@@ -183,7 +218,10 @@ mod tests {
         // With a dirty buffer, opening the prompt should add a row
         // showing "has unsaved changes" and the three options.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_render_close_{}.txt", std::process::id()));
+        let path = dir.join(format!(
+            "the_editor_render_close_{}.txt",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
             b"hello".to_vec(),
@@ -197,8 +235,10 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(out.contains("has unsaved changes"),
-                "expected prompt copy in: {out:?}");
+        assert!(
+            out.contains("has unsaved changes"),
+            "expected prompt copy in: {out:?}"
+        );
         assert!(out.contains("Save"), "expected Save option: {out:?}");
         assert!(out.contains("Discard"), "expected Discard option: {out:?}");
         assert!(out.contains("Cancel"), "expected Cancel option: {out:?}");
@@ -206,22 +246,22 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ----- open-file dialog rendering -----
-
     #[test]
-    fn open_file_dialog_renders_when_open() {
+    fn go_to_line_dialog_renders_when_open() {
         let mut app = App::new(Box::new(PieceTableBuffer::new()));
-        app.handle_event(core::EditorEvent::OpenFile(None));
-        app.push_open_file_query('h');
-        app.push_open_file_query('i');
+        app.handle_event(core::EditorEvent::GoToLine(None));
+        app.push_go_to_line_query('4');
+        app.push_go_to_line_query('2');
 
         // 6 rows: header + content + status + dialog row.
         let backend = TestBackend::new(80, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(out.contains("Open: hi"),
-                "expected typed path 'Open: hi' in output: {out:?}");
+        assert!(
+            out.contains("Go to line: 42"),
+            "expected typed line 'Go to line: 42' in output: {out:?}"
+        );
     }
 
     // ----- find-match highlight -----
@@ -232,16 +272,19 @@ mod tests {
         // a match does not panic and produces output containing the
         // matched word. (We can't easily inspect Style objects from a
         // TestBackend, but we can confirm the layout didn't blow up.)
-        let buf: Box<dyn Buffer> =
-            Box::new(PieceTableBuffer::from_bytes(b"the quick brown fox".to_vec()));
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
+            b"the quick brown fox".to_vec(),
+        ));
         let mut app = App::new(buf);
         app.handle_event(core::EditorEvent::FindQueryChanged("quick".to_string()));
         let backend = TestBackend::new(80, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(out.contains("quick"),
-                "matched word should appear in rendered output: {out:?}");
+        assert!(
+            out.contains("quick"),
+            "matched word should appear in rendered output: {out:?}"
+        );
         assert!(out.contains("the"), "line text still rendered: {out:?}");
     }
 
@@ -252,9 +295,8 @@ mod tests {
         // TestBackend, but `current_match()` reports the byte
         // position — we use that as a proxy to confirm the renderer
         // would have something to highlight.
-        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(
-            b"foo bar foo baz".to_vec(),
-        ));
+        let buf: Box<dyn Buffer> =
+            Box::new(PieceTableBuffer::from_bytes(b"foo bar foo baz".to_vec()));
         let mut app = App::new(buf);
         app.handle_event(core::EditorEvent::FindQueryChanged("foo".to_string()));
         assert_eq!(app.search.current_match(), Some(0));
@@ -283,8 +325,10 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(out.contains("foo bar foo baz foo qux foo"),
-                "line text survives multi-match render: {out:?}");
+        assert!(
+            out.contains("foo bar foo baz foo qux foo"),
+            "line text survives multi-match render: {out:?}"
+        );
         assert!(out.contains("1/4"), "find counter still works: {out:?}");
     }
 
@@ -323,8 +367,10 @@ mod tests {
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
         assert!(out.contains("Find:"), "find bar still renders: {out:?}");
-        assert!(out.contains("Replace: world"),
-                "replace bar with query rendered: {out:?}");
+        assert!(
+            out.contains("Replace: world"),
+            "replace bar with query rendered: {out:?}"
+        );
     }
 
     #[test]
@@ -338,7 +384,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
         let out = terminal.backend().to_string();
-        assert!(out.contains("(empty)"),
-                "empty replace shows placeholder: {out:?}");
+        assert!(
+            out.contains("(empty)"),
+            "empty replace shows placeholder: {out:?}"
+        );
     }
 }

@@ -4,10 +4,9 @@
 //! so we can unit-test the event-handling logic without spinning up a
 //! real terminal.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use core::{Buffer, BytePos, Document, EditorEvent, Movement, Search, Selection};
+use core::{Buffer, BytePos, Document, EditorEvent, Movement, Search, Selection, SyntaxEngine};
 use crossterm::event::{self as cxevent, Event};
 use ratatui::Terminal;
 
@@ -30,10 +29,92 @@ pub struct App {
     /// renderer draws the dialog overlay and the input loop intercepts
     /// keys instead of forwarding them to `handle_event`.
     pub close_confirm: Option<CloseConfirm>,
-    /// Open-file dialog. `Some` while the prompt is up. The user types
-    /// a path; Enter loads it, Esc cancels. Same intercept pattern as
-    /// `close_confirm` and the find bar.
-    pub open_file_dialog: Option<OpenFileDialog>,
+    /// Go-to-line dialog. `Some` while the prompt is up. The user types
+    /// a 1-based line number; Enter jumps, Esc cancels.
+    pub go_to_line_dialog: Option<GoToLineDialog>,
+    /// Global syntax highlighting engine.
+    pub syntax: SyntaxEngine,
+    /// Whether the project file-tree sidebar is visible.
+    pub project_tree_open: bool,
+    /// The active document's project tree, including expansion state.
+    pub project_tree: Option<core::ProjectTree>,
+    /// Index of the selected row in the visible (flattened) project tree.
+    pub project_tree_selected: usize,
+    /// Last rendered width of the project-tree sidebar in terminal
+    /// columns. Used to offset mouse clicks in the editor content area.
+    pub tree_width: u16,
+    /// Project-wide search dialog state.
+    pub project_search: ProjectSearch,
+    /// Fuzzy file finder state.
+    pub fuzzy_finder: FuzzyFinder,
+    /// Command palette state.
+    pub command_palette: CommandPalette,
+    /// Persistent user configuration / session state.
+    pub config: core::Config,
+    /// Time of the most recent buffer-modifying edit. Used by auto-save
+    /// to decide when the user has been idle long enough to save.
+    pub last_edit_time: Instant,
+    /// File-system watcher for externally changed files. `None` if the
+    /// watcher could not be initialized on this platform.
+    pub file_watcher: Option<core::FileWatcher>,
+}
+
+/// State for the project-wide search / replace dialog.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectSearch {
+    /// Whether the search dialog is open.
+    pub open: bool,
+    /// Current search query string.
+    pub query: String,
+    /// Current replacement query string.
+    pub replace_query: String,
+    /// Search results.
+    pub results: Vec<core::ProjectSearchResult>,
+    /// Replace preview results.
+    pub replace_previews: Vec<core::ReplacePreview>,
+    /// Index of the selected result.
+    pub selected: usize,
+    /// Whether the replace field is focused (Tab toggles).
+    pub replace_focused: bool,
+    /// Whether the replace-all confirmation prompt is currently shown.
+    pub confirm_replace: bool,
+}
+
+/// One candidate shown in the fuzzy file finder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzyCandidate {
+    /// Display text shown in the finder (typically a relative path).
+    pub display: String,
+    /// Absolute path to open when this candidate is selected.
+    pub path: std::path::PathBuf,
+}
+
+/// State for the fuzzy file finder.
+#[derive(Debug, Clone, Default)]
+pub struct FuzzyFinder {
+    /// Whether the finder is open.
+    pub open: bool,
+    /// Current query string.
+    pub query: String,
+    /// All available candidates.
+    pub items: Vec<FuzzyCandidate>,
+    /// Filtered and ranked candidate indices + match metadata.
+    pub filtered: Vec<(usize, core::FuzzyMatch)>,
+    /// Index into `filtered` of the currently selected candidate.
+    pub selected: usize,
+}
+
+/// State for the command palette.
+#[derive(Debug, Clone, Default)]
+pub struct CommandPalette {
+    /// Whether the palette is open.
+    pub open: bool,
+    /// Current filter query.
+    pub query: String,
+    /// Filtered command list.
+    pub items: Vec<&'static core::Command>,
+    /// Index of the selected command.
+    pub selected: usize,
 }
 
 /// The three choices offered when closing a dirty document. Stored on
@@ -64,9 +145,10 @@ pub struct CloseConfirm {
     pub choice: CloseChoice,
 }
 
-/// State for the open-file text-input dialog. The user types a path
-/// into `query`; Enter resolves it via [`App::submit_open_file_dialog`].
-pub struct OpenFileDialog {
+/// State for the go-to-line text-input dialog. The user types a
+/// 1-based line number into `query`; Enter jumps via
+/// [`App::submit_go_to_line_dialog`].
+pub struct GoToLineDialog {
     pub query: String,
 }
 
@@ -77,17 +159,17 @@ impl App {
     /// explicit.
     #[allow(dead_code)]
     pub fn new(buffer: Box<dyn Buffer>) -> Self {
-        Self::new_with_documents(vec![Document::new(buffer)])
+        Self::new_with_documents(vec![Document::new(buffer)], core::Config::default())
     }
 
     /// Create an `App` around a pre-built list of documents.
     /// The first document becomes active.
-    pub fn new_with_documents(documents: Vec<Document>) -> Self {
-        assert!(
-            !documents.is_empty(),
-            "App needs at least one document"
-        );
-        Self {
+    pub fn new_with_documents(mut documents: Vec<Document>, config: core::Config) -> Self {
+        assert!(!documents.is_empty(), "App needs at least one document");
+        for doc in &mut documents {
+            config.apply_document_defaults(&mut doc.view);
+        }
+        let mut app = Self {
             documents,
             active: 0,
             should_quit: false,
@@ -95,8 +177,25 @@ impl App {
             viewport_height: 0,
             search: Search::new(),
             close_confirm: None,
-            open_file_dialog: None,
+            go_to_line_dialog: None,
+            syntax: SyntaxEngine::default_dark(),
+            project_tree_open: config.project_tree_open.unwrap_or(true),
+            project_tree: None,
+            project_tree_selected: 0,
+            tree_width: 0,
+            project_search: ProjectSearch::default(),
+            fuzzy_finder: FuzzyFinder::default(),
+            command_palette: CommandPalette::default(),
+            config,
+            last_edit_time: Instant::now(),
+            file_watcher: core::FileWatcher::new().ok(),
+        };
+        if let Some(theme) = app.config.theme.clone() {
+            app.syntax.set_theme_by_name(&theme);
         }
+        app.refresh_project_tree();
+        app.sync_watcher();
+        app
     }
 
     /// Index of the currently focused document.
@@ -152,8 +251,7 @@ impl App {
         let mut clipboard = match arboard::Clipboard::new() {
             Ok(cb) => Some(cb),
             Err(e) => {
-                self.status_message =
-                    Some(format!("clipboard unavailable: {e}"));
+                self.status_message = Some(format!("clipboard unavailable: {e}"));
                 None
             }
         };
@@ -184,9 +282,7 @@ impl App {
                             self.apply_clipboard_action(&mut clipboard, action);
                             continue;
                         }
-                        if let Some(editor_event) =
-                            crate::event::translate_key(key, Some(self))
-                        {
+                        if let Some(editor_event) = crate::event::translate_key(key, Some(self)) {
                             self.handle_event(editor_event);
                         }
                     }
@@ -202,6 +298,14 @@ impl App {
                     _ => {}
                 }
             }
+
+            // Auto-save idle dirty buffers each loop iteration. The poll
+            // timeout keeps this check running ~10 times a second.
+            self.auto_save();
+            self.maybe_refresh_git_gutter();
+
+            // Check for files that changed externally.
+            self.handle_external_changes();
 
             if self.should_quit {
                 break;
@@ -221,12 +325,12 @@ impl App {
     /// when the event was consumed (caller should NOT forward it to
     /// `translate_key` / `handle_event`).
     ///
-    /// Two prompts today:
+    /// Prompts today:
     /// - **close_confirm**: Tab/Shift+Tab/Left/Right cycle choice,
     ///   Enter confirms the focused choice, `y` confirms as Discard,
     ///   `n` and Esc cancel.
-    /// - **open_file_dialog**: printable chars append, Backspace pops,
-    ///   Enter submits, Esc cancels.
+    /// - **go_to_line_dialog**: digits append, Backspace pops, Enter
+    ///   jumps, Esc cancels.
     ///
     /// If both were somehow up (they shouldn't be — opening a dialog
     /// drops the other), close_confirm wins because it's tied to an
@@ -267,17 +371,17 @@ impl App {
             return true;
         }
 
-        if self.open_file_dialog.is_some() {
+        if self.go_to_line_dialog.is_some() {
             match key.code {
-                KeyCode::Esc => self.cancel_open_file_dialog(),
-                KeyCode::Enter => self.submit_open_file_dialog(),
-                KeyCode::Backspace => self.pop_open_file_query(),
-                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL)
+                KeyCode::Esc => self.cancel_go_to_line_dialog(),
+                KeyCode::Enter => self.submit_go_to_line_dialog(),
+                KeyCode::Backspace => self.pop_go_to_line_query(),
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    // Plain printable only — filter out ctrl/alt so
-                    // we don't pollute the path with control chars.
-                    self.push_open_file_query(c);
+                    // Only digits make sense for a line number.
+                    self.push_go_to_line_query(c);
                 }
                 _ => {}
             }
@@ -296,25 +400,38 @@ impl App {
             crate::event::ClipboardAction::Copy(text) => {
                 if let Some(cb) = clipboard.as_mut() {
                     if let Err(e) = cb.set_text(text) {
-                        self.status_message =
-                            Some(format!("clipboard copy failed: {e}"));
+                        self.status_message = Some(format!("clipboard copy failed: {e}"));
                     }
                 } else {
-                    self.status_message =
-                        Some("clipboard unavailable; copy skipped".into());
+                    self.status_message = Some("clipboard unavailable; copy skipped".into());
                 }
             }
             crate::event::ClipboardAction::Cut(text) => {
                 if let Some(cb) = clipboard.as_mut() {
                     if let Err(e) = cb.set_text(text) {
-                        self.status_message =
-                            Some(format!("clipboard cut failed: {e}"));
+                        self.status_message = Some(format!("clipboard cut failed: {e}"));
                     }
                 }
                 // The buffer side of cut still applies even if the
                 // clipboard write failed — the user intended to remove
                 // the selected text.
                 self.handle_event(EditorEvent::DeleteSelection);
+            }
+            crate::event::ClipboardAction::Paste => {
+                if let Some(cb) = clipboard.as_mut() {
+                    match cb.get_text() {
+                        Ok(text) => {
+                            if !text.is_empty() {
+                                self.handle_event(EditorEvent::Paste(text));
+                            }
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("clipboard paste failed: {e}"));
+                        }
+                    }
+                } else {
+                    self.status_message = Some("clipboard unavailable; paste skipped".into());
+                }
             }
         }
     }
@@ -324,21 +441,21 @@ impl App {
         let modifies_buffer = matches!(
             &event,
             EditorEvent::Insert(_)
-            | EditorEvent::InsertTab
-            | EditorEvent::DeleteLeft
-            | EditorEvent::DeleteRight
-            | EditorEvent::DeleteSelection
-            | EditorEvent::DeleteWordLeft
-            | EditorEvent::DeleteWordRight
-            | EditorEvent::DeleteLine
-            | EditorEvent::DuplicateLine
-            | EditorEvent::MoveLineUp
-            | EditorEvent::MoveLineDown
-            | EditorEvent::Paste(_)
-            | EditorEvent::Undo
-            | EditorEvent::Redo
-            | EditorEvent::ReplaceOne
-            | EditorEvent::ReplaceAll
+                | EditorEvent::InsertTab
+                | EditorEvent::DeleteLeft
+                | EditorEvent::DeleteRight
+                | EditorEvent::DeleteSelection
+                | EditorEvent::DeleteWordLeft
+                | EditorEvent::DeleteWordRight
+                | EditorEvent::DeleteLine
+                | EditorEvent::DuplicateLine
+                | EditorEvent::MoveLineUp
+                | EditorEvent::MoveLineDown
+                | EditorEvent::Paste(_)
+                | EditorEvent::Undo
+                | EditorEvent::Redo
+                | EditorEvent::ReplaceOne
+                | EditorEvent::ReplaceAll
         );
         match event {
             EditorEvent::Insert(ch) => {
@@ -375,7 +492,8 @@ impl App {
                     match self.active_buffer_mut().delete((pos - 1)..pos) {
                         Ok(new_pos) => {
                             self.active_buffer_mut().set_cursor(new_pos);
-                            self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                            self.active_buffer_mut()
+                                .set_selection(Selection::collapsed(new_pos));
                         }
                         Err(e) => self.status_message = Some(format!("delete error: {e}")),
                     }
@@ -390,7 +508,8 @@ impl App {
                     match self.active_buffer_mut().delete(pos..(pos + 1)) {
                         Ok(new_pos) => {
                             self.active_buffer_mut().set_cursor(new_pos);
-                            self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                            self.active_buffer_mut()
+                                .set_selection(Selection::collapsed(new_pos));
                         }
                         Err(e) => self.status_message = Some(format!("delete error: {e}")),
                     }
@@ -415,7 +534,8 @@ impl App {
                 match self.active_buffer_mut().delete(target..pos) {
                     Ok(new_pos) => {
                         self.active_buffer_mut().set_cursor(new_pos);
-                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                        self.active_buffer_mut()
+                            .set_selection(Selection::collapsed(new_pos));
                     }
                     Err(e) => self.status_message = Some(format!("delete error: {e}")),
                 }
@@ -436,7 +556,8 @@ impl App {
                 match self.active_buffer_mut().delete(pos..target) {
                     Ok(new_pos) => {
                         self.active_buffer_mut().set_cursor(new_pos);
-                        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                        self.active_buffer_mut()
+                            .set_selection(Selection::collapsed(new_pos));
                     }
                     Err(e) => self.status_message = Some(format!("delete error: {e}")),
                 }
@@ -454,10 +575,12 @@ impl App {
                 self.move_current_line(1);
             }
             EditorEvent::ScrollLeft => {
-                self.active_doc_mut().view.scroll_x_cols = self.active_doc().view.scroll_x_cols.saturating_sub(1);
+                self.active_doc_mut().view.scroll_x_cols =
+                    self.active_doc().view.scroll_x_cols.saturating_sub(1);
             }
             EditorEvent::ScrollRight => {
-                self.active_doc_mut().view.scroll_x_cols = self.active_doc().view.scroll_x_cols.saturating_add(1);
+                self.active_doc_mut().view.scroll_x_cols =
+                    self.active_doc().view.scroll_x_cols.saturating_add(1);
             }
             EditorEvent::FindOpen => {
                 self.search.bar_open = true;
@@ -472,19 +595,31 @@ impl App {
                 self.search.refresh(&self.active_buffer().to_bytes());
                 if let Some(pos) = self.search.current_match() {
                     self.active_buffer_mut().set_cursor(pos);
-                    self.active_buffer_mut().set_selection(Selection::collapsed(pos));
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(pos));
                 }
             }
             EditorEvent::FindNext => {
                 if let Some(pos) = self.search.next_after(self.active_buffer().cursor()) {
                     self.active_buffer_mut().set_cursor(pos);
-                    self.active_buffer_mut().set_selection(Selection::collapsed(pos));
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(pos));
                 }
             }
             EditorEvent::FindPrev => {
                 if let Some(pos) = self.search.prev_before(self.active_buffer().cursor()) {
                     self.active_buffer_mut().set_cursor(pos);
-                    self.active_buffer_mut().set_selection(Selection::collapsed(pos));
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(pos));
+                }
+            }
+            EditorEvent::ToggleFindRegex => {
+                self.search.regex_mode = !self.search.regex_mode;
+                self.search.refresh(&self.active_buffer().to_bytes());
+                if let Some(pos) = self.search.current_match() {
+                    self.active_buffer_mut().set_cursor(pos);
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(pos));
                 }
             }
             EditorEvent::ReplaceOpen => {
@@ -511,19 +646,30 @@ impl App {
             EditorEvent::ReplaceAll => {
                 self.replace_all();
             }
-            EditorEvent::SetIndentMode { use_spaces, tab_width } => {
+            EditorEvent::SetIndentMode {
+                use_spaces,
+                tab_width,
+            } => {
                 self.set_indent_mode(use_spaces, tab_width);
+                self.sync_config();
             }
             EditorEvent::CycleIndentMode => {
                 self.cycle_indent_mode();
+                self.sync_config();
             }
             EditorEvent::ToggleSoftWrap => {
                 self.toggle_soft_wrap();
+                self.sync_config();
+            }
+            EditorEvent::CycleTheme => {
+                self.cycle_theme();
+                self.sync_config();
             }
             EditorEvent::Move(movement) => {
                 let new_pos = self.compute_target(movement);
                 self.active_buffer_mut().set_cursor(new_pos);
-                self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                self.active_buffer_mut()
+                    .set_selection(Selection::collapsed(new_pos));
             }
             EditorEvent::SelectExtend(movement) => {
                 let new_pos = self.compute_target(movement);
@@ -537,7 +683,8 @@ impl App {
             EditorEvent::SetCursor { pos } => {
                 let clamped = pos.min(self.active_buffer().len());
                 self.active_buffer_mut().set_cursor(clamped);
-                self.active_buffer_mut().set_selection(Selection::collapsed(clamped));
+                self.active_buffer_mut()
+                    .set_selection(Selection::collapsed(clamped));
             }
             EditorEvent::SelectExtendTo { pos } => {
                 let clamped = pos.min(self.active_buffer().len());
@@ -565,9 +712,28 @@ impl App {
                 }
             }
             EditorEvent::Save => match self.active_buffer_mut().save() {
-                Ok(()) => self.status_message = Some("Saved.".to_string()),
+                Ok(()) => {
+                    self.status_message = Some("Saved.".to_string());
+                    self.active_doc_mut().refresh_git_gutter();
+                    self.sync_config();
+                }
                 Err(e) => self.status_message = Some(format!("Save error: {e}")),
             },
+            EditorEvent::SaveAs(maybe_path) => match maybe_path {
+                Some(path) => {
+                    self.active_buffer_mut().set_source_path(path);
+                    self.handle_event(EditorEvent::Save);
+                    self.sync_watcher();
+                }
+                None => self.status_message = Some("Save As requires the GUI.".to_string()),
+            },
+            EditorEvent::ReloadFile => {
+                if let Some(path) = self.active_doc().path().map(|p| p.to_path_buf()) {
+                    self.reload_document_at_path(&path);
+                } else {
+                    self.status_message = Some("No file to reload.".to_string());
+                }
+            }
             EditorEvent::Undo => {
                 if self.active_buffer_mut().undo() {
                     self.status_message = Some("Undid.".to_string());
@@ -579,12 +745,19 @@ impl App {
                 }
             }
             EditorEvent::NewDoc => {
-                self.documents.push(Document::empty());
+                self.documents.push(Document::new_with_config(
+                    Box::new(core::PieceTableBuffer::new()),
+                    &self.config,
+                ));
                 self.active = self.documents.len() - 1;
                 self.status_message = Some("New document.".to_string());
+                self.sync_config();
+                self.sync_watcher();
             }
             EditorEvent::CloseDoc => {
                 self.request_close_active();
+                self.sync_config();
+                self.sync_watcher();
             }
             EditorEvent::NextDoc => {
                 if !self.documents.is_empty() {
@@ -593,21 +766,137 @@ impl App {
             }
             EditorEvent::PrevDoc => {
                 if !self.documents.is_empty() {
-                    self.active =
-                        (self.active + self.documents.len() - 1) % self.documents.len();
+                    self.active = (self.active + self.documents.len() - 1) % self.documents.len();
                 }
             }
             EditorEvent::OpenFile(maybe_path) => match maybe_path {
-                Some(path) => self.open_path(&path),
-                None => self.open_file_dialog = Some(OpenFileDialog { query: String::new() }),
+                Some(path) => {
+                    self.open_path(&path);
+                    self.sync_config();
+                }
+                None => {
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        self.open_path(&path);
+                        self.sync_config();
+                    }
+                }
             },
+            EditorEvent::GoToLine(maybe_line) => match maybe_line {
+                Some(line) => self.go_to_line(line),
+                None => {
+                    self.go_to_line_dialog = Some(GoToLineDialog {
+                        query: String::new(),
+                    })
+                }
+            },
+            EditorEvent::ToggleProjectTree => {
+                self.toggle_project_tree();
+                self.sync_config();
+            }
+            EditorEvent::ProjectTreeMove { delta } => {
+                self.move_project_tree_selection(delta);
+            }
+            EditorEvent::ProjectTreeOpen => {
+                self.open_or_toggle_selected_project_tree_node();
+            }
+            EditorEvent::ProjectSearch(query) => {
+                self.project_search.open = true;
+                if let Some(q) = query {
+                    self.project_search.query = q;
+                }
+                self.refresh_project_search();
+            }
+            EditorEvent::ProjectSearchQueryChanged(q) => {
+                self.project_search.query = q;
+                self.refresh_project_search();
+            }
+            EditorEvent::ProjectSearchMove { delta } => {
+                self.move_project_search_selection(delta);
+            }
+            EditorEvent::ProjectSearchOpenResult => {
+                self.open_selected_project_search_result();
+            }
+            EditorEvent::ProjectSearchClose => {
+                self.project_search.open = false;
+            }
+            EditorEvent::ProjectSearchReplaceQueryChanged(q) => {
+                self.project_search.replace_query = q;
+                self.refresh_project_search();
+            }
+            EditorEvent::ProjectSearchToggleFocus => {
+                self.project_search.replace_focused = !self.project_search.replace_focused;
+            }
+            EditorEvent::ProjectSearchReplaceAll => {
+                self.apply_project_replace_all();
+            }
+            EditorEvent::ProjectSearchReplaceAllConfirm => {
+                self.confirm_project_replace_all(true);
+            }
+            EditorEvent::ProjectSearchReplaceAllCancel => {
+                self.confirm_project_replace_all(false);
+            }
+            EditorEvent::FuzzyFinder(query) => {
+                self.open_fuzzy_finder(query);
+            }
+            EditorEvent::FuzzyFinderQueryChanged(q) => {
+                self.fuzzy_finder.query = q;
+                self.refresh_fuzzy_finder();
+            }
+            EditorEvent::FuzzyFinderMove { delta } => {
+                self.move_fuzzy_finder_selection(delta);
+            }
+            EditorEvent::FuzzyFinderExecute => {
+                self.execute_fuzzy_finder();
+            }
+            EditorEvent::FuzzyFinderClose => {
+                self.fuzzy_finder.open = false;
+            }
+            EditorEvent::ToggleGitGutter => {
+                let enabled = !self.active_doc().view.git_gutter_enabled;
+                self.active_doc_mut().view.git_gutter_enabled = enabled;
+                self.status_message = Some(format!(
+                    "Git gutter {}.",
+                    if enabled { "enabled" } else { "disabled" }
+                ));
+                if enabled {
+                    self.active_doc_mut().refresh_git_gutter();
+                }
+            }
+            EditorEvent::RefreshGitGutter => {
+                self.active_doc_mut().refresh_git_gutter();
+            }
+            EditorEvent::NextHunk => {
+                self.jump_hunk(1);
+            }
+            EditorEvent::PrevHunk => {
+                self.jump_hunk(-1);
+            }
+            EditorEvent::CommandPalette(query) => {
+                self.open_command_palette(query);
+            }
+            EditorEvent::CommandPaletteQueryChanged(q) => {
+                self.command_palette.query = q;
+                self.refresh_command_palette();
+            }
+            EditorEvent::CommandPaletteMove { delta } => {
+                self.move_command_palette_selection(delta);
+            }
+            EditorEvent::CommandPaletteExecute => {
+                self.execute_selected_command();
+            }
+            EditorEvent::CommandPaletteClose => {
+                self.command_palette.open = false;
+            }
             EditorEvent::Quit => {
+                self.sync_config();
                 self.should_quit = true;
             }
         }
 
         if modifies_buffer {
             self.active_doc_mut().syntax.invalidate();
+            self.active_doc_mut().git_gutter.mark_dirty();
+            self.last_edit_time = Instant::now();
         }
     }
 
@@ -622,7 +911,8 @@ impl App {
         match self.active_buffer_mut().insert(pos, text) {
             Ok(new_pos) => {
                 self.active_buffer_mut().set_cursor(new_pos);
-                self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                self.active_buffer_mut()
+                    .set_selection(Selection::collapsed(new_pos));
                 self.status_message = None;
             }
             Err(e) => self.status_message = Some(format!("insert error: {e}")),
@@ -641,7 +931,8 @@ impl App {
         match self.active_buffer_mut().delete(range) {
             Ok(new_pos) => {
                 self.active_buffer_mut().set_cursor(new_pos);
-                self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+                self.active_buffer_mut()
+                    .set_selection(Selection::collapsed(new_pos));
                 true
             }
             Err(e) => {
@@ -665,8 +956,7 @@ impl App {
                 }
             }
             Movement::Up => {
-                let (line, col) = self.active_buffer().pos_to_linecol(pos)
-                    .unwrap_or((0, 0));
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                 if line == 0 {
                     0
                 } else {
@@ -674,8 +964,7 @@ impl App {
                 }
             }
             Movement::Down => {
-                let (line, col) = self.active_buffer().pos_to_linecol(pos)
-                    .unwrap_or((0, 0));
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                 if line + 1 >= self.active_buffer().line_count() {
                     pos
                 } else {
@@ -683,8 +972,7 @@ impl App {
                 }
             }
             Movement::PageUp => {
-                let (line, col) = self.active_buffer().pos_to_linecol(pos)
-                    .unwrap_or((0, 0));
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                 let page = self.viewport_lines();
                 if line == 0 {
                     0
@@ -694,8 +982,7 @@ impl App {
                 }
             }
             Movement::PageDown => {
-                let (line, col) = self.active_buffer().pos_to_linecol(pos)
-                    .unwrap_or((0, 0));
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                 let page = self.viewport_lines();
                 let last = self.active_buffer().line_count().saturating_sub(1);
                 let target = (line + page).min(last);
@@ -711,7 +998,8 @@ impl App {
                 let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                 // line_byte_range gives the [start, end) byte range for the
                 // line; its end is the cursor's LineEnd target.
-                self.active_buffer().line_byte_range(line)
+                self.active_buffer()
+                    .line_byte_range(line)
                     .map(|r| r.end)
                     .unwrap_or(len)
             }
@@ -759,35 +1047,40 @@ impl App {
     /// = transition between word-char and non-word-char, or line
     /// boundary, whichever comes first.
     fn skip_word_left_from(&self, pos: usize) -> usize {
+        if pos == 0 {
+            return 0;
+        }
         let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
         let line_text = match self.active_buffer().line_text(line) {
             Some(cow) => cow.into_owned(),
             None => return pos.saturating_sub(1),
         };
-        // We work in chars; convert pos to char-col, scan, then back.
-        let char_col = core::byte_to_char_col(&line_text, pos.saturating_sub(0));
+        let line_byte_start = self
+            .active_buffer()
+            .line_byte_range(line)
+            .map(|r| r.start)
+            .unwrap_or(0);
+        // Work in line-relative byte offsets: convert the absolute pos
+        // to a column within this line, scan, then convert back.
+        let char_col = core::byte_to_char_col(&line_text, pos - line_byte_start);
         let chars: Vec<char> = line_text.chars().collect();
         let mut i = char_col.min(chars.len());
-        // If we're sitting on a word char, eat back through word chars
-        // until we hit a non-word char.
         if i == 0 {
-            return 0;
+            return line_byte_start;
         }
         if is_word_char(chars[i - 1]) {
             while i > 0 && is_word_char(chars[i - 1]) {
                 i -= 1;
             }
         } else {
-            // Skip non-word chars.
             while i > 0 && !is_word_char(chars[i - 1]) {
                 i -= 1;
             }
-            // Then skip word chars if we landed on one.
             while i > 0 && is_word_char(chars[i - 1]) {
                 i -= 1;
             }
         }
-        core::char_col_to_byte_col(&line_text, i)
+        line_byte_start + core::char_col_to_byte_col(&line_text, i)
     }
 
     /// Move `pos` right to the next word boundary. Matches Ctrl+Right in
@@ -805,10 +1098,14 @@ impl App {
             Some(cow) => cow.into_owned(),
             None => return (pos + 1).min(len),
         };
-        let line_byte_start = self.active_buffer().line_byte_range(line)
+        let line_byte_start = self
+            .active_buffer()
+            .line_byte_range(line)
             .map(|r| r.start)
             .unwrap_or(0);
-        let line_byte_end = self.active_buffer().line_byte_range(line)
+        let line_byte_end = self
+            .active_buffer()
+            .line_byte_range(line)
             .map(|r| r.end)
             .unwrap_or(len);
         let char_col = core::byte_to_char_col(&line_text, pos - line_byte_start);
@@ -833,7 +1130,9 @@ impl App {
         // the start of the next line so consecutive WordRights keep
         // moving past line boundaries.
         if new_byte >= line_byte_end && line + 1 < self.active_buffer().line_count() {
-            return self.active_buffer().line_byte_range(line + 1)
+            return self
+                .active_buffer()
+                .line_byte_range(line + 1)
                 .map(|r| r.start)
                 .unwrap_or(len);
         }
@@ -894,6 +1193,17 @@ impl App {
         });
     }
 
+    /// Cycle to the next syntect theme and invalidate the syntax cache
+    /// for every open document so the new colors appear immediately.
+    /// Mirrors `frontend_gui::EditorApp::cycle_theme`.
+    pub fn cycle_theme(&mut self) {
+        let name = self.syntax.cycle_theme().to_string();
+        for doc in &mut self.documents {
+            doc.syntax.invalidate();
+        }
+        self.status_message = Some(format!("Theme: {name}"));
+    }
+
     /// Replace the currently-active find match with the replace
     /// query, then advance to the next match. No-op (with status
     /// message) when:
@@ -918,12 +1228,21 @@ impl App {
                 Some("Replace: replacement is empty — type something first.".to_string());
             return;
         }
-        let Some(pos) = self.search.current_match() else {
+        if self.search.regex_mode && self.search.regex_error.is_some() {
+            self.status_message = Some("Replace: invalid regex.".to_string());
+            return;
+        }
+        let text = match String::from_utf8(self.active_buffer().to_bytes()) {
+            Ok(text) => text,
+            Err(_) => {
+                self.status_message = Some("Replace: buffer is not valid UTF-8.".to_string());
+                return;
+            }
+        };
+        let Some((pos, end, replacement)) = self.search.current_replacement(&text) else {
             self.status_message = Some("Replace: no current match.".to_string());
             return;
         };
-        let end = pos + self.search.query.len();
-        let replacement = self.search.replace_query.clone();
         if let Err(e) = self.active_buffer_mut().replace(pos..end, &replacement) {
             self.status_message = Some(format!("Replace error: {e}"));
             return;
@@ -932,15 +1251,18 @@ impl App {
         // replacement start so the user can see what changed.
         self.search.refresh(&self.active_buffer().to_bytes());
         self.active_buffer_mut().set_cursor(pos);
-        self.active_buffer_mut().set_selection(Selection::collapsed(pos));
+        self.active_buffer_mut()
+            .set_selection(Selection::collapsed(pos));
         // Advance to next match.
         if let Some(next) = self.search.next_after(pos) {
             self.active_buffer_mut().set_cursor(next);
-            self.active_buffer_mut().set_selection(Selection::collapsed(next));
-            self.status_message =
-                Some(format!("Replaced 1; advanced to match {}/{}.",
-                             self.search.current.unwrap_or(0) + 1,
-                             self.search.matches.len()));
+            self.active_buffer_mut()
+                .set_selection(Selection::collapsed(next));
+            self.status_message = Some(format!(
+                "Replaced 1; advanced to match {}/{}.",
+                self.search.current.unwrap_or(0) + 1,
+                self.search.matches.len()
+            ));
         } else {
             self.status_message = Some("Replaced 1; no more matches.".to_string());
         }
@@ -962,25 +1284,32 @@ impl App {
                 Some("Replace all: replacement is empty — type something first.".to_string());
             return;
         }
-        let matches: Vec<usize> = self.search.matches.clone();
-        if matches.is_empty() {
+        if self.search.regex_mode && self.search.regex_error.is_some() {
+            self.status_message = Some("Replace all: invalid regex.".to_string());
+            return;
+        }
+        if self.search.matches.is_empty() {
             self.status_message = Some("Replace all: no matches.".to_string());
             return;
         }
-        let count = matches.len();
-        let query_len = self.search.query.len();
-        let replacement = self.search.replace_query.clone();
+        let count = self.search.matches.len();
+        let text = match String::from_utf8(self.active_buffer().to_bytes()) {
+            Ok(text) => text,
+            Err(_) => {
+                self.status_message = Some("Replace all: buffer is not valid UTF-8.".to_string());
+                return;
+            }
+        };
+        let Some(new_text) = self.search.replace_all_text(&text) else {
+            self.status_message = Some("Replace all: invalid regex.".to_string());
+            return;
+        };
+        let len = self.active_buffer().len();
         // Wrap in one edit group so the whole batch is a single undo.
         self.active_buffer_mut().begin_edit_group();
-        let mut err = None;
-        for &pos in matches.iter().rev() {
-            if let Err(e) = self.active_buffer_mut().replace(pos..pos + query_len, &replacement) {
-                err = Some(e);
-                break;
-            }
-        }
+        let result = self.active_buffer_mut().replace(0..len, &new_text);
         self.active_buffer_mut().end_edit_group();
-        if let Some(e) = err {
+        if let Err(e) = result {
             self.status_message = Some(format!("Replace error: {e}"));
             return;
         }
@@ -990,7 +1319,8 @@ impl App {
         // snapshot matches before any replace so the loop is bounded).
         self.search.refresh(&self.active_buffer().to_bytes());
         self.active_buffer_mut().set_cursor(0);
-        self.active_buffer_mut().set_selection(Selection::collapsed(0));
+        self.active_buffer_mut()
+            .set_selection(Selection::collapsed(0));
         self.status_message = Some(format!("Replaced {count} occurrences."));
     }
 
@@ -1004,7 +1334,9 @@ impl App {
     pub fn adjust_viewport(&mut self, viewport_height: u16) {
         self.viewport_height = viewport_height;
         let cursor_pos = self.active_buffer().cursor();
-        let cursor_line = self.active_buffer().pos_to_linecol(cursor_pos)
+        let cursor_line = self
+            .active_buffer()
+            .pos_to_linecol(cursor_pos)
             .map(|(l, _)| l)
             .unwrap_or(0);
         let vh = viewport_height as usize;
@@ -1065,7 +1397,9 @@ impl App {
     /// start of the deleted line's position.
     fn delete_current_line(&mut self) {
         let cursor_pos = self.active_buffer().cursor();
-        let (line, _) = self.active_buffer().pos_to_linecol(cursor_pos)
+        let (line, _) = self
+            .active_buffer()
+            .pos_to_linecol(cursor_pos)
             .unwrap_or((0, 0));
         let Some(line_range) = self.active_buffer().line_byte_range(line) else {
             return;
@@ -1074,26 +1408,35 @@ impl App {
         if line + 1 < line_count {
             // Not the last line — eat the trailing newline so the next
             // line shifts up.
-            let next_line_start = self.active_buffer().line_byte_range(line + 1)
+            let next_line_start = self
+                .active_buffer()
+                .line_byte_range(line + 1)
                 .map(|r| r.start)
                 .unwrap_or(line_range.end);
-            match self.active_buffer_mut().delete(line_range.start..next_line_start) {
+            match self
+                .active_buffer_mut()
+                .delete(line_range.start..next_line_start)
+            {
                 Ok(np) => {
                     self.active_buffer_mut().set_cursor(np);
-                    self.active_buffer_mut().set_selection(Selection::collapsed(np));
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(np));
                 }
                 Err(e) => self.status_message = Some(format!("delete error: {e}")),
             }
         } else if line > 0 {
             // Last line, no trailing newline — eat the preceding
             // newline so the buffer gets shorter.
-            let prev_end = self.active_buffer().line_byte_range(line - 1)
+            let prev_end = self
+                .active_buffer()
+                .line_byte_range(line - 1)
                 .map(|r| r.end)
                 .unwrap_or(line_range.start);
             match self.active_buffer_mut().delete(prev_end..line_range.end) {
                 Ok(np) => {
                     self.active_buffer_mut().set_cursor(np);
-                    self.active_buffer_mut().set_selection(Selection::collapsed(np));
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(np));
                 }
                 Err(e) => self.status_message = Some(format!("delete error: {e}")),
             }
@@ -1102,7 +1445,8 @@ impl App {
             match self.active_buffer_mut().delete(0..line_range.end) {
                 Ok(np) => {
                     self.active_buffer_mut().set_cursor(np);
-                    self.active_buffer_mut().set_selection(Selection::collapsed(np));
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(np));
                 }
                 Err(e) => self.status_message = Some(format!("delete error: {e}")),
             }
@@ -1114,19 +1458,25 @@ impl App {
     /// below; cursor moves to the start of the new copy.
     fn duplicate_current_line(&mut self) {
         let cursor_pos = self.active_buffer().cursor();
-        let (line, _) = self.active_buffer().pos_to_linecol(cursor_pos)
+        let (line, _) = self
+            .active_buffer()
+            .pos_to_linecol(cursor_pos)
             .unwrap_or((0, 0));
         let Some(line_range) = self.active_buffer().line_byte_range(line) else {
             return;
         };
         let line_count = self.active_buffer().line_count();
-        let line_text = self.active_buffer().slice(line_range.clone())
+        let line_text = self
+            .active_buffer()
+            .slice(line_range.clone())
             .unwrap_or_default();
         let line_ends_with_newline = line_text.ends_with('\n');
         if line + 1 < line_count {
             // Insert just before the next line, with a newline if the
             // current line doesn't end in one.
-            let insert_pos = self.active_buffer().line_byte_range(line + 1)
+            let insert_pos = self
+                .active_buffer()
+                .line_byte_range(line + 1)
                 .map(|r| r.start)
                 .unwrap_or(line_range.end);
             let to_insert = if line_ends_with_newline {
@@ -1136,10 +1486,11 @@ impl App {
             };
             match self.active_buffer_mut().insert(insert_pos, &to_insert) {
                 Ok(np) => {
-                    let new_line_start = np - to_insert.len()
-                        + if line_ends_with_newline { 1 } else { 0 };
+                    let new_line_start =
+                        np - to_insert.len() + if line_ends_with_newline { 1 } else { 0 };
                     self.active_buffer_mut().set_cursor(new_line_start);
-                    self.active_buffer_mut().set_selection(Selection::collapsed(new_line_start));
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(new_line_start));
                 }
                 Err(e) => self.status_message = Some(format!("insert error: {e}")),
             }
@@ -1160,7 +1511,8 @@ impl App {
                         np + 1
                     };
                     self.active_buffer_mut().set_cursor(new_line_start);
-                    self.active_buffer_mut().set_selection(Selection::collapsed(new_line_start));
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(new_line_start));
                 }
                 Err(e) => self.status_message = Some(format!("insert error: {e}")),
             }
@@ -1172,7 +1524,9 @@ impl App {
     /// by swapping with the adjacent line.
     fn move_current_line(&mut self, delta: i32) {
         let cursor_pos = self.active_buffer().cursor();
-        let (line, _) = self.active_buffer().pos_to_linecol(cursor_pos)
+        let (line, _) = self
+            .active_buffer()
+            .pos_to_linecol(cursor_pos)
             .unwrap_or((0, 0));
         let line_count = self.active_buffer().line_count();
         let target_line = if delta < 0 {
@@ -1192,12 +1546,16 @@ impl App {
         let Some(other_range_excl) = self.active_buffer().line_byte_range(target_line) else {
             return;
         };
+        // Group the delete + two inserts so a single undo reverts the
+        // whole line swap.
+        self.active_buffer_mut().begin_edit_group();
         // Compute byte ranges that INCLUDE the trailing newline so the
         // swap preserves line structure.
         let line_with_nl = |excl: std::ops::Range<usize>, l: usize| -> std::ops::Range<usize> {
             let start = excl.start;
             let end = if l + 1 < line_count {
-                self.active_buffer().line_byte_range(l + 1)
+                self.active_buffer()
+                    .line_byte_range(l + 1)
                     .map(|r| r.start)
                     .unwrap_or(excl.end)
             } else {
@@ -1207,8 +1565,13 @@ impl App {
         };
         let my_range = line_with_nl(my_range_excl, line);
         let other_range = line_with_nl(other_range_excl, target_line);
-        let my_text = self.active_buffer().slice(my_range.clone()).unwrap_or_default();
-        let other_text = self.active_buffer().slice(other_range.clone())
+        let my_text = self
+            .active_buffer()
+            .slice(my_range.clone())
+            .unwrap_or_default();
+        let other_text = self
+            .active_buffer()
+            .slice(other_range.clone())
             .unwrap_or_default();
         // Adjacent lines — delete their union in one shot. Then
         // reinsert in swapped order at delete_start. The text that
@@ -1216,7 +1579,9 @@ impl App {
         // the higher-position text goes after it.
         let delete_start = my_range.start.min(other_range.start);
         let delete_end = my_range.end.max(other_range.end);
-        let _ = self.active_buffer_mut().delete_silent(delete_start..delete_end);
+        let _ = self
+            .active_buffer_mut()
+            .delete_silent(delete_start..delete_end);
         let (lower_text, higher_text) = if delta < 0 {
             // Move up: my line lands at the lower slot.
             (my_text.as_str(), other_text.as_str())
@@ -1224,12 +1589,22 @@ impl App {
             // Move down: other line stays at the lower slot.
             (other_text.as_str(), my_text.as_str())
         };
-        let _ = self.active_buffer_mut().insert_silent(delete_start, lower_text);
-        let _ = self.active_buffer_mut().insert_silent(delete_start + lower_text.len(), higher_text);
-        let new_pos = self.active_buffer().linecol_to_pos(line, 0)
+        let _ = self
+            .active_buffer_mut()
+            .insert_silent(delete_start, lower_text);
+        let _ = self
+            .active_buffer_mut()
+            .insert_silent(delete_start + lower_text.len(), higher_text);
+        self.active_buffer_mut().end_edit_group();
+        // After the swap the moved line sits at `target_line`, so put
+        // the cursor at the start of that line.
+        let new_pos = self
+            .active_buffer()
+            .linecol_to_pos(target_line, 0)
             .unwrap_or(cursor_pos);
         self.active_buffer_mut().set_cursor(new_pos);
-        self.active_buffer_mut().set_selection(Selection::collapsed(new_pos));
+        self.active_buffer_mut()
+            .set_selection(Selection::collapsed(new_pos));
         let _ = line_count;
     }
 
@@ -1257,13 +1632,17 @@ impl App {
             return Some(self.active_buffer().len());
         }
 
+        // When the project tree sidebar is open, the editor content is
+        // shifted right by `tree_width` columns.
+        let content_col = col.saturating_sub(self.tree_width);
+
         let gutter_width = total_lines.to_string().len().max(2);
         let prefix_text = format!("{:>width$} │ ", 1, width = gutter_width);
         let prefix_chars = prefix_text.chars().count() as u16;
 
         let line_byte_start = self.active_buffer().line_byte_range(doc_line)?.start;
 
-        if col < prefix_chars {
+        if content_col < prefix_chars {
             // Click in the gutter — position at the start of the line.
             return Some(line_byte_start);
         }
@@ -1272,7 +1651,7 @@ impl App {
         // Account for horizontal scroll: the rendered text starts at
         // char `scroll_x` of the full line.
         let scroll_x = self.active_doc().view.scroll_x_cols;
-        let text_col = (col - prefix_chars) as usize;
+        let text_col = (content_col - prefix_chars) as usize;
         let char_col = (text_col + scroll_x).min(line_text.chars().count());
         let byte_col = core::char_col_to_byte_col(&line_text, char_col);
 
@@ -1294,9 +1673,9 @@ impl App {
         if self.active_doc().is_dirty() {
             // Only one prompt at a time. If the close-confirm is
             // already up, refresh it to point at the (still same) doc;
-            // opening the open-file dialog over an existing one would
-            // be confusing, so we let close-confirm win.
-            self.open_file_dialog = None;
+            // opening other dialogs over an existing one would be
+            // confusing, so we let close-confirm win.
+            self.go_to_line_dialog = None;
             self.close_confirm = Some(CloseConfirm {
                 doc_index: self.active,
                 choice: CloseChoice::Save,
@@ -1379,50 +1758,6 @@ impl App {
         self.status_message = Some("Closed document.".to_string());
     }
 
-    /// Append a character to the open-file dialog's text input.
-    /// No-op when the dialog isn't open.
-    pub fn push_open_file_query(&mut self, ch: char) {
-        if let Some(d) = self.open_file_dialog.as_mut() {
-            d.query.push(ch);
-        }
-    }
-
-    /// Remove the last character from the open-file dialog's text
-    /// input. No-op when the dialog isn't open or the query is empty.
-    pub fn pop_open_file_query(&mut self) {
-        if let Some(d) = self.open_file_dialog.as_mut() {
-            d.query.pop();
-        }
-    }
-
-    /// Cancel the open-file dialog. No-op when it isn't open.
-    pub fn cancel_open_file_dialog(&mut self) {
-        if self.open_file_dialog.take().is_some() {
-            self.status_message = Some("Open cancelled.".to_string());
-        }
-    }
-
-    /// Submit the open-file dialog's current query as a path to load.
-    /// On success the active document's buffer is replaced with the
-    /// file's contents; the dialog drops. On error (file exists but
-    /// can't be read) the dialog drops and the error lands in the
-    /// status bar.
-    ///
-    /// `path` is interpreted as a filesystem path. An empty query
-    /// is treated as Cancel — pressing Enter on an empty prompt
-    /// shouldn't blow up with a confusing I/O error.
-    pub fn submit_open_file_dialog(&mut self) {
-        let Some(dialog) = self.open_file_dialog.take() else {
-            return;
-        };
-        if dialog.query.is_empty() {
-            self.status_message = Some("Open cancelled.".to_string());
-            return;
-        }
-        let path = PathBuf::from(dialog.query);
-        self.open_path(&path);
-    }
-
     /// Load `path` into the active document. If the file exists, its
     /// bytes replace the buffer and `source_path` is updated. If the
     /// path doesn't exist yet, the buffer becomes empty but the path
@@ -1448,13 +1783,595 @@ impl App {
         // Replace the active document's buffer in-place. View state
         // resets — a freshly-opened file shouldn't inherit the scroll
         // position of whatever was there before.
-        self.documents[self.active] = Document::new(buffer);
+        self.documents[self.active] = Document::new_with_config(buffer, &self.config);
         self.status_message = Some(format!(
             "Opened {}",
             path.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("<path>")
         ));
+        self.sync_watcher();
+    }
+
+    /// Open `path` in a document, switching to an existing document if
+    /// the path is already open. Used by the project tree.
+    pub fn open_or_switch_to_path(&mut self, path: &std::path::Path) {
+        if let Some(idx) = self.documents.iter().position(|d| d.path() == Some(path)) {
+            self.active = idx;
+            self.status_message = Some(format!(
+                "Switched to {}",
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("<path>")
+            ));
+            return;
+        }
+        self.documents.push(Document::new_with_config(
+            Box::new(core::PieceTableBuffer::new()),
+            &self.config,
+        ));
+        self.active = self.documents.len() - 1;
+        self.open_path(path);
+        self.sync_config();
+        self.sync_watcher();
+    }
+
+    /// Flatten the project tree into visible `(depth, node)` rows
+    /// based on the current expansion state.
+    pub fn project_tree_rows(&self) -> Vec<(usize, &core::FsNode)> {
+        self.project_tree
+            .as_ref()
+            .map(|t| t.visible_rows())
+            .unwrap_or_default()
+    }
+
+    /// Refresh the project tree from the active document's project.
+    pub fn refresh_project_tree(&mut self) {
+        if let Some(project) = self.active_doc().project.clone() {
+            self.project_tree = project.tree(10_000).map(core::ProjectTree::new);
+            self.project_tree_selected = self
+                .project_tree_selected
+                .min(self.project_tree_rows().len().saturating_sub(1));
+        } else {
+            self.project_tree = None;
+            self.project_tree_selected = 0;
+        }
+    }
+
+    /// Toggle the project-tree sidebar and refresh its contents.
+    pub fn toggle_project_tree(&mut self) {
+        self.project_tree_open = !self.project_tree_open;
+        if self.project_tree_open {
+            self.refresh_project_tree();
+        }
+    }
+
+    /// Move the project-tree selection by `delta` rows, wrapping at
+    /// the ends.
+    pub fn move_project_tree_selection(&mut self, delta: isize) {
+        let len = self.project_tree_rows().len();
+        if len == 0 {
+            return;
+        }
+        let current = self.project_tree_selected as isize;
+        let next = (current + delta).rem_euclid(len as isize);
+        self.project_tree_selected = next as usize;
+    }
+
+    /// Toggle expansion of the directory at the selected tree row.
+    /// If the selected row is a file, open it instead.
+    pub fn open_or_toggle_selected_project_tree_node(&mut self) {
+        let rows = self.project_tree_rows();
+        let Some((_, node)) = rows.get(self.project_tree_selected).copied() else {
+            return;
+        };
+        let rel_path = node.rel_path().to_path_buf();
+        if node.is_dir() {
+            if let Some(tree) = self.project_tree.as_mut() {
+                tree.toggle(&rel_path);
+            }
+        } else if let Some(project) = self.active_doc().project.clone() {
+            let path = project.root.join(rel_path);
+            self.open_or_switch_to_path(&path);
+        }
+    }
+
+    /// Re-run the project search and replace preview with the current
+    /// queries. Reset the replace-all confirmation flag because the
+    /// preview changed.
+    pub fn refresh_project_search(&mut self) {
+        self.project_search.confirm_replace = false;
+        if let Some(project) = self.active_doc().project.clone() {
+            self.project_search.results = project.search(&self.project_search.query, 1_000);
+            self.project_search.replace_previews = project.replace_preview(
+                &self.project_search.query,
+                &self.project_search.replace_query,
+                1_000,
+            );
+            self.project_search.selected = self
+                .project_search
+                .selected
+                .min(self.project_search.results.len().saturating_sub(1));
+        } else {
+            self.project_search.results.clear();
+            self.project_search.replace_previews.clear();
+            self.project_search.selected = 0;
+        }
+    }
+
+    /// Start the project-wide replace flow. Guards against empty queries
+    /// and, when the preview is non-empty, flips to the confirmation
+    /// prompt instead of replacing immediately.
+    pub fn apply_project_replace_all(&mut self) {
+        if self.project_search.query.is_empty() {
+            self.status_message = Some("Project replace: nothing to find.".to_string());
+            return;
+        }
+        if self.project_search.replace_query.is_empty() {
+            self.status_message =
+                Some("Project replace: replacement is empty — type something first.".to_string());
+            return;
+        }
+        if self.project_search.replace_previews.is_empty() {
+            self.status_message = Some("No occurrences to replace.".to_string());
+            return;
+        }
+        self.project_search.confirm_replace = true;
+    }
+
+    /// Confirm or cancel the project-wide replace-all after the user has
+    /// reviewed the preview. When confirmed, write files, then reload any
+    /// open documents that were modified (dirty ones are marked stale
+    /// instead).
+    pub fn confirm_project_replace_all(&mut self, confirmed: bool) {
+        self.project_search.confirm_replace = false;
+        if !confirmed {
+            return;
+        }
+        let Some(project) = self.active_doc().project.clone() else {
+            self.status_message = Some("No project detected.".to_string());
+            return;
+        };
+        match project.replace_all(
+            &self.project_search.query,
+            &self.project_search.replace_query,
+        ) {
+            Ok(report) if report.total == 0 => {
+                self.status_message = Some("No occurrences replaced.".to_string());
+            }
+            Ok(report) => {
+                let mut stale = 0usize;
+                for path in &report.changed_files {
+                    if let Some(idx) = self
+                        .documents
+                        .iter()
+                        .position(|d| d.path().map(|p| p == path).unwrap_or(false))
+                    {
+                        if self.documents[idx].is_dirty() {
+                            self.documents[idx].external_change = true;
+                            stale += 1;
+                        } else {
+                            self.reload_document_at_path(path);
+                        }
+                    }
+                }
+                let mut msg = format!(
+                    "Replaced {} occurrences in {} files.",
+                    report.total,
+                    report.changed_files.len()
+                );
+                if stale > 0 {
+                    msg.push_str(&format!(
+                        " {stale} open file(s) had unsaved changes and were marked stale."
+                    ));
+                }
+                self.status_message = Some(msg);
+                self.project_search.open = false;
+            }
+            Err(e) => {
+                self.status_message = Some(format!(
+                    "Replace error in {}: {}",
+                    e.rel_path.to_string_lossy(),
+                    e.message
+                ));
+            }
+        }
+    }
+
+    /// Open the command palette with an optional initial query.
+    pub fn open_command_palette(&mut self, query: Option<String>) {
+        self.command_palette.open = true;
+        if let Some(q) = query {
+            self.command_palette.query = q;
+        }
+        self.refresh_command_palette();
+    }
+
+    /// Re-filter the command palette list from the current query.
+    pub fn refresh_command_palette(&mut self) {
+        self.command_palette.items = core::filter_commands(&self.command_palette.query);
+        self.command_palette.selected = self
+            .command_palette
+            .selected
+            .min(self.command_palette.items.len().saturating_sub(1));
+    }
+
+    /// Write the current session state (open files, theme, sidebar state,
+    /// per-document defaults) back to the config file.
+    pub fn sync_config(&mut self) {
+        self.config.theme = Some(self.syntax.theme_name().to_string());
+        self.config.project_tree_open = Some(self.project_tree_open);
+        self.config.recent_files = self
+            .documents
+            .iter()
+            .filter_map(|d| d.path().map(|p| p.to_path_buf()))
+            .collect();
+        if let Some(doc) = self.documents.get(self.active) {
+            self.config.capture_document_defaults(&doc.view);
+        }
+        self.config.save();
+    }
+
+    /// Save every dirty buffer that has a source path.
+    pub fn save_all_dirty(&mut self) {
+        let mut saved_any = false;
+        for doc in &mut self.documents {
+            if doc.buffer.source_path().is_none() || !doc.buffer.is_dirty() {
+                continue;
+            }
+            match doc.buffer.save() {
+                Ok(()) => saved_any = true,
+                Err(e) => {
+                    self.status_message = Some(format!("Auto-save error: {e}"));
+                    return;
+                }
+            }
+        }
+        if saved_any {
+            self.status_message = Some("Auto-saved.".to_string());
+        }
+    }
+
+    /// Auto-save any dirty buffers that have a source path and have been
+    /// idle for longer than `config.auto_save_delay_ms`.
+    pub fn auto_save(&mut self) {
+        if !self.config.auto_save {
+            return;
+        }
+        let delay = Duration::from_millis(self.config.auto_save_delay_ms);
+        if self.last_edit_time.elapsed() < delay {
+            return;
+        }
+        self.save_all_dirty();
+    }
+
+    /// Refresh the active document's git gutter if it is enabled, stale,
+    /// and the user has been idle for a short moment.
+    pub fn maybe_refresh_git_gutter(&mut self) {
+        if !self.active_doc().view.git_gutter_enabled {
+            return;
+        }
+        if !self.active_doc().git_gutter.dirty() {
+            return;
+        }
+        const DELAY: Duration = Duration::from_millis(500);
+        if self.last_edit_time.elapsed() < DELAY {
+            return;
+        }
+        self.active_doc_mut().refresh_git_gutter();
+    }
+
+    /// Jump the cursor to the next or previous git hunk. `delta` should
+    /// be `1` for next or `-1` for previous.
+    pub fn jump_hunk(&mut self, delta: isize) {
+        let doc = self.active_doc();
+        if !doc.view.git_gutter_enabled || !doc.git_gutter.enabled() {
+            self.status_message = Some("Git gutter not available.".to_string());
+            return;
+        }
+        let hunks = doc.git_gutter.hunks().to_vec();
+        if hunks.is_empty() {
+            self.status_message = Some("No git hunks.".to_string());
+            return;
+        }
+        let (_, cursor_line) = self
+            .active_buffer()
+            .pos_to_linecol(self.active_buffer().cursor())
+            .unwrap_or((0, 0));
+        let target = if delta > 0 {
+            hunks
+                .iter()
+                .find(|h| h.start_line > cursor_line)
+                .or_else(|| hunks.first())
+        } else {
+            hunks
+                .iter()
+                .rev()
+                .find(|h| h.start_line < cursor_line)
+                .or_else(|| hunks.last())
+        };
+        if let Some(hunk) = target {
+            self.go_to_line(hunk.start_line + 1);
+            let direction = if delta > 0 { "Next" } else { "Previous" };
+            self.status_message = Some(format!("{} hunk.", direction));
+        }
+    }
+
+    /// Update the file watcher to watch the source paths of all open
+    /// documents.
+    pub fn sync_watcher(&mut self) {
+        let paths: Vec<std::path::PathBuf> = self
+            .documents
+            .iter()
+            .filter_map(|d| d.path().map(|p| p.to_path_buf()))
+            .collect();
+        if let Some(watcher) = self.file_watcher.as_mut() {
+            watcher.sync_watch_list(&paths);
+        }
+    }
+
+    /// Poll the file watcher and process any external changes. Clean
+    /// buffers are reloaded automatically; dirty buffers are flagged so
+    /// the user can decide whether to reload.
+    pub fn handle_external_changes(&mut self) {
+        let changes: Vec<core::FileChange> = self
+            .file_watcher
+            .as_ref()
+            .map(|w| w.poll_changes())
+            .unwrap_or_default();
+        for change in changes {
+            for doc in &mut self.documents {
+                if doc.path() == Some(change.path.as_path()) {
+                    if doc.buffer.is_dirty() {
+                        doc.external_change = true;
+                        self.status_message = Some(format!(
+                            "{} changed externally. Reload with Ctrl+Shift+R.",
+                            change
+                                .path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("<file>")
+                        ));
+                    } else {
+                        self.reload_document_at_path(&change.path);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Reload the document whose path matches `path` from disk. Resets
+    /// the `external_change` flag and view state.
+    pub fn reload_document_at_path(&mut self, path: &std::path::Path) {
+        use core::PieceTableBuffer;
+        if let Some(idx) = self.documents.iter().position(|d| d.path() == Some(path)) {
+            let buffer: Box<dyn Buffer> = if path.exists() {
+                match PieceTableBuffer::from_path(path.to_path_buf()) {
+                    Ok(buf) => Box::new(buf),
+                    Err(e) => {
+                        self.status_message = Some(format!("Reload error: {e}"));
+                        return;
+                    }
+                }
+            } else {
+                Box::new(PieceTableBuffer::from_bytes_with_path(
+                    Vec::new(),
+                    path.to_path_buf(),
+                ))
+            };
+            self.documents[idx] = Document::new_with_config(buffer, &self.config);
+            self.status_message = Some(format!(
+                "Reloaded {}.",
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("<file>")
+            ));
+        }
+    }
+
+    /// Move the command-palette selection by `delta` rows, wrapping at
+    /// the ends.
+    pub fn move_command_palette_selection(&mut self, delta: isize) {
+        let len = self.command_palette.items.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.command_palette.selected as isize;
+        let next = (current + delta).rem_euclid(len as isize);
+        self.command_palette.selected = next as usize;
+    }
+
+    /// Execute the selected command and close the palette.
+    pub fn execute_selected_command(&mut self) {
+        let Some(command) = self
+            .command_palette
+            .items
+            .get(self.command_palette.selected)
+        else {
+            return;
+        };
+        let event = command.event.clone();
+        self.command_palette.open = false;
+        self.handle_event(event);
+    }
+
+    // ----- fuzzy file finder -----
+
+    /// Open the fuzzy file finder. If `query` is `Some`, seed the query
+    /// string with it. The candidate list is built from project files
+    /// plus recently-opened files.
+    pub fn open_fuzzy_finder(&mut self, query: Option<String>) {
+        self.fuzzy_finder.open = true;
+        self.fuzzy_finder.query = query.unwrap_or_default();
+        self.fuzzy_finder.items.clear();
+
+        let mut seen = std::collections::HashSet::new();
+
+        if let Some(project) = self.active_doc().project.clone() {
+            for rel_path in project.all_files(10_000) {
+                let display = rel_path.to_string_lossy().to_string();
+                let abs_path = project.root.join(&rel_path);
+                seen.insert(abs_path.clone());
+                self.fuzzy_finder.items.push(FuzzyCandidate {
+                    display,
+                    path: abs_path,
+                });
+            }
+        }
+
+        for recent in &self.config.recent_files {
+            if seen.insert(recent.clone()) {
+                self.fuzzy_finder.items.push(FuzzyCandidate {
+                    display: recent.to_string_lossy().to_string(),
+                    path: recent.clone(),
+                });
+            }
+        }
+
+        self.refresh_fuzzy_finder();
+    }
+
+    /// Re-filter and re-rank candidates from the current query.
+    pub fn refresh_fuzzy_finder(&mut self) {
+        let candidates: Vec<String> = self
+            .fuzzy_finder
+            .items
+            .iter()
+            .map(|c| c.display.clone())
+            .collect();
+        self.fuzzy_finder.filtered = core::filter_and_rank(&self.fuzzy_finder.query, &candidates);
+        self.fuzzy_finder.selected = self
+            .fuzzy_finder
+            .selected
+            .min(self.fuzzy_finder.filtered.len().saturating_sub(1));
+    }
+
+    /// Move the fuzzy finder selection by `delta` rows, wrapping at the
+    /// ends of the filtered list.
+    pub fn move_fuzzy_finder_selection(&mut self, delta: isize) {
+        let len = self.fuzzy_finder.filtered.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.fuzzy_finder.selected as isize;
+        let next = (current + delta).rem_euclid(len as isize);
+        self.fuzzy_finder.selected = next as usize;
+    }
+
+    /// Open the selected fuzzy-finder candidate and close the finder.
+    pub fn execute_fuzzy_finder(&mut self) {
+        let Some((idx, _)) = self.fuzzy_finder.filtered.get(self.fuzzy_finder.selected) else {
+            return;
+        };
+        let path = self.fuzzy_finder.items[*idx].path.clone();
+        self.fuzzy_finder.open = false;
+        self.open_or_switch_to_path(&path);
+    }
+
+    /// Move the project-search selection by `delta` rows, wrapping at
+    /// the ends.
+    pub fn move_project_search_selection(&mut self, delta: isize) {
+        let len = self.project_search.results.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.project_search.selected as isize;
+        let next = (current + delta).rem_euclid(len as isize);
+        self.project_search.selected = next as usize;
+    }
+
+    /// Open the selected project-search result, switching to the file if
+    /// already open and jumping the cursor to the match.
+    pub fn open_selected_project_search_result(&mut self) {
+        let Some(result) = self
+            .project_search
+            .results
+            .get(self.project_search.selected)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(project) = self.active_doc().project.clone() else {
+            return;
+        };
+        let path = project.root.join(&result.rel_path);
+        self.open_or_switch_to_path(&path);
+        self.go_to_line(result.line);
+        // Move cursor to the match column.
+        let line = result.line.saturating_sub(1);
+        let col = result.col.saturating_sub(1);
+        if let Some(pos) = self.active_buffer().linecol_to_pos(line, col) {
+            self.active_buffer_mut().set_cursor(pos);
+            self.active_buffer_mut()
+                .set_selection(Selection::collapsed(pos));
+        }
+        self.project_search.open = false;
+    }
+
+    /// Jump the cursor to the start of the given 1-based line.
+    /// Out-of-range values are clamped to the document bounds.
+    pub fn go_to_line(&mut self, line: usize) {
+        if line == 0 {
+            self.status_message = Some("Line numbers start at 1.".to_string());
+            return;
+        }
+        let line_idx = line.saturating_sub(1);
+        let total_lines = self.active_buffer().line_count();
+        let target_idx = line_idx.min(total_lines.saturating_sub(1));
+        let target_pos = self
+            .active_buffer()
+            .line_byte_range(target_idx)
+            .map(|r| r.start)
+            .unwrap_or_else(|| self.active_buffer().len());
+        self.active_buffer_mut().set_cursor(target_pos);
+        self.active_buffer_mut()
+            .set_selection(Selection::collapsed(target_pos));
+        self.status_message = Some(format!("Go to line {line}"));
+    }
+
+    /// Append a digit to the go-to-line dialog's text input.
+    /// No-op when the dialog isn't open or the character isn't a digit.
+    pub fn push_go_to_line_query(&mut self, ch: char) {
+        if ch.is_ascii_digit() && !ch.is_whitespace() {
+            if let Some(d) = self.go_to_line_dialog.as_mut() {
+                d.query.push(ch);
+            }
+        }
+    }
+
+    /// Remove the last character from the go-to-line dialog's text
+    /// input. No-op when the dialog isn't open or the query is empty.
+    pub fn pop_go_to_line_query(&mut self) {
+        if let Some(d) = self.go_to_line_dialog.as_mut() {
+            d.query.pop();
+        }
+    }
+
+    /// Cancel the go-to-line dialog. No-op when it isn't open.
+    pub fn cancel_go_to_line_dialog(&mut self) {
+        if self.go_to_line_dialog.take().is_some() {
+            self.status_message = Some("Go-to-line cancelled.".to_string());
+        }
+    }
+
+    /// Submit the go-to-line dialog's current query as a line number.
+    /// Empty or invalid input cancels the dialog.
+    pub fn submit_go_to_line_dialog(&mut self) {
+        let Some(dialog) = self.go_to_line_dialog.take() else {
+            return;
+        };
+        if dialog.query.is_empty() {
+            self.status_message = Some("Go-to-line cancelled.".to_string());
+            return;
+        }
+        match dialog.query.parse::<usize>() {
+            Ok(line) => self.go_to_line(line),
+            Err(_) => {
+                self.status_message =
+                    Some(format!("'{}' is not a valid line number.", dialog.query));
+            }
+        }
     }
 }
 
@@ -1561,7 +2478,8 @@ mod tests {
     fn select_extend_moves_head_keeps_anchor() {
         let mut app = app_with("hello world");
         app.active_buffer_mut().set_cursor(2);
-        app.active_buffer_mut().set_selection(Selection::collapsed(2));
+        app.active_buffer_mut()
+            .set_selection(Selection::collapsed(2));
         app.handle_event(EditorEvent::SelectExtend(Movement::Right));
         let sel = app.active_buffer().selection();
         assert_eq!(sel.anchor, 2);
@@ -1571,10 +2489,8 @@ mod tests {
     #[test]
     fn set_cursor_event_collapses_selection() {
         let mut app = app_with("hello world");
-        app.active_buffer_mut().set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        app.active_buffer_mut()
+            .set_selection(Selection { anchor: 0, head: 5 });
         app.handle_event(EditorEvent::SetCursor { pos: 8 });
         assert_eq!(app.active_buffer().cursor(), 8);
         assert!(app.active_buffer().selection().is_collapsed());
@@ -1698,7 +2614,8 @@ mod tests {
     fn delete_selection_noop_when_collapsed() {
         let mut app = app_with("hello");
         app.active_buffer_mut().set_cursor(2);
-        app.active_buffer_mut().set_selection(Selection::collapsed(2));
+        app.active_buffer_mut()
+            .set_selection(Selection::collapsed(2));
         app.handle_event(EditorEvent::DeleteSelection);
         assert_eq!(app.active_buffer().to_bytes(), b"hello".to_vec());
         assert_eq!(app.active_buffer().cursor(), 2);
@@ -1720,9 +2637,13 @@ mod tests {
     fn paste_with_no_selection_inserts_at_cursor() {
         let mut app = app_with("hello world");
         app.active_buffer_mut().set_cursor(6);
-        app.active_buffer_mut().set_selection(Selection::collapsed(6));
+        app.active_buffer_mut()
+            .set_selection(Selection::collapsed(6));
         app.handle_event(EditorEvent::Paste("beautiful ".to_string()));
-        assert_eq!(app.active_buffer().to_bytes(), b"hello beautiful world".to_vec());
+        assert_eq!(
+            app.active_buffer().to_bytes(),
+            b"hello beautiful world".to_vec()
+        );
     }
 
     // ----- Find -----
@@ -1741,7 +2662,7 @@ mod tests {
     fn find_query_changed_runs_search() {
         let mut app = app_with("the quick brown fox");
         app.handle_event(EditorEvent::FindQueryChanged("brown".to_string()));
-        assert_eq!(app.search.matches, vec![10]);
+        assert_eq!(app.search.matches, vec![(10, 15)]);
         assert_eq!(app.search.current, Some(0));
         assert_eq!(app.active_buffer().cursor(), 10);
     }
@@ -1888,7 +2809,10 @@ mod tests {
         let pos = app.active_buffer().linecol_to_pos(9, 2).unwrap();
         app.active_buffer_mut().set_cursor(pos);
         app.handle_event(EditorEvent::Move(Movement::PageUp));
-        let (line, col) = app.active_buffer().pos_to_linecol(app.active_buffer().cursor()).unwrap();
+        let (line, col) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
         assert_eq!((line, col), (4, 2));
     }
 
@@ -1909,7 +2833,10 @@ mod tests {
         let pos = app.active_buffer().linecol_to_pos(0, 0).unwrap();
         app.active_buffer_mut().set_cursor(pos);
         app.handle_event(EditorEvent::Move(Movement::PageDown));
-        let (line, _) = app.active_buffer().pos_to_linecol(app.active_buffer().cursor()).unwrap();
+        let (line, _) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
         assert_eq!(line, 3);
     }
 
@@ -1920,7 +2847,10 @@ mod tests {
         let pos = app.active_buffer().linecol_to_pos(0, 0).unwrap();
         app.active_buffer_mut().set_cursor(pos);
         app.handle_event(EditorEvent::Move(Movement::PageDown));
-        let (line, _) = app.active_buffer().pos_to_linecol(app.active_buffer().cursor()).unwrap();
+        let (line, _) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
         assert_eq!(line, 9); // last line of 10-line buffer
     }
 
@@ -1955,6 +2885,39 @@ mod tests {
     }
 
     #[test]
+    fn word_left_on_second_line_does_not_jump_to_line_zero() {
+        // Regression: skip_word_left_from was missing line_byte_start,
+        // so Ctrl+Left on line 2+ computed a position relative to
+        // byte 0 instead of the line start — causing wild jumps and
+        // even data loss on Ctrl+Backspace.
+        let mut app = app_with("hello\nworld");
+        // cursor at 'r' in "world" (byte 8)
+        app.active_buffer_mut().set_cursor(8);
+        app.handle_event(EditorEvent::Move(Movement::WordLeft));
+        // Should land at start of "world" (byte 6), NOT byte 0
+        assert_eq!(
+            app.active_buffer().cursor(),
+            6,
+            "WordLeft on line 2 must stay within line 2"
+        );
+    }
+
+    #[test]
+    fn delete_word_left_on_second_line_does_not_wipe_buffer() {
+        // Regression: the same missing offset made Ctrl+Backspace on
+        // line 2 delete from byte 0, wiping earlier lines.
+        let mut app = app_with("hello\nworld");
+        app.active_buffer_mut().set_cursor(8); // at 'r'
+        app.handle_event(EditorEvent::DeleteWordLeft);
+        let bytes = app.active_buffer().to_bytes();
+        let result = String::from_utf8_lossy(&bytes);
+        assert!(
+            result.starts_with("hello\n"),
+            "line 1 must survive Ctrl+Backspace on line 2, got: {result:?}"
+        );
+    }
+
+    #[test]
     fn word_right_from_mid_word_jumps_to_end() {
         let mut app = app_with("hello world");
         app.active_buffer_mut().set_cursor(2); // inside "hello"
@@ -1968,8 +2931,7 @@ mod tests {
         let s: String = content.into_iter().collect();
         // strip the trailing newline after line9 so line_count() == 10
         let s = s.trim_end_matches('\n').to_string();
-        let buf: Box<dyn Buffer> =
-            Box::new(PieceTableBuffer::from_bytes(s.into_bytes()));
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(s.into_bytes()));
         App::new(buf)
     }
 
@@ -1994,7 +2956,10 @@ mod tests {
     #[test]
     fn delete_word_left_selection_aware() {
         let mut app = app_with("hello world");
-        app.active_buffer_mut().set_selection(Selection { anchor: 6, head: 11 });
+        app.active_buffer_mut().set_selection(Selection {
+            anchor: 6,
+            head: 11,
+        });
         app.handle_event(EditorEvent::DeleteWordLeft);
         assert_eq!(app.active_buffer().to_bytes(), b"hello ".to_vec());
     }
@@ -2015,7 +2980,10 @@ mod tests {
         let mut app = app_with("alpha\nbeta\ngamma");
         app.active_buffer_mut().set_cursor(8); // 'b' in "beta"
         app.handle_event(EditorEvent::DuplicateLine);
-        assert_eq!(app.active_buffer().to_bytes(), b"alpha\nbeta\nbeta\ngamma".to_vec());
+        assert_eq!(
+            app.active_buffer().to_bytes(),
+            b"alpha\nbeta\nbeta\ngamma".to_vec()
+        );
     }
 
     #[test]
@@ -2023,7 +2991,10 @@ mod tests {
         let mut app = app_with("alpha\nbeta\ngamma");
         app.active_buffer_mut().set_cursor(8); // 'b' in "beta"
         app.handle_event(EditorEvent::MoveLineUp);
-        assert_eq!(app.active_buffer().to_bytes(), b"beta\nalpha\ngamma".to_vec());
+        assert_eq!(
+            app.active_buffer().to_bytes(),
+            b"beta\nalpha\ngamma".to_vec()
+        );
     }
 
     #[test]
@@ -2031,7 +3002,10 @@ mod tests {
         let mut app = app_with("alpha\nbeta\ngamma");
         app.active_buffer_mut().set_cursor(2); // somewhere in "alpha"
         app.handle_event(EditorEvent::MoveLineDown);
-        assert_eq!(app.active_buffer().to_bytes(), b"beta\nalpha\ngamma".to_vec());
+        assert_eq!(
+            app.active_buffer().to_bytes(),
+            b"beta\nalpha\ngamma".to_vec()
+        );
     }
 
     #[test]
@@ -2055,7 +3029,7 @@ mod tests {
                 Document::new(buf)
             })
             .collect();
-        App::new_with_documents(docs)
+        App::new_with_documents(docs, core::Config::default())
     }
 
     #[test]
@@ -2158,8 +3132,7 @@ mod tests {
         app.active = 1;
         app.adjust_viewport(2);
         assert_eq!(
-            app.documents[0].view.scroll_top_line,
-            top_doc0,
+            app.documents[0].view.scroll_top_line, top_doc0,
             "doc 0 scroll preserved across tab switch"
         );
     }
@@ -2172,9 +3145,7 @@ mod tests {
         // (large enough to fit multiple safe rows), the safe zone
         // is rows [2..7] (= 5 rows). Cursor moves within that
         // band don't trigger a scroll.
-        let mut app = app_with(
-            "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14",
-        );
+        let mut app = app_with("l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14");
         app.viewport_height = 10;
         app.documents[0].view.scroll_margin_lines = 2;
 
@@ -2320,16 +3291,31 @@ mod tests {
         let mut app = app_with("hello");
         app.handle_event(EditorEvent::Insert('!'));
         app.handle_event(EditorEvent::CloseDoc);
-        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Save);
+        assert_eq!(
+            app.close_confirm.as_ref().unwrap().choice,
+            CloseChoice::Save
+        );
         app.cycle_close_choice(1);
-        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Discard);
+        assert_eq!(
+            app.close_confirm.as_ref().unwrap().choice,
+            CloseChoice::Discard
+        );
         app.cycle_close_choice(1);
-        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Cancel);
+        assert_eq!(
+            app.close_confirm.as_ref().unwrap().choice,
+            CloseChoice::Cancel
+        );
         app.cycle_close_choice(1);
-        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Save);
+        assert_eq!(
+            app.close_confirm.as_ref().unwrap().choice,
+            CloseChoice::Save
+        );
         // Backward wraps too.
         app.cycle_close_choice(-1);
-        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Cancel);
+        assert_eq!(
+            app.close_confirm.as_ref().unwrap().choice,
+            CloseChoice::Cancel
+        );
     }
 
     #[test]
@@ -2358,7 +3344,10 @@ mod tests {
         // because the delta is +1/-1 in all real callers (Tab/Shift+Tab).
         app.cycle_close_choice(1);
         app.cycle_close_choice(1);
-        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Cancel);
+        assert_eq!(
+            app.close_confirm.as_ref().unwrap().choice,
+            CloseChoice::Cancel
+        );
         app.confirm_close_choice();
         assert!(app.close_confirm.is_none());
         assert_eq!(app.doc_count(), 1, "doc still here");
@@ -2412,7 +3401,10 @@ mod tests {
         app.handle_event(EditorEvent::CloseDoc);
         app.confirm_close_choice();
 
-        assert!(app.close_confirm.is_none(), "prompt dropped on save failure");
+        assert!(
+            app.close_confirm.is_none(),
+            "prompt dropped on save failure"
+        );
         let status = app.status_message.as_deref().unwrap_or("");
         assert!(
             status.contains("Save error"),
@@ -2424,84 +3416,14 @@ mod tests {
     }
 
     #[test]
-    fn open_file_dialog_opens_on_openfile_none() {
-        let mut app = app_with("hello");
-        assert!(app.open_file_dialog.is_none());
-        app.handle_event(EditorEvent::OpenFile(None));
-        assert!(app.open_file_dialog.is_some());
-        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "");
-    }
-
-    #[test]
-    fn open_file_dialog_push_pop_query() {
-        let mut app = app_with("hello");
-        app.handle_event(EditorEvent::OpenFile(None));
-        app.push_open_file_query('/');
-        app.push_open_file_query('t');
-        app.push_open_file_query('m');
-        app.push_open_file_query('p');
-        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "/tmp");
-        app.pop_open_file_query();
-        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "/tm");
-        // Popping more than the query just empties (String::pop).
-        app.pop_open_file_query();
-        app.pop_open_file_query();
-        app.pop_open_file_query();
-        app.pop_open_file_query();
-        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "");
-    }
-
-    #[test]
-    fn open_file_dialog_cancel_drops_dialog() {
-        let mut app = app_with("hello");
-        app.handle_event(EditorEvent::OpenFile(None));
-        app.push_open_file_query('/');
-        app.cancel_open_file_dialog();
-        assert!(app.open_file_dialog.is_none());
-    }
-
-    #[test]
-    fn open_file_dialog_submit_empty_cancels() {
-        let mut app = app_with("hello");
-        app.handle_event(EditorEvent::OpenFile(None));
-        app.submit_open_file_dialog();
-        assert!(app.open_file_dialog.is_none(), "empty submit = cancel");
-        // Original buffer untouched.
-        assert_eq!(app.active_buffer().to_bytes(), b"hello".to_vec());
-    }
-
-    #[test]
-    fn open_file_dialog_submit_loads_existing_file() {
-        // Write a temp file with known contents.
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_open_existing_{}.txt", std::process::id()));
-        std::fs::write(&path, b"from disk").unwrap();
-
-        let mut app = app_with("buffer");
-        app.handle_event(EditorEvent::OpenFile(None));
-        app.push_open_file_query(path.to_string_lossy().chars().next().unwrap());
-        for c in path.to_string_lossy().chars().skip(1) {
-            app.push_open_file_query(c);
-        }
-        app.submit_open_file_dialog();
-
-        assert!(app.open_file_dialog.is_none());
-        assert_eq!(app.active_buffer().to_bytes(), b"from disk".to_vec());
-        assert_eq!(app.active_doc().path(), Some(path.as_path()));
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
     fn open_file_event_with_some_path_loads_directly() {
-        // OpenFile(Some(p)) should bypass the dialog and load directly.
+        // OpenFile(Some(p)) should bypass the native picker and load directly.
         let dir = std::env::temp_dir();
         let path = dir.join(format!("the_editor_open_some_{}.txt", std::process::id()));
         std::fs::write(&path, b"hi").unwrap();
 
         let mut app = app_with("buffer");
         app.handle_event(EditorEvent::OpenFile(Some(path.clone())));
-        assert!(app.open_file_dialog.is_none(), "Some path skips dialog");
         assert_eq!(app.active_buffer().to_bytes(), b"hi".to_vec());
         assert_eq!(app.active_doc().path(), Some(path.as_path()));
 
@@ -2521,23 +3443,12 @@ mod tests {
         assert_eq!(app.active_doc().path(), Some(path.as_path()));
     }
 
-    #[test]
-    fn close_confirm_drops_open_file_dialog_when_opened() {
-        // Defensive: opening the close-confirm should drop any
-        // open-file dialog so the user isn't asked to navigate
-        // two prompts at once.
-        let mut app = app_with("hello");
-        app.handle_event(EditorEvent::Insert('!'));
-        app.handle_event(EditorEvent::OpenFile(None));
-        assert!(app.open_file_dialog.is_some());
-        app.handle_event(EditorEvent::CloseDoc);
-        assert!(app.close_confirm.is_some());
-        assert!(app.open_file_dialog.is_none());
-    }
-
     // ----- modal key interception -----
 
-    fn key(code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) -> crossterm::event::KeyEvent {
+    fn key(
+        code: crossterm::event::KeyCode,
+        mods: crossterm::event::KeyModifiers,
+    ) -> crossterm::event::KeyEvent {
         crossterm::event::KeyEvent::new(code, mods)
     }
 
@@ -2557,7 +3468,10 @@ mod tests {
     #[test]
     fn close_confirm_dispatch_enter_confirms_save() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_dispatch_save_{}.txt", std::process::id()));
+        let path = dir.join(format!(
+            "the_editor_dispatch_save_{}.txt",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
             b"hello".to_vec(),
@@ -2604,56 +3518,18 @@ mod tests {
         let mut app = app_with("hello");
         app.handle_event(EditorEvent::Insert('!'));
         app.handle_event(EditorEvent::CloseDoc);
-        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Save);
+        assert_eq!(
+            app.close_confirm.as_ref().unwrap().choice,
+            CloseChoice::Save
+        );
         app.dispatch_modal_key(key(
             crossterm::event::KeyCode::Tab,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(app.close_confirm.as_ref().unwrap().choice, CloseChoice::Discard);
-    }
-
-    #[test]
-    fn open_file_dialog_dispatch_char_appends() {
-        let mut app = app_with("hello");
-        app.handle_event(EditorEvent::OpenFile(None));
-        app.dispatch_modal_key(key(
-            crossterm::event::KeyCode::Char('a'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        app.dispatch_modal_key(key(
-            crossterm::event::KeyCode::Char('b'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        app.dispatch_modal_key(key(
-            crossterm::event::KeyCode::Char('c'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "abc");
-    }
-
-    #[test]
-    fn open_file_dialog_dispatch_backspace_pops() {
-        let mut app = app_with("hello");
-        app.handle_event(EditorEvent::OpenFile(None));
-        app.push_open_file_query('a');
-        app.push_open_file_query('b');
-        app.push_open_file_query('c');
-        app.dispatch_modal_key(key(
-            crossterm::event::KeyCode::Backspace,
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        assert_eq!(app.open_file_dialog.as_ref().unwrap().query, "ab");
-    }
-
-    #[test]
-    fn open_file_dialog_dispatch_esc_cancels() {
-        let mut app = app_with("hello");
-        app.handle_event(EditorEvent::OpenFile(None));
-        app.dispatch_modal_key(key(
-            crossterm::event::KeyCode::Esc,
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        assert!(app.open_file_dialog.is_none());
+        assert_eq!(
+            app.close_confirm.as_ref().unwrap().choice,
+            CloseChoice::Discard
+        );
     }
 
     // ----- find + replace -----
@@ -2671,7 +3547,7 @@ mod tests {
         assert!(status.contains("nothing to find"), "status: {status}");
     }
 
-#[test]
+    #[test]
     fn replace_one_with_empty_replace_query_is_noop() {
         let mut app = app_with("hello world");
         app.handle_event(EditorEvent::FindOpen);
@@ -2749,6 +3625,59 @@ mod tests {
     }
 
     #[test]
+    fn toggle_find_regex_switches_mode_and_finds_variable_length_matches() {
+        let mut app = app_with("foo bar baz");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::FindQueryChanged("b\\w+".to_string()));
+        assert!(app.search.matches.is_empty());
+        app.handle_event(EditorEvent::ToggleFindRegex);
+        assert!(app.search.regex_mode);
+        assert_eq!(app.search.matches, vec![(4, 7), (8, 11)]);
+        assert_eq!(app.search.current_match(), Some(4));
+    }
+
+    #[test]
+    fn replace_one_in_regex_mode_expands_capture_groups() {
+        let mut app = app_with("hello world");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::FindQueryChanged("(\\w+) (\\w+)".to_string()));
+        app.handle_event(EditorEvent::ToggleFindRegex);
+        app.handle_event(EditorEvent::ReplaceOpen);
+        app.handle_event(EditorEvent::ReplaceQueryChanged("$2 $1".to_string()));
+        app.handle_event(EditorEvent::ReplaceOne);
+        assert_eq!(app.active_buffer().to_bytes(), b"world hello".to_vec());
+    }
+
+    #[test]
+    fn replace_all_in_regex_mode_expands_capture_groups() {
+        let mut app = app_with("hello world\nfoo bar");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::FindQueryChanged("(\\w+) (\\w+)".to_string()));
+        app.handle_event(EditorEvent::ToggleFindRegex);
+        app.handle_event(EditorEvent::ReplaceOpen);
+        app.handle_event(EditorEvent::ReplaceQueryChanged("$2 $1".to_string()));
+        app.handle_event(EditorEvent::ReplaceAll);
+        assert_eq!(
+            app.active_buffer().to_bytes(),
+            b"world hello\nbar foo".to_vec()
+        );
+    }
+
+    #[test]
+    fn replace_all_invalid_regex_reports_error() {
+        let mut app = app_with("hello world");
+        app.handle_event(EditorEvent::FindOpen);
+        app.handle_event(EditorEvent::FindQueryChanged("(".to_string()));
+        app.handle_event(EditorEvent::ToggleFindRegex);
+        app.handle_event(EditorEvent::ReplaceOpen);
+        app.handle_event(EditorEvent::ReplaceQueryChanged("x".to_string()));
+        app.handle_event(EditorEvent::ReplaceAll);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello world".to_vec());
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("invalid regex"), "status: {status}");
+    }
+
+    #[test]
     fn replace_open_also_opens_find_bar_if_closed() {
         let mut app = app_with("hello");
         // Both bars closed.
@@ -2766,7 +3695,10 @@ mod tests {
         app.handle_event(EditorEvent::ReplaceOpen);
         assert!(app.search.replace_bar_open);
         app.handle_event(EditorEvent::FindClose);
-        assert!(!app.search.replace_bar_open, "coupled: closing find closes replace");
+        assert!(
+            !app.search.replace_bar_open,
+            "coupled: closing find closes replace"
+        );
     }
 
     #[test]
@@ -2818,10 +3750,8 @@ mod tests {
     #[test]
     fn tab_replaces_selection_with_indent() {
         let mut app = app_with("hello world");
-        app.active_buffer_mut().set_selection(Selection {
-            anchor: 0,
-            head: 5,
-        });
+        app.active_buffer_mut()
+            .set_selection(Selection { anchor: 0, head: 5 });
         app.handle_event(EditorEvent::InsertTab);
         // "hello" replaced with 4 spaces.
         assert_eq!(app.active_buffer().to_bytes(), b"     world".to_vec());
@@ -2897,6 +3827,39 @@ mod tests {
         assert!(!app.active_doc().view.use_spaces);
     }
 
+    #[test]
+    fn new_document_uses_config_defaults() {
+        let config = core::Config {
+            use_spaces: Some(false),
+            tab_width: Some(8),
+            soft_wrap: Some(true),
+            scroll_margin_lines: Some(5),
+            ..core::Config::default()
+        };
+        let buf: Box<dyn core::Buffer> = Box::new(core::PieceTableBuffer::new());
+        let app = App::new_with_documents(vec![core::Document::new(buf)], config);
+        let v = &app.active_doc().view;
+        assert!(!v.use_spaces);
+        assert_eq!(v.tab_width, 8);
+        assert!(v.soft_wrap);
+        assert_eq!(v.scroll_margin_lines, 5);
+    }
+
+    #[test]
+    fn sync_config_captures_document_defaults() {
+        let mut app = app_with("");
+        app.handle_event(EditorEvent::SetIndentMode {
+            use_spaces: false,
+            tab_width: 2,
+        });
+        app.handle_event(EditorEvent::ToggleSoftWrap);
+        app.sync_config();
+
+        assert_eq!(app.config.use_spaces, Some(false));
+        assert_eq!(app.config.tab_width, Some(2));
+        assert_eq!(app.config.soft_wrap, Some(true));
+    }
+
     // ----- soft-wrap toggle -----
 
     #[test]
@@ -2942,5 +3905,473 @@ mod tests {
             crate::event::translate_key(ev, None),
             Some(EditorEvent::ToggleSoftWrap)
         );
+    }
+
+    // ----- theme cycling -----
+
+    #[test]
+    fn cycle_theme_changes_theme_and_invalidates_cache() {
+        let mut app = app_with("let x = 42;");
+        // Pre-warm the cache.
+        app.active_doc_mut().syntax.lines.insert(0, Vec::new());
+        app.active_doc_mut().syntax.dirty = false;
+        assert!(!app.active_doc().syntax.lines.is_empty());
+
+        let before = app.syntax.theme_name().to_string();
+        app.handle_event(EditorEvent::CycleTheme);
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("Theme:"), "status: {status}");
+
+        // Every document's syntax cache should be invalidated.
+        for doc in &app.documents {
+            assert!(doc.syntax.dirty);
+            assert!(doc.syntax.lines.is_empty());
+        }
+
+        // Theme actually changed (unless there's only one bundled theme).
+        if app.syntax.theme_names().len() > 1 {
+            assert_ne!(app.syntax.theme_name(), before);
+        }
+    }
+
+    // ----- go-to-line -----
+
+    #[test]
+    fn go_to_line_jumps_to_start_of_target_line() {
+        let mut app = app_with("alpha\nbeta\ngamma");
+        app.handle_event(EditorEvent::GoToLine(Some(2)));
+        // Line 2 starts at byte 6 ("alpha\n" = 6 bytes).
+        assert_eq!(app.active_buffer().cursor(), 6);
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Go to line 2"));
+    }
+
+    #[test]
+    fn go_to_line_clamps_past_end() {
+        let mut app = app_with("alpha\nbeta");
+        app.handle_event(EditorEvent::GoToLine(Some(100)));
+        // Document has 2 lines; clamp to line 2 start.
+        assert_eq!(app.active_buffer().cursor(), 6);
+    }
+
+    #[test]
+    fn go_to_line_zero_rejected() {
+        let mut app = app_with("alpha\nbeta");
+        app.handle_event(EditorEvent::GoToLine(Some(0)));
+        assert_eq!(app.active_buffer().cursor(), 0);
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("start at 1"));
+    }
+
+    #[test]
+    fn go_to_line_dialog_opens_and_accepts_input() {
+        let mut app = app_with("a\nb\nc");
+        app.handle_event(EditorEvent::GoToLine(None));
+        assert!(app.go_to_line_dialog.is_some());
+        app.push_go_to_line_query('3');
+        app.submit_go_to_line_dialog();
+        assert!(app.go_to_line_dialog.is_none());
+        // Line 3 starts at byte 4 ("a\nb\n" = 4 bytes).
+        assert_eq!(app.active_buffer().cursor(), 4);
+    }
+
+    #[test]
+    fn go_to_line_dialog_rejects_non_digit_input() {
+        let mut app = app_with("a\nb");
+        app.handle_event(EditorEvent::GoToLine(None));
+        app.push_go_to_line_query('a');
+        assert_eq!(app.go_to_line_dialog.as_ref().unwrap().query, "");
+    }
+
+    #[test]
+    fn go_to_line_dialog_invalid_input_shows_error() {
+        let mut app = app_with("a\nb");
+        app.handle_event(EditorEvent::GoToLine(None));
+        // Inject an invalid query directly — user input is filtered to
+        // digits, but parse errors are still handled defensively.
+        app.go_to_line_dialog.as_mut().unwrap().query = "abc".to_string();
+        app.submit_go_to_line_dialog();
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("not a valid line number"));
+    }
+
+    // ----- project tree -----
+
+    #[test]
+    fn project_tree_shows_by_default_and_toggles() {
+        let dir =
+            std::env::temp_dir().join(format!("the_editor_tui_proj_tree_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+
+        let path = dir.join("main.rs");
+        let buf: Box<dyn Buffer> =
+            Box::new(PieceTableBuffer::from_bytes_with_path(b"".to_vec(), path));
+        let mut app = App::new(buf);
+
+        assert!(app.project_tree_open);
+        let rows: Vec<String> = app
+            .project_tree_rows()
+            .into_iter()
+            .map(|(_, n)| n.name().to_string())
+            .collect();
+        assert!(rows.contains(&"Cargo.toml".to_string()));
+        assert!(rows.contains(&"main.rs".to_string()));
+
+        app.handle_event(EditorEvent::ToggleProjectTree);
+        assert!(!app.project_tree_open);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn project_tree_collapses_and_opens_file() {
+        let dir =
+            std::env::temp_dir().join(format!("the_editor_tui_proj_open_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn lib() {}").unwrap();
+
+        let path = dir.join("main.rs");
+        let buf: Box<dyn Buffer> =
+            Box::new(PieceTableBuffer::from_bytes_with_path(b"".to_vec(), path));
+        let mut app = App::new(buf);
+
+        // Collapse the src directory so lib.rs disappears from the rows.
+        let src_idx = app
+            .project_tree_rows()
+            .into_iter()
+            .position(|(_, n)| n.name() == "src")
+            .unwrap();
+        app.project_tree_selected = src_idx;
+        app.handle_event(EditorEvent::ProjectTreeOpen);
+        assert!(!app
+            .project_tree_rows()
+            .iter()
+            .any(|(_, n)| n.name() == "lib.rs"));
+
+        // Re-expand src and open lib.rs.
+        app.handle_event(EditorEvent::ProjectTreeOpen);
+        let lib_idx = app
+            .project_tree_rows()
+            .into_iter()
+            .position(|(_, n)| n.name() == "lib.rs")
+            .unwrap();
+        app.project_tree_selected = lib_idx;
+        app.handle_event(EditorEvent::ProjectTreeOpen);
+
+        assert_eq!(
+            app.active_doc().path(),
+            Some(dir.join("src/lib.rs").as_path())
+        );
+        assert_eq!(app.active_buffer().to_bytes(), b"pub fn lib() {}".to_vec());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ----- auto-save -----
+
+    fn app_with_path(content: &str, path: std::path::PathBuf) -> App {
+        let buf: Box<dyn Buffer> = Box::new(core::PieceTableBuffer::from_bytes_with_path(
+            content.as_bytes().to_vec(),
+            path,
+        ));
+        App::new_with_documents(vec![Document::new(buf)], core::Config::default())
+    }
+
+    #[test]
+    fn auto_save_writes_idle_dirty_buffer() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "the_editor_tui_autosave_{}.txt",
+            std::process::id()
+        ));
+        let mut app = app_with_path("hello", path.clone());
+        app.handle_event(EditorEvent::Insert('!'));
+        assert!(app.active_doc().is_dirty());
+        app.last_edit_time = Instant::now() - std::time::Duration::from_secs(10);
+        app.auto_save();
+        assert!(!app.active_doc().is_dirty());
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(saved, "!hello");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn auto_save_skips_unnamed_buffers() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.last_edit_time = Instant::now() - std::time::Duration::from_secs(10);
+        app.auto_save();
+        assert!(app.active_doc().is_dirty());
+    }
+
+    // ----- project-wide search / replace -----
+
+    fn temp_project_with_file_tui(
+        name: &str,
+        contents: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "the_editor_tui_proj_{}_{}",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        let file_path = dir.join("src").join("a.rs");
+        std::fs::write(&file_path, contents).unwrap();
+        (dir, file_path)
+    }
+
+    #[test]
+    fn project_replace_all_prompts_for_confirmation() {
+        let (_dir, path) = temp_project_with_file_tui("confirm", "foo foo");
+        let buf: Box<dyn Buffer> =
+            Box::new(core::PieceTableBuffer::from_path(path.clone()).unwrap());
+        let mut app = App::new_with_documents(vec![Document::new(buf)], core::Config::default());
+
+        app.handle_event(EditorEvent::ProjectSearch(Some("foo".to_string())));
+        app.handle_event(EditorEvent::ProjectSearchReplaceQueryChanged(
+            "bar".to_string(),
+        ));
+        app.handle_event(EditorEvent::ProjectSearchReplaceAll);
+
+        assert!(app.project_search.confirm_replace);
+        assert_eq!(app.project_search.replace_previews.len(), 1);
+        assert_eq!(app.project_search.replace_previews[0].occurrence_count, 2);
+    }
+
+    #[test]
+    fn project_replace_all_reloads_open_file() {
+        let (_dir, path) = temp_project_with_file_tui("reload", "foo foo");
+        let buf: Box<dyn Buffer> =
+            Box::new(core::PieceTableBuffer::from_path(path.clone()).unwrap());
+        let mut app = App::new_with_documents(vec![Document::new(buf)], core::Config::default());
+
+        app.handle_event(EditorEvent::ProjectSearch(Some("foo".to_string())));
+        app.handle_event(EditorEvent::ProjectSearchReplaceQueryChanged(
+            "bar".to_string(),
+        ));
+        app.handle_event(EditorEvent::ProjectSearchReplaceAll);
+        app.handle_event(EditorEvent::ProjectSearchReplaceAllConfirm);
+
+        assert!(!app.project_search.open);
+        assert_eq!(app.active_buffer().to_bytes(), b"bar bar".to_vec());
+        assert!(!app.active_doc().external_change);
+    }
+
+    #[test]
+    fn project_replace_all_marks_dirty_open_file_stale() {
+        let (_dir, path) = temp_project_with_file_tui("stale", "foo foo");
+        let buf: Box<dyn Buffer> =
+            Box::new(core::PieceTableBuffer::from_path(path.clone()).unwrap());
+        let mut app = App::new_with_documents(vec![Document::new(buf)], core::Config::default());
+        app.handle_event(EditorEvent::Insert('!'));
+
+        app.handle_event(EditorEvent::ProjectSearch(Some("foo".to_string())));
+        app.handle_event(EditorEvent::ProjectSearchReplaceQueryChanged(
+            "bar".to_string(),
+        ));
+        app.handle_event(EditorEvent::ProjectSearchReplaceAll);
+        app.handle_event(EditorEvent::ProjectSearchReplaceAllConfirm);
+
+        assert!(!app.project_search.open);
+        assert!(app.active_doc().external_change);
+    }
+
+    // ----- fuzzy file finder -----
+
+    fn temp_project_for_fuzzy_tui(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "the_editor_tui_fuzzy_{}_{}",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("tests")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(dir.join("src").join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("src").join("lib.rs"), "pub fn lib() {}").unwrap();
+        std::fs::write(dir.join("tests").join("it.rs"), "#[test] fn it() {}").unwrap();
+        dir
+    }
+
+    #[test]
+    fn fuzzy_finder_lists_project_files() {
+        let dir = temp_project_for_fuzzy_tui("list");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(b"x".to_vec()));
+        let mut app = App::new_with_documents(vec![Document::new(buf)], core::Config::default());
+        app.documents[0].project = core::Project::from_path(&dir);
+
+        app.handle_event(EditorEvent::FuzzyFinder(None));
+
+        assert!(app.fuzzy_finder.open);
+        let displays: Vec<&str> = app
+            .fuzzy_finder
+            .items
+            .iter()
+            .map(|c| c.display.as_str())
+            .collect();
+        assert!(displays.contains(&"src/main.rs"));
+        assert!(displays.contains(&"src/lib.rs"));
+        assert!(displays.contains(&"tests/it.rs"));
+    }
+
+    #[test]
+    fn fuzzy_finder_filters_by_query() {
+        let dir = temp_project_for_fuzzy_tui("filter");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(b"x".to_vec()));
+        let mut app = App::new_with_documents(vec![Document::new(buf)], core::Config::default());
+        app.documents[0].project = core::Project::from_path(&dir);
+
+        app.handle_event(EditorEvent::FuzzyFinder(Some("lib".to_string())));
+        assert_eq!(app.fuzzy_finder.filtered.len(), 1);
+        let (idx, _) = app.fuzzy_finder.filtered[0];
+        assert!(app.fuzzy_finder.items[idx].display.contains("lib.rs"));
+    }
+
+    #[test]
+    fn fuzzy_finder_opens_selected_file() {
+        let dir = temp_project_for_fuzzy_tui("open");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(b"x".to_vec()));
+        let mut app = App::new_with_documents(vec![Document::new(buf)], core::Config::default());
+        app.documents[0].project = core::Project::from_path(&dir);
+
+        app.handle_event(EditorEvent::FuzzyFinder(Some("main".to_string())));
+        assert_eq!(app.documents.len(), 1);
+        app.handle_event(EditorEvent::FuzzyFinderExecute);
+
+        assert!(!app.fuzzy_finder.open);
+        assert_eq!(app.documents.len(), 2);
+        assert_eq!(
+            app.active_doc()
+                .path()
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .unwrap(),
+            "main.rs"
+        );
+    }
+
+    #[test]
+    fn fuzzy_finder_closes_on_esc() {
+        let dir = temp_project_for_fuzzy_tui("close");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(b"x".to_vec()));
+        let mut app = App::new_with_documents(vec![Document::new(buf)], core::Config::default());
+        app.documents[0].project = core::Project::from_path(&dir);
+
+        app.handle_event(EditorEvent::FuzzyFinder(None));
+        assert!(app.fuzzy_finder.open);
+        app.handle_event(EditorEvent::FuzzyFinderClose);
+        assert!(!app.fuzzy_finder.open);
+    }
+
+    // ----- git gutter -----
+
+    fn temp_git_repo_tui(
+        name: &str,
+        file_name: &str,
+        content: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "the_editor_tui_git_{}_{}",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        run_git_tui(&dir, &["init", "-q"]);
+        run_git_tui(&dir, &["config", "user.email", "test@example.com"]);
+        run_git_tui(&dir, &["config", "user.name", "Test"]);
+        let path = dir.join(file_name);
+        std::fs::write(&path, content).unwrap();
+        run_git_tui(&dir, &["add", file_name]);
+        run_git_tui(&dir, &["commit", "-q", "-m", "initial"]);
+        (dir, path)
+    }
+
+    fn run_git_tui(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .expect("git should be installed");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn git_gutter_initializes_unchanged() {
+        let (_dir, path) = temp_git_repo_tui("unchanged", "a.txt", "line1\nline2\n");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path.clone()).unwrap());
+        let app = App::new_with_documents(
+            vec![Document::new_with_config(buf, &core::Config::default())],
+            core::Config::default(),
+        );
+        assert!(app.active_doc().git_gutter.enabled());
+        assert_eq!(
+            app.active_doc().git_gutter.status(0),
+            core::LineStatus::Unchanged
+        );
+        assert_eq!(
+            app.active_doc().git_gutter.status(1),
+            core::LineStatus::Unchanged
+        );
+    }
+
+    #[test]
+    fn git_gutter_reflects_edits_after_refresh() {
+        let (_dir, path) = temp_git_repo_tui("edit", "a.txt", "line1\nline2\n");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path.clone()).unwrap());
+        let mut app = App::new_with_documents(
+            vec![Document::new_with_config(buf, &core::Config::default())],
+            core::Config::default(),
+        );
+        app.handle_event(EditorEvent::Move(core::Movement::LineEnd));
+        app.handle_event(EditorEvent::Insert('\n'));
+        app.handle_event(EditorEvent::Insert('n'));
+        app.handle_event(EditorEvent::Insert('e'));
+        app.handle_event(EditorEvent::Insert('w'));
+        app.handle_event(EditorEvent::RefreshGitGutter);
+        assert_eq!(
+            app.active_doc().git_gutter.status(1),
+            core::LineStatus::Added
+        );
+    }
+
+    #[test]
+    fn git_gutter_hunk_navigation_jumps_cursor() {
+        let (_dir, path) = temp_git_repo_tui("hunk", "a.txt", "aaa\nbbb\nccc\n");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path.clone()).unwrap());
+        let mut app = App::new_with_documents(
+            vec![Document::new_with_config(buf, &core::Config::default())],
+            core::Config::default(),
+        );
+        app.handle_event(EditorEvent::Insert('z'));
+        app.handle_event(EditorEvent::Move(core::Movement::Down));
+        app.handle_event(EditorEvent::RefreshGitGutter);
+        app.handle_event(EditorEvent::PrevHunk);
+        let (_, line) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
+        assert_eq!(line, 0);
     }
 }

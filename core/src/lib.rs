@@ -4,20 +4,35 @@
 //! `docs/adr/` for the architectural decisions that shaped this crate.
 
 mod buffer;
+mod command_palette;
+mod config;
 mod document;
 mod errors;
+mod file_watcher;
+mod fuzzy;
+mod git_gutter;
 mod input;
 mod piece_table;
+mod project;
 pub mod search;
 mod syntax;
 mod undo;
 mod view;
 
 pub use buffer::{Buffer, BytePos, Selection};
-pub use document::Document;
+pub use command_palette::{filter_commands, Command, COMMANDS};
+pub use config::Config;
+pub use document::{Document, ViewState};
 pub use errors::{EditError, SaveError};
+pub use file_watcher::{FileChange, FileWatcher};
+pub use fuzzy::{filter_and_rank, fuzzy_score, FuzzyMatch};
+pub use git_gutter::{GitGutter, Hunk, LineStatus, RemovedBlock};
 pub use input::{EditorEvent, Movement};
 pub use piece_table::{Piece, PieceSource, PieceTableBuffer};
+pub use project::{
+    FsNode, Project, ProjectSearchResult, ProjectTree, ReplaceError, ReplacePreview,
+};
 pub use search::Search;
-pub use syntax::{tokenize_line, SyntaxCache, Token, TokenKind, SYNTAX_SIZE_LIMIT};
+pub use syntax::{ColorSegment, SyntaxCache, SyntaxEngine, SYNTAX_SIZE_LIMIT};
+pub use syntect::easy::HighlightLines;
 pub use view::{byte_to_char_col, char_col_to_byte_col, format_position, selection_in_line};

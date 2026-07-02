@@ -32,6 +32,12 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        // Disable mouse capture BEFORE ratatui::restore().  The restore
+        // function only leaves the alternate screen and disables raw
+        // mode — it does NOT send DisableMouseCapture.  Without this,
+        // the user's terminal is left with mouse capture enabled after
+        // exit, breaking mouse clicks in their shell until `reset`.
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         ratatui::restore();
     }
 }
@@ -44,23 +50,24 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let paths = parse_path_args();
-
-    let documents = load_documents(&paths)?;
+    let config = core::Config::load();
+    let args = parse_path_args();
+    let documents = if args.is_empty() && !config.recent_files.is_empty() {
+        load_documents(&config.recent_files, &config)?
+    } else {
+        load_documents(&args, &config)?
+    };
 
     let _guard = TerminalGuard;
     let mut terminal = ratatui::init();
 
     // Enable mouse capture so we get MouseEvent on click/drag. Without
     // this, crossterm never delivers mouse events.
-    if let Err(e) = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::EnableMouseCapture
-    ) {
+    if let Err(e) = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture) {
         eprintln!("warning: failed to enable mouse capture: {e}");
     }
 
-    let mut app = App::new_with_documents(documents);
+    let mut app = App::new_with_documents(documents, config);
     let result = app.run(&mut terminal);
 
     // Drop the terminal explicitly before the guard runs so the guard's
@@ -79,20 +86,32 @@ fn parse_path_args() -> Vec<PathBuf> {
 /// multi-GB-file path); paths that don't exist yet get a fresh empty
 /// buffer that will save back to that path. With no paths, returns a
 /// single empty document so the editor still has somewhere to land.
-fn load_documents(paths: &[PathBuf]) -> Result<Vec<Document>, Box<dyn Error>> {
+fn load_documents(
+    paths: &[PathBuf],
+    config: &core::Config,
+) -> Result<Vec<Document>, Box<dyn Error>> {
     if paths.is_empty() {
-        return Ok(vec![Document::empty()]);
+        return Ok(vec![Document::new_with_config(
+            Box::new(PieceTableBuffer::new()),
+            config,
+        )]);
     }
-    paths.iter().map(|p| load_document(p.as_path())).collect()
+    paths
+        .iter()
+        .map(|p| load_document(p.as_path(), config))
+        .collect()
 }
 
-fn load_document(path: &Path) -> Result<Document, Box<dyn Error>> {
+fn load_document(path: &Path, config: &core::Config) -> Result<Document, Box<dyn Error>> {
     let buffer: Box<dyn Buffer> = if path.exists() {
         Box::new(PieceTableBuffer::from_path(path.to_path_buf())?)
     } else {
         // Path was given but the file does not exist yet — open a new
         // buffer that will save to that path when the user hits Ctrl+S.
-        Box::new(PieceTableBuffer::from_bytes_with_path(Vec::new(), path.to_path_buf()))
+        Box::new(PieceTableBuffer::from_bytes_with_path(
+            Vec::new(),
+            path.to_path_buf(),
+        ))
     };
-    Ok(Document::new(buffer))
+    Ok(Document::new_with_config(buffer, config))
 }

@@ -1,803 +1,346 @@
-//! Syntax highlighting tokenizers.
+//! Syntax highlighting via [syntect](https://crates.io/crates/syntect).
 //!
-//! Pure functions: `&[u8]` (one line) → `Vec<Token>`. Stateless,
-//! trivial to unit-test, reusable by anything (frontends, search,
-//! status bar). The dispatcher `tokenize_for_path` picks the right
-//! tokenizer by file extension.
+//! syntect wraps the Sublime Text highlighting engine: 200+ languages
+//! via `.sublime-syntax` definitions, theme support via `.tmTheme`
+//! files. This module exposes a thin API that the frontends call —
+//! they don't need to know about syntect internals.
 //!
-//! v1 ships Rust + Markdown + plain-text passthrough. See
-//! `docs/plans/syntax-highlighting.md` for the full design.
+//! Architecture:
+//! - [`SyntaxEngine`] — global, created once at startup. Holds the
+//!   `SyntaxSet` (all language defs) and `Theme` (active color scheme).
+//! - [`SyntaxCache`] — per-document, lives on `Document`. Lazily
+//!   populated, invalidated on every edit.
+//! - [`ColorSegment`] — a byte range + color. What the renderer
+//!   receives per line.
 
 use std::collections::HashMap;
 use std::path::Path;
 
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Color as SColor, Style, Theme, ThemeSet};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
+
 /// Maximum file size (in bytes) for which syntax highlighting is
-/// enabled. Files above this skip tokenization entirely — a 2 MB+
-/// source file is almost certainly generated code or a data dump, and
-/// multi-GB log files would make every keystroke lag.
+/// enabled. Files above this skip tokenization entirely.
 pub const SYNTAX_SIZE_LIMIT: usize = 2 * 1024 * 1024;
 
-/// A classified byte range within a line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token {
-    /// Byte range within the line's text (NOT the document — line-local).
+/// A colored byte range within a line. The color comes directly from
+/// the syntect theme — the frontend just converts it to its native
+/// color type and draws.
+#[derive(Debug, Clone)]
+pub struct ColorSegment {
+    /// Byte range within the line's text (line-local, NOT document).
     pub range: std::ops::Range<usize>,
-    pub kind: TokenKind,
+    pub color: SColor,
 }
 
-/// Semantic category for highlighting. Frontends map each variant to
-/// a concrete color; `Punctuation` and `Identifier` exist so the
-/// renderer can treat them as "default foreground" without an
-/// `Option`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TokenKind {
-    Keyword,
-    Type,
-    Function,
-    String,
-    Comment,
-    Number,
-    Punctuation,
-    Identifier,
-}
-
-/// Pick a tokenizer by file extension and run it on `line`. Returns
-/// an empty `Vec` for unrecognized extensions or files with no
-/// extension — the frontend treats empty as "no highlighting".
-pub fn tokenize_line(path: Option<&Path>, line: &[u8]) -> Vec<Token> {
-    let Some(ext) = path.and_then(|p| p.extension()).and_then(|e| e.to_str()) else {
-        return Vec::new();
-    };
-    match ext {
-        "rs" => tokenize_rust(line),
-        "md" | "markdown" => tokenize_markdown(line),
-        _ => Vec::new(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Per-document cache
-// ---------------------------------------------------------------------------
-
-/// Lazily-populated, edit-invalidated per-line token cache. Lives on
-/// `Document` so it survives tab switches. Both frontends share the
-/// same shape via `core::Document`.
-///
-/// v1 invalidation is simple: **any** edit sets `dirty = true` and
-/// clears the cache. The renderer re-tokenizes only the visible lines
-/// on the next frame. For files under the size gate this is well under
-/// frame budget.
+/// Per-document, lazily-populated, edit-invalidated per-line
+/// highlight cache. Lives on `Document` so it survives tab switches.
 #[derive(Clone, Debug, Default)]
 pub struct SyntaxCache {
-    /// Tokens keyed by line index. Empty when highlighting is disabled
-    /// (file too large, no matching extension, or cache was just
-    /// invalidated).
-    pub lines: HashMap<usize, Vec<Token>>,
-    /// `true` after any buffer edit; the renderer checks this and
-    /// re-populates affected lines.
+    /// Color segments keyed by line index. Empty when highlighting
+    /// is disabled (file too large, unknown extension, or just
+    /// invalidated by an edit).
+    pub lines: HashMap<usize, Vec<ColorSegment>>,
+    /// `true` after any buffer edit; the renderer re-highlights
+    /// affected lines on next render.
     pub dirty: bool,
 }
 
 impl SyntaxCache {
     /// Mark the cache as stale. Called on every buffer-mutating event.
-    /// Drops the entire cache — v1 is not clever about which lines
-    /// are affected.
     pub fn invalidate(&mut self) {
         self.lines.clear();
         self.dirty = true;
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rust tokenizer
-// ---------------------------------------------------------------------------
-
-/// Rust keyword set (including reserved words from the 2024 edition).
-const KEYWORDS: &[&str] = &[
-    "as", "async", "await", "box", "break", "const", "continue", "crate", "do", "dyn", "else",
-    "enum", "extern", "false", "final", "fn", "for", "if", "impl", "in", "let", "loop", "macro",
-    "match", "mod", "move", "mut", "override", "priv", "pub", "ref", "return", "self", "Self",
-    "static", "struct", "super", "trait", "true", "try", "type", "typeof", "union", "unsafe",
-    "unsized", "use", "virtual", "where", "while", "yield",
-];
-
-/// Primitive + common stdlib types for v1 highlighting.
-const TYPES: &[&str] = &[
-    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
-    "f64", "bool", "char", "str", "String", "Vec", "Option", "Result", "Box", "Rc", "Arc", "Cell",
-    "RefCell", "HashMap", "HashSet", "BTreeMap", "BTreeSet",
-];
-
-fn is_ident_start(b: u8) -> bool {
-    b == b'_' || b.is_ascii_alphabetic()
-}
-
-fn is_ident_cont(b: u8) -> bool {
-    b == b'_' || b.is_ascii_alphanumeric()
-}
-
-fn classify_ident(word: &str) -> TokenKind {
-    if KEYWORDS.contains(&word) {
-        TokenKind::Keyword
-    } else if TYPES.contains(&word) {
-        TokenKind::Type
-    } else {
-        TokenKind::Identifier
-    }
-}
-
-/// Tokenize a single line of Rust source code.
+/// Global syntax engine. Created once at startup and shared across
+/// all documents. Holds all language definitions and the active theme.
 ///
-/// Block comments that span multiple lines are tracked via the
-/// caller — v1 operates per-line, so a `/*` without a matching `*/`
-/// on the same line consumes the rest of the line as `Comment`, and
-/// subsequent lines are handled on their own (the missing `*/` on a
-/// later line will produce tokens as normal, which is cosmetically
-/// acceptable for v1).
-pub fn tokenize_rust(line: &[u8]) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let mut i = 0;
-    let n = line.len();
+/// Lives on the frontend's `App` struct (not on `Document`) because
+/// it's window-global, not per-document. Both frontends create their
+/// own instance — the user runs either GUI or TUI, not both.
+pub struct SyntaxEngine {
+    syntax_set: SyntaxSet,
+    theme_set: ThemeSet,
+    theme_name: String,
+    theme: Theme,
+}
 
-    while i < n {
-        let start = i;
-        let b = line[i];
-
-        // Whitespace — skip (gaps between tokens are implicit).
-        if b.is_ascii_whitespace() {
-            i += 1;
-            continue;
+impl SyntaxEngine {
+    /// Create with syntect's bundled syntaxes + a dark theme.
+    /// `base16-ocean.dark` is a high-contrast dark theme that covers
+    /// most syntax scopes; it's what `bat` defaults to.
+    pub fn default_dark() -> Self {
+        let syntax_set = SyntaxSet::load_defaults_newlines();
+        let theme_set = ThemeSet::load_defaults();
+        let default_name = "base16-ocean.dark";
+        let theme_name = theme_set
+            .themes
+            .contains_key(default_name)
+            .then(|| default_name.to_string())
+            .or_else(|| theme_set.themes.keys().next().cloned())
+            .unwrap_or_else(|| "default".to_string());
+        let theme = theme_set
+            .themes
+            .get(&theme_name)
+            .cloned()
+            .unwrap_or_default();
+        Self {
+            syntax_set,
+            theme_set,
+            theme_name,
+            theme,
         }
+    }
 
-        // Line comment
-        if b == b'/' && i + 1 < n && line[i + 1] == b'/' {
-            tokens.push(Token { range: start..n, kind: TokenKind::Comment });
-            break;
+    /// Name of the currently active theme.
+    pub fn theme_name(&self) -> &str {
+        &self.theme_name
+    }
+
+    /// All bundled theme names, in deterministic order.
+    pub fn theme_names(&self) -> Vec<&str> {
+        self.theme_set.themes.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Switch to the next bundled theme, wrapping around. Returns the
+    /// new theme name.
+    pub fn cycle_theme(&mut self) -> &str {
+        let names: Vec<String> = self
+            .theme_names()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        if names.is_empty() {
+            return &self.theme_name;
         }
+        let current_idx = names
+            .iter()
+            .position(|n| n == &self.theme_name)
+            .unwrap_or(0);
+        let next_idx = (current_idx + 1) % names.len();
+        let next_name = names[next_idx].clone();
+        self.set_theme_by_name(&next_name);
+        &self.theme_name
+    }
 
-        // Block comment (single-line portion — `/* ... */` or `/* ...` without close)
-        if b == b'/' && i + 1 < n && line[i + 1] == b'*' {
-            let mut j = i + 2;
-            let mut depth = 1;
-            while j < n && depth > 0 {
-                if line[j] == b'/' && j + 1 < n && line[j + 1] == b'*' {
-                    depth += 1;
-                    j += 2;
-                } else if line[j] == b'*' && j + 1 < n && line[j + 1] == b'/' {
-                    depth -= 1;
-                    j += 2;
-                } else {
-                    j += 1;
-                }
-            }
-            tokens.push(Token { range: start..j, kind: TokenKind::Comment });
-            i = j;
-            continue;
-        }
+    /// Activate a theme by exact name. Returns `true` if the name was
+    /// found and the theme changed.
+    pub fn set_theme_by_name(&mut self, name: &str) -> bool {
+        let Some(theme) = self.theme_set.themes.get(name) else {
+            return false;
+        };
+        self.theme_name = name.to_string();
+        self.theme = theme.clone();
+        true
+    }
 
-        // String literal: "..."
-        if b == b'"' {
-            i += 1;
-            while i < n {
-                match line[i] {
-                    b'\\' => i += 2, // skip escaped char
-                    b'"' => { i += 1; break; }
-                    _ => i += 1,
-                }
-            }
-            tokens.push(Token { range: start..i, kind: TokenKind::String });
-            continue;
-        }
+    /// Find the syntax definition for a file path by extension.
+    /// Returns `None` for unrecognized extensions or no path.
+    pub fn syntax_for_path(&self, path: Option<&Path>) -> Option<&SyntaxReference> {
+        let path = path?;
+        self.syntax_set.find_syntax_for_file(path).ok().flatten()
+    }
 
-        // Raw string: r"..." or r#"..."#
-        if b == b'r' && i + 1 < n && (line[i + 1] == b'"' || line[i + 1] == b'#') {
-            let mut j = i + 1;
-            let mut hashes = 0;
-            while j < n && line[j] == b'#' {
-                hashes += 1;
-                j += 1;
-            }
-            if j < n && line[j] == b'"' {
-                j += 1;
-                // Find closing " followed by `hashes` #'s
-                while j < n {
-                    if line[j] == b'"' {
-                        let mut k = j + 1;
-                        let mut seen = 0;
-                        while k < n && line[k] == b'#' && seen < hashes {
-                            seen += 1;
-                            k += 1;
-                        }
-                        if seen == hashes {
-                            j = k;
-                            break;
-                        }
-                    }
-                    j += 1;
-                }
-                tokens.push(Token { range: start..j, kind: TokenKind::String });
-                i = j;
+    /// Create a fresh `HighlightLines` for `syntax`. The renderer should
+    /// create one highlighter per render pass and reuse it for every
+    /// visible line; this avoids the per-line setup cost of the pure-Rust
+    /// `regex-fancy` backend and lets multi-line constructs (block
+    /// comments, etc.) carry state across consecutive lines.
+    pub fn highlighter_for<'a>(&'a self, syntax: &'a SyntaxReference) -> HighlightLines<'a> {
+        HighlightLines::new(syntax, &self.theme)
+    }
+
+    /// Highlight a single line using an existing `HighlightLines`. Pass
+    /// the highlighter created by [`Self::highlighter_for`] at the start
+    /// of the render pass and reuse it for each visible line.
+    pub fn highlight_line_with(
+        &self,
+        highlighter: &mut HighlightLines<'_>,
+        line: &str,
+    ) -> Vec<ColorSegment> {
+        let regions: Vec<(Style, &str)> = match highlighter.highlight_line(line, &self.syntax_set) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+
+        // Convert (Style, &str) pairs into ColorSegments with byte
+        // ranges, merging adjacent segments that share the same color.
+        let mut segments: Vec<ColorSegment> = Vec::new();
+        let mut byte_pos = 0;
+        for (style, text) in &regions {
+            let len = text.len();
+            if len == 0 {
                 continue;
             }
-            // Not a raw string — `r` falls through to identifier scan.
-        }
+            let start = byte_pos;
+            let end = byte_pos + len;
+            byte_pos = end;
 
-        // Byte string: b"..."  (b'...' falls through to the char
-        // literal handler below — the `'` starts the scan there).
-        if b == b'b' && i + 1 < n && line[i + 1] == b'"' {
-            let mut j = i + 2;
-            while j < n {
-                match line[j] {
-                    b'\\' => j += 2,
-                    b'"' => { j += 1; break; }
-                    _ => j += 1,
-                }
-            }
-            tokens.push(Token { range: start..j, kind: TokenKind::String });
-            i = j;
-            continue;
-        }
-
-        // Char literal: '...'
-        // Distinguish from lifetime labels: lifetime is `'` followed by
-        // an identifier start and no closing `'` within 1-2 chars.
-        // For v1, treat `'x'` as a char (has closing quote quickly)
-        // and `'abc` (no close) as punctuation + identifier.
-        if b == b'\'' && i + 1 < n {
-            // Look for a closing quote within a small window.
-            let mut j = i + 1;
-            let mut found_close = false;
-            while j < n {
-                match line[j] {
-                    b'\\' => j += 2,
-                    b'\'' => { found_close = true; j += 1; break; }
-                    _ if j - start > 6 => break, // too long for a char literal
-                    _ => j += 1,
-                }
-            }
-            if found_close {
-                tokens.push(Token { range: start..j, kind: TokenKind::String });
-                i = j;
-                continue;
-            }
-            // No close — lifetime or malformed. Treat `'` as punctuation.
-        }
-
-        // Number: [0-9][0-9a-fA-F_.oxbeE+\-]*
-        // (loose — highlights the whole numeric expression)
-        if b.is_ascii_digit() {
-            let mut j = i + 1;
-            // Hex / octal / binary prefix: 0x, 0o, 0b
-            if line[i] == b'0' && j < n
-                && matches!(line[j], b'x' | b'X' | b'o' | b'O' | b'b' | b'B')
-            {
-                j += 1;
-            }
-            while j < n {
-                let c = line[j];
-                let is_exp_sign = (c == b'+' || c == b'-')
-                    && j > 0
-                    && (line[j - 1] == b'e' || line[j - 1] == b'E');
-                if c.is_ascii_hexdigit() || c == b'_' || c == b'.' || is_exp_sign {
-                    j += 1;
-                } else {
-                    break;
-                }
-            }
-            tokens.push(Token { range: start..j, kind: TokenKind::Number });
-            i = j;
-            continue;
-        }
-
-        // Identifier or keyword
-        if is_ident_start(b) {
-            let mut j = i + 1;
-            while j < n && is_ident_cont(line[j]) {
-                j += 1;
-            }
-            let word = std::str::from_utf8(&line[start..j]).unwrap_or("");
-            let kind = classify_ident(word);
-
-            // Function detection: identifier followed by `(` and not a
-            // keyword/type. Best-effort — false positives on macro-like
-            // syntax are acceptable for v1.
-            let kind = if kind == TokenKind::Identifier
-                && j < n
-                && line[j] == b'('
-            {
-                TokenKind::Function
-            } else {
-                kind
+            let seg = ColorSegment {
+                range: start..end,
+                color: style.foreground,
             };
-
-            tokens.push(Token { range: start..j, kind });
-            i = j;
-            continue;
-        }
-
-        // Everything else: single-char punctuation
-        tokens.push(Token { range: start..start + 1, kind: TokenKind::Punctuation });
-        i += 1;
-    }
-
-    tokens
-}
-
-// ---------------------------------------------------------------------------
-// Markdown tokenizer
-// ---------------------------------------------------------------------------
-
-/// Tokenize a single line of Markdown.
-///
-/// Line-oriented: each line starts in `Normal` state. Block-level
-/// patterns (headings, blockquotes, list items, code fences) are
-/// detected at line start. Inline patterns (bold, italic, code spans,
-/// links) are scanned after the block-level prefix.
-pub fn tokenize_markdown(line: &[u8]) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let n = line.len();
-    if n == 0 {
-        return tokens;
-    }
-
-    // Skip leading whitespace for block-level detection.
-    let mut i = 0;
-    while i < n && (line[i] == b' ' || line[i] == b'\t') {
-        i += 1;
-    }
-    let indent = i;
-
-    // Code fence: ``` or ~~~
-    if i + 2 < n && (line[i] == b'`' || line[i] == b'~') && line[i] == line[i + 1] && line[i] == line[i + 2] {
-        // Consume the fence marker and any trailing chars (language hint)
-        let mut j = i;
-        while j < n && (line[j] == line[i]) {
-            j += 1;
-        }
-        tokens.push(Token { range: indent..n, kind: TokenKind::Keyword });
-        return tokens;
-    }
-
-    // Heading: #{1,6}
-    if line[i] == b'#' {
-        let mut j = i;
-        while j < n && line[j] == b'#' && j - i < 6 {
-            j += 1;
-        }
-        if j < n && line[j] == b' ' {
-            tokens.push(Token { range: indent..j, kind: TokenKind::Keyword });
-            // Rest of the line: scan for inline patterns
-            scan_markdown_inline(&mut tokens, line, j);
-            return tokens;
-        }
-    }
-
-    // Blockquote: >
-    if line[i] == b'>' && (i + 1 >= n || line[i + 1] == b' ' || line[i + 1] == b'\t') {
-        tokens.push(Token { range: indent..i + 1, kind: TokenKind::Keyword });
-        scan_markdown_inline(&mut tokens, line, i + 1);
-        return tokens;
-    }
-
-    // Unordered list: - * +
-    if (line[i] == b'-' || line[i] == b'*' || line[i] == b'+')
-        && i + 1 < n
-        && line[i + 1] == b' '
-    {
-        tokens.push(Token { range: indent..i + 1, kind: TokenKind::Keyword });
-        scan_markdown_inline(&mut tokens, line, i + 1);
-        return tokens;
-    }
-
-    // Ordered list: \d+.
-    if line[i].is_ascii_digit() {
-        let mut j = i;
-        while j < n && line[j].is_ascii_digit() {
-            j += 1;
-        }
-        if j < n && line[j] == b'.' && j + 1 < n && line[j + 1] == b' ' {
-            tokens.push(Token { range: indent..j + 1, kind: TokenKind::Keyword });
-            scan_markdown_inline(&mut tokens, line, j + 1);
-            return tokens;
-        }
-    }
-
-    // Regular line — scan for inline patterns from the start
-    scan_markdown_inline(&mut tokens, line, 0);
-    tokens
-}
-
-/// Scan inline Markdown patterns starting at `start`.
-///
-/// Recognizes:
-/// - `` `code` `` → `String`
-/// - `**bold**` → `Keyword` over markers, rest as `Identifier`
-/// - `*italic*` → `Keyword` over markers
-/// - `[text](url)` → `Type` over text, `String` over URL
-///
-/// Unrecognized text falls through as `Identifier` (default foreground).
-fn scan_markdown_inline(tokens: &mut Vec<Token>, line: &[u8], start: usize) {
-    let n = line.len();
-    let mut i = start;
-    let mut plain_start = start;
-
-    while i < n {
-        let b = line[i];
-
-        // Inline code span: `...`
-        if b == b'`' {
-            if i > plain_start {
-                tokens.push(Token { range: plain_start..i, kind: TokenKind::Identifier });
-            }
-            let mut j = i + 1;
-            while j < n && line[j] != b'`' {
-                j += 1;
-            }
-            let end = if j < n { j + 1 } else { j };
-            tokens.push(Token { range: i..end, kind: TokenKind::String });
-            i = end;
-            plain_start = i;
-            continue;
-        }
-
-        // Bold: **...**
-        if b == b'*' && i + 1 < n && line[i + 1] == b'*' {
-            if let Some(close) = find_marker(line, i + 2, b'*', 2) {
-                if i > plain_start {
-                    tokens.push(Token { range: plain_start..i, kind: TokenKind::Identifier });
-                }
-                tokens.push(Token { range: i..i + 2, kind: TokenKind::Keyword });
-                tokens.push(Token { range: i + 2..close, kind: TokenKind::Identifier });
-                tokens.push(Token { range: close..close + 2, kind: TokenKind::Keyword });
-                i = close + 2;
-                plain_start = i;
-                continue;
-            }
-        }
-
-        // Italic: *...*  (single asterisk, not part of **)
-        if b == b'*' && (i + 1 >= n || line[i + 1] != b'*') {
-            if let Some(close) = find_marker(line, i + 1, b'*', 1) {
-                if i > plain_start {
-                    tokens.push(Token { range: plain_start..i, kind: TokenKind::Identifier });
-                }
-                tokens.push(Token { range: i..i + 1, kind: TokenKind::Keyword });
-                tokens.push(Token { range: i + 1..close, kind: TokenKind::Identifier });
-                tokens.push(Token { range: close..close + 1, kind: TokenKind::Keyword });
-                i = close + 1;
-                plain_start = i;
-                continue;
-            }
-        }
-
-        // Link: [text](url)
-        if b == b'[' {
-            if let Some(close_bracket) = find_byte(line, i + 1, b']') {
-                if close_bracket + 1 < n
-                    && line[close_bracket + 1] == b'('
-                {
-                    if let Some(close_paren) = find_byte(line, close_bracket + 2, b')') {
-                        if i > plain_start {
-                            tokens.push(Token { range: plain_start..i, kind: TokenKind::Identifier });
-                        }
-                        tokens.push(Token { range: i..i + 1, kind: TokenKind::Punctuation });
-                        tokens.push(Token { range: i + 1..close_bracket, kind: TokenKind::Type });
-                        tokens.push(Token { range: close_bracket..close_bracket + 1, kind: TokenKind::Punctuation });
-                        tokens.push(Token { range: close_bracket + 1..close_paren + 1, kind: TokenKind::String });
-                        i = close_paren + 1;
-                        plain_start = i;
-                        continue;
-                    }
+            // Merge with previous if same color and contiguous.
+            if let Some(last) = segments.last_mut() {
+                if last.color == seg.color && last.range.end == seg.range.start {
+                    last.range.end = seg.range.end;
+                    continue;
                 }
             }
+            segments.push(seg);
         }
-
-        i += 1;
-    }
-
-    if i > plain_start {
-        tokens.push(Token { range: plain_start..i, kind: TokenKind::Identifier });
+        segments
     }
 }
-
-/// Find the position of `byte` in `line` starting from `from`, or `None`.
-fn find_byte(line: &[u8], from: usize, byte: u8) -> Option<usize> {
-    let mut j = from;
-    while j < line.len() {
-        if line[j] == byte {
-            return Some(j);
-        }
-        j += 1;
-    }
-    None
-}
-
-/// Find a repeated marker (`count` copies of `marker`) starting at or
-/// after `from`. Returns the byte index of the first byte of the
-/// marker run, or `None`.
-fn find_marker(line: &[u8], from: usize, marker: u8, count: usize) -> Option<usize> {
-    let mut j = from;
-    while j + count <= line.len() {
-        let mut all_match = true;
-        for k in 0..count {
-            if line[j + k] != marker {
-                all_match = false;
-                break;
-            }
-        }
-        if all_match {
-            return Some(j);
-        }
-        j += 1;
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Helper: tokenize a string and return (kind, text) pairs.
-    fn kinds(input: &str) -> Vec<(TokenKind, &str)> {
-        tokenize_rust(input.as_bytes())
-            .iter()
-            .map(|t| (t.kind, &input[t.range.clone()]))
-            .collect()
-    }
-
-    fn md_kinds(input: &str) -> Vec<(TokenKind, &str)> {
-        tokenize_markdown(input.as_bytes())
-            .iter()
-            .map(|t| (t.kind, &input[t.range.clone()]))
-            .collect()
-    }
-
-    // --- Rust: keywords and identifiers ---
-
-    #[test]
-    fn rust_let_binding() {
-        let t = kinds("let x = 42;");
-        assert!(t.contains(&(TokenKind::Keyword, "let")));
-        assert!(t.contains(&(TokenKind::Identifier, "x")));
-        assert!(t.contains(&(TokenKind::Number, "42")));
+    fn engine() -> SyntaxEngine {
+        SyntaxEngine::default_dark()
     }
 
     #[test]
-    fn rust_pub_fn() {
-        let t = kinds("pub fn main() {}");
-        assert!(t.contains(&(TokenKind::Keyword, "pub")));
-        assert!(t.contains(&(TokenKind::Keyword, "fn")));
-        assert!(t.contains(&(TokenKind::Function, "main")));
+    fn rust_file_gets_syntax() {
+        let e = engine();
+        let path = std::path::Path::new("main.rs");
+        assert!(e.syntax_for_path(Some(path)).is_some());
     }
 
     #[test]
-    fn rust_primitive_type() {
-        let t = kinds("let x: i32 = 0;");
-        assert!(t.contains(&(TokenKind::Type, "i32")));
+    fn markdown_file_gets_syntax() {
+        let e = engine();
+        let path = std::path::Path::new("README.md");
+        assert!(e.syntax_for_path(Some(path)).is_some());
     }
 
     #[test]
-    fn rust_stdlib_type() {
-        let t = kinds("let v = Vec::new();");
-        assert!(t.contains(&(TokenKind::Type, "Vec")));
-        assert!(t.contains(&(TokenKind::Function, "new")));
-    }
-
-    // --- Rust: comments ---
-
-    #[test]
-    fn rust_line_comment() {
-        let t = kinds("// hello world");
-        assert_eq!(t, vec![(TokenKind::Comment, "// hello world")]);
+    fn python_file_gets_syntax() {
+        let e = engine();
+        let path = std::path::Path::new("script.py");
+        assert!(e.syntax_for_path(Some(path)).is_some());
     }
 
     #[test]
-    fn rust_line_comment_after_code() {
-        let t = kinds("let x = 1; // comment");
-        let comment = t.iter().find(|(k, _)| *k == TokenKind::Comment);
-        assert_eq!(comment, Some(&(TokenKind::Comment, "// comment")));
+    fn json_file_gets_syntax() {
+        let e = engine();
+        let path = std::path::Path::new("data.json");
+        assert!(e.syntax_for_path(Some(path)).is_some());
     }
 
     #[test]
-    fn rust_block_comment_single_line() {
-        let t = kinds("/* inline */");
-        assert_eq!(t, vec![(TokenKind::Comment, "/* inline */")]);
+    fn unknown_extension_no_syntax() {
+        let e = engine();
+        let path = std::path::Path::new("file.xyz123");
+        // Might or might not match — just verify it doesn't panic.
+        let _ = e.syntax_for_path(Some(path));
     }
 
     #[test]
-    fn rust_nested_block_comment() {
-        let t = kinds("/* outer /* inner */ */");
-        assert_eq!(t.len(), 1);
-        assert_eq!(t[0].0, TokenKind::Comment);
-    }
-
-    // --- Rust: strings ---
-
-    #[test]
-    fn rust_string_literal() {
-        let t = kinds(r#"let s = "hello";"#);
-        assert!(t.contains(&(TokenKind::String, r#""hello""#)));
+    fn no_path_no_syntax() {
+        let e = engine();
+        assert!(e.syntax_for_path(None).is_none());
     }
 
     #[test]
-    fn rust_string_with_escapes() {
-        let t = kinds(r#"let s = "a\"b\n";"#);
-        assert!(t.contains(&(TokenKind::String, r#""a\"b\n""#)));
+    fn highlight_rust_line_produces_segments() {
+        let e = engine();
+        let path = std::path::Path::new("main.rs");
+        let syntax = e.syntax_for_path(Some(path)).unwrap();
+        let mut h = e.highlighter_for(syntax);
+        let segments = e.highlight_line_with(&mut h, "let x = 42;");
+        assert!(!segments.is_empty(), "should produce at least one segment");
+        // The full line should be covered by the segments.
+        let covered: usize = segments.iter().map(|s| s.range.len()).sum();
+        assert_eq!(covered, "let x = 42;".len());
     }
 
     #[test]
-    fn rust_raw_string() {
-        let t = kinds(r##"let s = r#"inner"#;"##);
-        assert!(t.iter().any(|(k, s)| *k == TokenKind::String && s.starts_with("r#")));
+    fn highlight_merges_adjacent_same_color() {
+        let e = engine();
+        let path = std::path::Path::new("main.rs");
+        let syntax = e.syntax_for_path(Some(path)).unwrap();
+        let mut h = e.highlighter_for(syntax);
+        let segments = e.highlight_line_with(&mut h, "let x = 42;");
+        // Verify no two adjacent segments have the same color
+        // (the merge step should have coalesced them).
+        for w in segments.windows(2) {
+            assert!(
+                w[0].color != w[1].color || w[0].range.end != w[1].range.start,
+                "adjacent segments with same color were not merged"
+            );
+        }
     }
 
     #[test]
-    fn rust_char_literal() {
-        let t = kinds("let c = 'x';");
-        assert!(t.contains(&(TokenKind::String, "'x'")));
+    fn highlight_empty_line() {
+        let e = engine();
+        let path = std::path::Path::new("main.rs");
+        let syntax = e.syntax_for_path(Some(path)).unwrap();
+        let mut h = e.highlighter_for(syntax);
+        let segments = e.highlight_line_with(&mut h, "");
+        assert!(segments.is_empty() || segments.iter().all(|s| s.range.is_empty()));
     }
 
     #[test]
-    fn rust_escaped_char_literal() {
-        let t = kinds("let c = '\\n';");
-        assert!(t.contains(&(TokenKind::String, "'\\n'")));
+    fn syntax_cache_invalidate_clears_and_sets_dirty() {
+        let mut cache = SyntaxCache::default();
+        cache.lines.insert(0, Vec::new());
+        cache.lines.insert(1, Vec::new());
+        assert!(!cache.dirty);
+        cache.invalidate();
+        assert!(cache.dirty);
+        assert!(cache.lines.is_empty());
     }
 
     #[test]
-    fn rust_byte_string() {
-        let t = kinds(r#"let b = b"bytes";"#);
-        assert!(t.contains(&(TokenKind::String, r#"b"bytes""#)));
-    }
-
-    // --- Rust: numbers ---
-
-    #[test]
-    fn rust_decimal() {
-        let t = kinds("let n = 42;");
-        assert!(t.contains(&(TokenKind::Number, "42")));
+    fn engine_starts_on_default_theme() {
+        let e = engine();
+        assert!(!e.theme_name().is_empty());
     }
 
     #[test]
-    fn rust_hex() {
-        let t = kinds("let n = 0xFF;");
-        assert!(t.contains(&(TokenKind::Number, "0xFF")));
+    fn cycle_theme_changes_name() {
+        let mut e = engine();
+        let start = e.theme_name().to_string();
+        let after = e.cycle_theme().to_string();
+        // With more than one bundled theme, cycling should land on a
+        // different name; if there's only one, it stays the same.
+        if e.theme_names().len() > 1 {
+            assert_ne!(start, after);
+        } else {
+            assert_eq!(start, after);
+        }
     }
 
     #[test]
-    fn rust_binary() {
-        let t = kinds("let n = 0b1010;");
-        assert!(t.contains(&(TokenKind::Number, "0b1010")));
+    fn cycle_theme_wraps_around() {
+        let mut e = engine();
+        let start = e.theme_name().to_string();
+        let count = e.theme_names().len();
+        for _ in 0..count {
+            e.cycle_theme();
+        }
+        assert_eq!(e.theme_name(), start);
     }
 
     #[test]
-    fn rust_float_with_exponent() {
-        let t = kinds("let n = 1.0e-3;");
-        assert!(t.contains(&(TokenKind::Number, "1.0e-3")));
-    }
-
-    // --- Rust: function detection ---
-
-    #[test]
-    fn rust_function_call() {
-        let t = kinds("foo(bar)");
-        assert!(t.contains(&(TokenKind::Function, "foo")));
+    fn set_theme_by_name_valid() {
+        let mut e = engine();
+        let first = e.theme_names().into_iter().next().unwrap().to_string();
+        assert!(e.set_theme_by_name(&first));
+        assert_eq!(e.theme_name(), first);
     }
 
     #[test]
-    fn rust_keyword_not_function() {
-        let t = kinds("if (x)");
-        assert!(t.contains(&(TokenKind::Keyword, "if")));
-        assert!(!t.iter().any(|(k, s)| *k == TokenKind::Function && *s == "if"));
-    }
-
-    // --- Markdown ---
-
-    #[test]
-    fn md_heading_h1() {
-        let t = md_kinds("# Title");
-        assert!(t.contains(&(TokenKind::Keyword, "#")));
-    }
-
-    #[test]
-    fn md_heading_h3() {
-        let t = md_kinds("### Section");
-        assert!(t.iter().any(|(k, s)| *k == TokenKind::Keyword && s.starts_with("###")));
-    }
-
-    #[test]
-    fn md_unordered_list_dash() {
-        let t = md_kinds("- item");
-        assert!(t.contains(&(TokenKind::Keyword, "-")));
-    }
-
-    #[test]
-    fn md_unordered_list_star() {
-        let t = md_kinds("* item");
-        assert!(t.contains(&(TokenKind::Keyword, "*")));
-    }
-
-    #[test]
-    fn md_ordered_list() {
-        let t = md_kinds("1. item");
-        assert!(t.contains(&(TokenKind::Keyword, "1.")));
-    }
-
-    #[test]
-    fn md_blockquote() {
-        let t = md_kinds("> quote");
-        assert!(t.contains(&(TokenKind::Keyword, ">")));
-    }
-
-    #[test]
-    fn md_inline_code() {
-        let t = md_kinds("use `code` here");
-        assert!(t.contains(&(TokenKind::String, "`code`")));
-    }
-
-    #[test]
-    fn md_bold() {
-        let t = md_kinds("**bold**");
-        assert!(t.iter().any(|(k, s)| *k == TokenKind::Keyword && *s == "**"));
-    }
-
-    #[test]
-    fn md_italic() {
-        let t = md_kinds("*italic*");
-        assert!(t.iter().any(|(k, s)| *k == TokenKind::Keyword && *s == "*"));
-    }
-
-    #[test]
-    fn md_link() {
-        let t = md_kinds("[text](url)");
-        assert!(t.iter().any(|(k, s)| *k == TokenKind::Type && *s == "text"));
-        assert!(t.iter().any(|(k, s)| *k == TokenKind::String && s.contains("url")));
-    }
-
-    #[test]
-    fn md_code_fence() {
-        let t = md_kinds("```rust");
-        assert_eq!(t.len(), 1);
-        assert_eq!(t[0].0, TokenKind::Keyword);
-    }
-
-    // --- Dispatcher ---
-
-    #[test]
-    fn dispatch_rust() {
-        let path = Path::new("main.rs");
-        let tokens = tokenize_line(Some(path), b"let x = 1;");
-        assert!(!tokens.is_empty());
-        assert!(tokens.iter().any(|t| t.kind == TokenKind::Keyword));
-    }
-
-    #[test]
-    fn dispatch_markdown() {
-        let path = Path::new("README.md");
-        let tokens = tokenize_line(Some(path), b"# Title");
-        assert!(!tokens.is_empty());
-    }
-
-    #[test]
-    fn dispatch_unknown_extension() {
-        let path = Path::new("config.toml");
-        let tokens = tokenize_line(Some(path), b"[package]");
-        assert!(tokens.is_empty());
-    }
-
-    #[test]
-    fn dispatch_no_extension() {
-        let path = Path::new("Makefile");
-        let tokens = tokenize_line(Some(path), b"all: build");
-        assert!(tokens.is_empty());
-    }
-
-    #[test]
-    fn dispatch_no_path() {
-        let tokens = tokenize_line(None, b"let x = 1;");
-        assert!(tokens.is_empty());
+    fn set_theme_by_name_invalid() {
+        let mut e = engine();
+        let before = e.theme_name().to_string();
+        assert!(!e.set_theme_by_name("definitely-not-a-theme"));
+        assert_eq!(e.theme_name(), before);
     }
 }

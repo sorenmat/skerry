@@ -29,9 +29,7 @@ use eframe::egui;
 /// distinct so the paint output identifies which line the cursor was
 /// drawn at.
 fn app_with_lines(lines: usize) -> frontend_gui::app::EditorApp {
-    let body: String = (1..=lines)
-        .map(|i| format!("line_{i:03}\n"))
-        .collect();
+    let body: String = (1..=lines).map(|i| format!("line_{i:03}\n")).collect();
     let body = body.trim_end_matches('\n').to_string();
     let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(body.into_bytes()));
     frontend_gui::app::EditorApp::new(buf)
@@ -124,7 +122,10 @@ fn cursor_down_at_viewport_center_with_default_margin_does_not_scroll() {
     // passes. Make sure the safe-zone math holds with the values
     // the production code is actually working with.
     let _shapes0 = settle_scroll(&ctx, &mut app, screen_w, screen_h, 0.0);
-    eprintln!("app.viewport_lines (after first render) = {}", app.viewport_lines);
+    eprintln!(
+        "app.viewport_lines (after first render) = {}",
+        app.viewport_lines
+    );
 
     // Establish baseline at line 0 (top of doc).
     let caret0 = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 0);
@@ -139,7 +140,10 @@ fn cursor_down_at_viewport_center_with_default_margin_does_not_scroll() {
         let cy = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line)
             .min
             .y;
-        eprintln!("line {line} cy = {cy} (delta from prev {} px)", cy - prev_cy);
+        eprintln!(
+            "line {line} cy = {cy} (delta from prev {} px)",
+            cy - prev_cy
+        );
         assert!(
             (cy - prev_cy).abs() > 1.0,
             "BUG: cursor at line {line} should be in safe zone rows 3..16 (vh≈20, margin=3) \
@@ -173,12 +177,15 @@ fn cursor_up_at_viewport_center_with_default_margin_does_not_scroll() {
     // Now jump the cursor back UP to a position in the centre of the
     // viewport. Read the current scroll offset to know where the
     // viewport is, then compute a line that's actually in the centre.
-    let cursor_top_y_initial: f32 = ctx.data_mut(|d| {
-        d.get_persisted::<egui::containers::scroll_area::State>(
-            egui::Id::new(("editor_scroll", 0)),
-        )
-        .map(|s| s.offset.y)
-    }).unwrap_or(0.0);
+    let cursor_top_y_initial: f32 = ctx
+        .data_mut(|d| {
+            d.get_persisted::<egui::containers::scroll_area::State>(egui::Id::new((
+                "editor_scroll",
+                0,
+            )))
+            .map(|s| s.offset.y)
+        })
+        .unwrap_or(0.0);
     let viewport_lines = app.viewport_lines.max(1);
     let centre_line = (cursor_top_y_initial / 16.0) as usize + viewport_lines / 2;
 
@@ -186,16 +193,22 @@ fn cursor_up_at_viewport_center_with_default_margin_does_not_scroll() {
     // it (so we have a known starting offset). Each Up press should
     // NOT trigger a scroll until the cursor approaches the top of
     // the viewport (within margin = 3 rows from the top).
-    let pos = app.active_buffer().linecol_to_pos(centre_line + 5, 0).unwrap();
+    let pos = app
+        .active_buffer()
+        .linecol_to_pos(centre_line + 5, 0)
+        .unwrap();
     app.handle_event(core::EditorEvent::SetCursor { pos });
     let _ = settle_scroll(&ctx, &mut app, screen_w, screen_h, 0.0);
 
-    let baseline_y: f32 = ctx.data_mut(|d| {
-        d.get_persisted::<egui::containers::scroll_area::State>(
-            egui::Id::new(("editor_scroll", 0)),
-        )
-        .map(|s| s.offset.y)
-    }).unwrap_or(0.0);
+    let baseline_y: f32 = ctx
+        .data_mut(|d| {
+            d.get_persisted::<egui::containers::scroll_area::State>(egui::Id::new((
+                "editor_scroll",
+                0,
+            )))
+            .map(|s| s.offset.y)
+        })
+        .unwrap_or(0.0);
 
     // Walk the cursor UP from centre_line+5 down to centre_line-3.
     // None of these should fire a scroll. We verify by checking
@@ -204,18 +217,24 @@ fn cursor_up_at_viewport_center_with_default_margin_does_not_scroll() {
         let pos = app.active_buffer().linecol_to_pos(line, 0).unwrap();
         app.handle_event(core::EditorEvent::SetCursor { pos });
         let _ = settle_scroll(&ctx, &mut app, screen_w, screen_h, 0.0);
-        let now_y: f32 = ctx.data_mut(|d| {
-            d.get_persisted::<egui::containers::scroll_area::State>(
-                egui::Id::new(("editor_scroll", 0)),
-            )
-            .map(|s| s.offset.y)
-        }).unwrap_or(0.0);
+        let now_y: f32 = ctx
+            .data_mut(|d| {
+                d.get_persisted::<egui::containers::scroll_area::State>(egui::Id::new((
+                    "editor_scroll",
+                    0,
+                )))
+                .map(|s| s.offset.y)
+            })
+            .unwrap_or(0.0);
         // We allow within 1.0 px for floating-point settle noise.
         assert!(
             (now_y - baseline_y).abs() < 1.0,
             "BUG: cursor Up from line {} triggered a scroll (offset {} -> {}, line {} of \
              down-direction walk)",
-            line, baseline_y, now_y, centre_line + 5 - line
+            line,
+            baseline_y,
+            now_y,
+            centre_line + 5 - line
         );
     }
 }
@@ -241,8 +260,8 @@ fn cursor_down_past_viewport_scrolls_view_so_cursor_stays_visible() {
     // Frame 1: cursor at line 0 (default). Establish baseline: caret
     // should be visible somewhere near the top of the editor area.
     let shapes_top = settle_scroll(&ctx, &mut app, screen_w, screen_h, 0.0);
-    let caret_top = find_caret_rect(&shapes_top)
-        .expect("caret should be painted when cursor at top of doc");
+    let caret_top =
+        find_caret_rect(&shapes_top).expect("caret should be painted when cursor at top of doc");
     let caret_top_y = caret_top.min.y;
     assert!(
         caret_top_y < screen_h,
@@ -323,8 +342,7 @@ fn cursor_up_past_viewport_scrolls_view_so_cursor_stays_visible() {
     let up_pos = app.active_buffer().linecol_to_pos(0, 0).unwrap();
     app.handle_event(core::EditorEvent::SetCursor { pos: up_pos });
     let shapes_up = settle_scroll(&ctx, &mut app, screen_w, screen_h, 20.0);
-    let caret_up = find_caret_rect(&shapes_up)
-        .expect("caret after jumping up should be painted");
+    let caret_up = find_caret_rect(&shapes_up).expect("caret after jumping up should be painted");
     let caret_up_y = caret_up.min.y;
 
     assert!(
@@ -422,9 +440,8 @@ fn consecutive_down_arrows_each_scroll_exactly_one_line_not_two() {
             break;
         }
     }
-    let last_visible_row_line = last_visible_row_y.expect(
-        "should have at least one row where the caret moves without edge-stick yet",
-    );
+    let last_visible_row_line = last_visible_row_y
+        .expect("should have at least one row where the caret moves without edge-stick yet");
     let last_visible_row_caret = last_visible_row_caret_y;
     eprintln!(
         "edge-stick kicked in somewhere between row {:?} and {:?}",

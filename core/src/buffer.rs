@@ -33,7 +33,10 @@ pub struct Selection {
 impl Selection {
     /// A collapsed selection at the given byte offset.
     pub fn collapsed(at: BytePos) -> Self {
-        Self { anchor: at, head: at }
+        Self {
+            anchor: at,
+            head: at,
+        }
     }
 
     /// True when the selection has no range (anchor == head).
@@ -54,6 +57,9 @@ pub trait Buffer {
 
     /// Path this buffer was loaded from, if any. Unsaved buffers return `None`.
     fn source_path(&self) -> Option<&Path>;
+
+    /// Set or change the path this buffer will be saved to.
+    fn set_source_path(&mut self, path: std::path::PathBuf);
 
     /// True if there are unsaved edits.
     fn is_dirty(&self) -> bool;
@@ -138,17 +144,14 @@ pub trait Buffer {
     ///
     /// Returns the new cursor position (typically end of the inserted
     /// `text`).
-    fn replace(
-        &mut self,
-        range: Range<BytePos>,
-        text: &str,
-    ) -> Result<BytePos, crate::EditError>;
+    fn replace(&mut self, range: Range<BytePos>, text: &str) -> Result<BytePos, crate::EditError>;
 
     /// Insert `text` at `byte_pos` WITHOUT recording an undo entry.
     /// Used by line-level operations (move-line, duplicate-line) where
     /// the operation is itself recorded as a single undo step; the
     /// internal inserts should not pile up extra undo entries.
-    fn insert_silent(&mut self, byte_pos: BytePos, text: &str) -> Result<BytePos, crate::EditError>;
+    fn insert_silent(&mut self, byte_pos: BytePos, text: &str)
+        -> Result<BytePos, crate::EditError>;
 
     /// Delete `range` WITHOUT recording an undo entry. Pairs with
     /// `insert_silent` for line-level ops.

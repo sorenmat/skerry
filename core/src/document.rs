@@ -84,6 +84,8 @@ pub struct ViewState {
     /// Per-document so files with mixed wrap preferences (e.g.
     /// Markdown prose vs. code) keep their own setting.
     pub soft_wrap: bool,
+    /// Whether the git gutter is rendered for this document.
+    pub git_gutter_enabled: bool,
 }
 
 impl Default for ViewState {
@@ -96,6 +98,7 @@ impl Default for ViewState {
             use_spaces: true,
             tab_width: 4,
             soft_wrap: false,
+            git_gutter_enabled: true,
         }
     }
 }
@@ -120,6 +123,17 @@ pub struct Document {
     /// Per-line syntax token cache. Lazily populated by the renderer,
     /// invalidated on every edit. See [`crate::SyntaxCache`].
     pub syntax: crate::SyntaxCache,
+
+    /// The detected project/workspace for this document, if any.
+    /// Derived from the buffer path by walking ancestors and looking
+    /// for project markers (`.git`, `Cargo.toml`, etc.). Lives on the
+    /// document so switching tabs keeps each file's project context.
+    pub project: Option<crate::Project>,
+    /// Whether the file has changed on disk since it was loaded or last
+    /// saved by this editor. Set by the file watcher; cleared on reload.
+    pub external_change: bool,
+    /// Per-line git change state relative to `HEAD`.
+    pub git_gutter: crate::GitGutter,
 }
 
 impl Document {
@@ -127,16 +141,48 @@ impl Document {
     /// becomes the document's display path. View state starts at
     /// defaults (no horizontal scroll).
     pub fn new(buffer: Box<dyn Buffer>) -> Self {
-        Self {
+        Self::new_with_config(buffer, &crate::Config::default())
+    }
+
+    /// Wrap a buffer in a `Document`, applying persisted user defaults
+    /// to the new document's view state.
+    pub fn new_with_config(buffer: Box<dyn Buffer>, config: &crate::Config) -> Self {
+        let project = buffer.source_path().and_then(crate::Project::from_path);
+        let mut view = ViewState::default();
+        config.apply_document_defaults(&mut view);
+        let mut doc = Self {
             buffer,
-            view: ViewState::default(),
+            view,
             syntax: crate::SyntaxCache::default(),
+            project,
+            external_change: false,
+            git_gutter: crate::GitGutter::new(),
+        };
+        if doc.path().is_some() {
+            doc.refresh_git_gutter();
         }
+        doc
+    }
+
+    /// Recompute the git gutter from the current buffer and path.
+    pub fn refresh_git_gutter(&mut self) {
+        let path = self.path().map(|p| p.to_path_buf());
+        self.git_gutter.refresh(path.as_deref(), &*self.buffer);
     }
 
     /// Create a fresh, empty, unsaved document.
     pub fn empty() -> Self {
         Self::new(Box::new(crate::PieceTableBuffer::new()))
+    }
+
+    /// Re-detect the project root from the current buffer path. Call
+    /// this after the buffer's source path changes (e.g. Save-As to a
+    /// different directory).
+    pub fn refresh_project(&mut self) {
+        self.project = self
+            .buffer
+            .source_path()
+            .and_then(crate::Project::from_path);
     }
 
     /// The path the buffer was loaded from, if any. Convenience
@@ -197,7 +243,10 @@ mod tests {
         ));
         let doc = Document::new(buf);
         assert_eq!(doc.path(), Some(path.as_path()));
-        assert_eq!(doc.display_name(), path.file_name().unwrap().to_str().unwrap());
+        assert_eq!(
+            doc.display_name(),
+            path.file_name().unwrap().to_str().unwrap()
+        );
         assert_eq!(doc.path_buf(), Some(path));
     }
 

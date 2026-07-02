@@ -21,25 +21,31 @@ fn reproduce_selection_bug() {
         .unwrap_or_else(|| std::path::PathBuf::from("Makefile"));
     eprintln!("loading: {}", path.display());
 
-    let buf: Box<dyn Buffer> = Box::new(
-        PieceTableBuffer::from_path(path).expect("load Makefile"),
-    );
+    let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path).expect("load Makefile"));
     let mut app = frontend_gui::app::EditorApp::new(buf);
 
     // Selection matching the user's reported scenario:
     //   anchor at line 21 col 15 (1-indexed)
     //   head   at line 27 col 14 (1-indexed)
-    let anchor = app.active_buffer().linecol_to_pos(21 - 1, 15 - 1)
+    let anchor = app
+        .active_buffer()
+        .linecol_to_pos(21 - 1, 15 - 1)
         .expect("anchor pos");
-    let head = app.active_buffer().linecol_to_pos(27 - 1, 14 - 1)
+    let head = app
+        .active_buffer()
+        .linecol_to_pos(27 - 1, 14 - 1)
         .expect("head pos");
 
     app.active_buffer_mut().set_cursor(head);
-    app.active_buffer_mut().set_selection(Selection { anchor, head });
+    app.active_buffer_mut()
+        .set_selection(Selection { anchor, head });
 
     eprintln!("=== STATE ===");
     eprintln!("anchor byte = {anchor}, head byte = {head}");
-    eprintln!("line 27 text = {:?}", app.active_buffer().line_text(26).map(|c| c.into_owned()));
+    eprintln!(
+        "line 27 text = {:?}",
+        app.active_buffer().line_text(26).map(|c| c.into_owned())
+    );
     eprintln!("selection = {:?}", app.active_buffer().selection());
     eprintln!(
         "anchor (line,col) = {:?}, head (line,col) = {:?}",
