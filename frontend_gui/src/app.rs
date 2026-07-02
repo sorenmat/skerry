@@ -258,6 +258,17 @@ impl EditorApp {
         self.documents.len()
     }
 
+    /// Whether a modal with a text-edit query is currently open. When
+    /// true, clipboard cut/copy and raw text/key events should be routed
+    /// to the modal's TextEdit, not the buffer.
+    fn text_modal_open(&self) -> bool {
+        self.fuzzy_finder.open
+            || self.command_palette.open
+            || self.project_search.open
+            || self.search.bar_open
+            || self.search.replace_bar_open
+    }
+
     /// Pull input events from egui and apply them to the buffer.
     ///
     /// Clipboard shortcuts (Cmd/Ctrl+C, X, V) are intercepted here instead
@@ -278,15 +289,23 @@ impl EditorApp {
         let mut clipboard_events: Vec<crate::event::ClipboardAction> = Vec::new();
         ctx.input(|i| {
             for event in &i.events {
-                if let Some(clip) =
-                    crate::event::classify_clipboard_event(event, self.active_buffer())
-                {
-                    clipboard_events.push(clip);
-                    continue;
+                let text_modal_open = self.text_modal_open();
+                if !text_modal_open {
+                    if let Some(clip) =
+                        crate::event::classify_clipboard_event(event, self.active_buffer())
+                    {
+                        clipboard_events.push(clip);
+                        continue;
+                    }
                 }
                 if self.search.bar_open {
                     if let Some(bar_event) = find_bar_translate(event) {
                         self.handle_event(bar_event);
+                        continue;
+                    }
+                    // Swallow text events so they update the find bar
+                    // TextEdit but don't insert into the buffer.
+                    if matches!(event, eframe::egui::Event::Text(_)) {
                         continue;
                     }
                 }
@@ -315,6 +334,26 @@ impl EditorApp {
                         crate::event::project_search_translate(event, &query, confirm)
                     {
                         self.handle_event(search_event);
+                        continue;
+                    }
+                    // Suppress remaining key/text events so the query
+                    // TextEdit doesn't also write through to the buffer.
+                    if matches!(
+                        event,
+                        eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
+                    ) {
+                        continue;
+                    }
+                }
+                // Fuzzy finder and command palette use egui TextEdit
+                // widgets for their queries. After handling navigation
+                // keys, swallow all remaining key/text events so they
+                // don't reach the buffer.
+                if self.fuzzy_finder.open || self.command_palette.open {
+                    if matches!(
+                        event,
+                        eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
+                    ) {
                         continue;
                     }
                 }
@@ -3478,6 +3517,34 @@ mod tests {
         assert!(app.fuzzy_finder.open);
         app.handle_event(EditorEvent::FuzzyFinderClose);
         assert!(!app.fuzzy_finder.open);
+    }
+
+    #[test]
+    fn fuzzy_finder_swallows_typed_keys() {
+        let buf: Box<dyn Buffer> = Box::new(core::PieceTableBuffer::from_bytes(b"hello".to_vec()));
+        let mut app =
+            EditorApp::new_with_documents(vec![core::Document::new(buf)], core::Config::default());
+        app.handle_event(EditorEvent::FuzzyFinder(None));
+        assert!(app.fuzzy_finder.open);
+
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| i.events.push(egui::Event::Text("a".to_string())));
+        app.handle_input(&ctx);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello");
+    }
+
+    #[test]
+    fn command_palette_swallows_typed_keys() {
+        let buf: Box<dyn Buffer> = Box::new(core::PieceTableBuffer::from_bytes(b"hello".to_vec()));
+        let mut app =
+            EditorApp::new_with_documents(vec![core::Document::new(buf)], core::Config::default());
+        app.handle_event(EditorEvent::CommandPalette(None));
+        assert!(app.command_palette.open);
+
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| i.events.push(egui::Event::Text("a".to_string())));
+        app.handle_input(&ctx);
+        assert_eq!(app.active_buffer().to_bytes(), b"hello");
     }
 
     // ----- git gutter -----
