@@ -6,6 +6,8 @@
 
 use std::ops::Range;
 
+use crate::Buffer;
+
 /// Compute the byte range of `selection` that falls within `line`
 /// (the line's own byte range). Returns `None` if they don't overlap.
 ///
@@ -64,6 +66,83 @@ pub fn char_col_to_byte_col(line_text: &str, char_col: usize) -> usize {
         .unwrap_or(line_text.len())
 }
 
+/// Convert a buffer byte position into `(line, character_column)`.
+pub fn cursor_char_linecol(buffer: &dyn Buffer, pos: usize) -> (usize, usize) {
+    let (line, byte_col) = buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+    let Some(line_text) = buffer.line_text(line) else {
+        return (line, byte_col);
+    };
+    (line, byte_to_char_col(line_text.as_ref(), byte_col))
+}
+
+/// Resolve `(line, char_col)` to a byte position, clamping the
+/// character column to the target line's actual visual length.
+pub fn clamped_line_charcol_to_pos(buffer: &dyn Buffer, line: usize, char_col: usize) -> usize {
+    let Some(range) = buffer.line_byte_range(line) else {
+        return buffer.len();
+    };
+    let Some(line_text) = buffer.line_text(line) else {
+        return range.end;
+    };
+    let byte_col = char_col_to_byte_col(line_text.as_ref(), char_col);
+    buffer.linecol_to_pos(line, byte_col).unwrap_or(range.end)
+}
+
+/// Move `pos` left by one Unicode scalar value without landing inside
+/// a multi-byte UTF-8 character.
+pub fn move_left_by_char(buffer: &dyn Buffer, pos: usize) -> usize {
+    if pos == 0 {
+        return 0;
+    }
+    let (line, _) = buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+    let Some(range) = buffer.line_byte_range(line) else {
+        return pos.saturating_sub(1);
+    };
+    let Some(line_text) = buffer.line_text(line) else {
+        return pos.saturating_sub(1);
+    };
+    let rel = pos.saturating_sub(range.start).min(range.end - range.start);
+    if rel == 0 {
+        return pos.saturating_sub(1);
+    }
+
+    let mut target = 0;
+    for (idx, _) in line_text.char_indices() {
+        if idx >= rel {
+            break;
+        }
+        target = idx;
+    }
+    range.start + target
+}
+
+/// Move `pos` right by one Unicode scalar value without landing inside
+/// a multi-byte UTF-8 character.
+pub fn move_right_by_char(buffer: &dyn Buffer, pos: usize) -> usize {
+    let len = buffer.len();
+    if pos >= len {
+        return len;
+    }
+    let (line, _) = buffer.pos_to_linecol(pos).unwrap_or((0, 0));
+    let Some(range) = buffer.line_byte_range(line) else {
+        return (pos + 1).min(len);
+    };
+    let Some(line_text) = buffer.line_text(line) else {
+        return (pos + 1).min(len);
+    };
+    let rel = pos.saturating_sub(range.start).min(range.end - range.start);
+    for (idx, _) in line_text.char_indices() {
+        if idx > rel {
+            return range.start + idx;
+        }
+    }
+    if rel < line_text.len() {
+        range.end
+    } else {
+        (pos + 1).min(len)
+    }
+}
+
 /// Format a "L{line}:{col} / L{total_lines}" status indicator.
 /// `col` is a 1-indexed character column; pass `0` to show column 1
 /// (the convention in most editors).
@@ -75,6 +154,7 @@ pub fn format_position(line: usize, col: usize, total_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Buffer, PieceTableBuffer};
 
     #[test]
     fn selection_inside_line() {
@@ -188,6 +268,23 @@ mod tests {
         );
         assert_eq!(char_col_to_byte_col(s, 4), 5, "after 'o'");
         assert_eq!(char_col_to_byte_col(s, 5), 6, "end of string");
+    }
+
+    #[test]
+    fn move_left_and_right_by_char_skip_multibyte_characters() {
+        let buffer = PieceTableBuffer::from_bytes("héllo".as_bytes().to_vec());
+        assert_eq!(move_left_by_char(&buffer, 3), 1);
+        assert_eq!(move_left_by_char(&buffer, 1), 0);
+        assert_eq!(move_right_by_char(&buffer, 0), 1);
+        assert_eq!(move_right_by_char(&buffer, 1), 3);
+    }
+
+    #[test]
+    fn clamped_line_charcol_to_pos_uses_visual_column() {
+        let buffer = PieceTableBuffer::from_bytes("ab\néx".as_bytes().to_vec());
+        assert_eq!(cursor_char_linecol(&buffer, 2), (0, 2));
+        assert_eq!(clamped_line_charcol_to_pos(&buffer, 1, 2), 6);
+        assert_eq!(buffer.pos_to_linecol(6), Some((1, 3)));
     }
 
     #[test]

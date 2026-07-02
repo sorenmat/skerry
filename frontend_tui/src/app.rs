@@ -947,46 +947,40 @@ impl App {
         let pos = self.active_buffer().cursor();
         let len = self.active_buffer().len();
         match movement {
-            Movement::Left => pos.saturating_sub(1),
-            Movement::Right => {
-                if pos < len {
-                    pos + 1
-                } else {
-                    pos
-                }
-            }
+            Movement::Left => core::move_left_by_char(self.active_buffer(), pos),
+            Movement::Right => core::move_right_by_char(self.active_buffer(), pos),
             Movement::Up => {
-                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                let (line, col) = core::cursor_char_linecol(self.active_buffer(), pos);
                 if line == 0 {
                     0
                 } else {
-                    self.clamped_linecol_to_pos(line - 1, col)
+                    core::clamped_line_charcol_to_pos(self.active_buffer(), line - 1, col)
                 }
             }
             Movement::Down => {
-                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                let (line, col) = core::cursor_char_linecol(self.active_buffer(), pos);
                 if line + 1 >= self.active_buffer().line_count() {
                     pos
                 } else {
-                    self.clamped_linecol_to_pos(line + 1, col)
+                    core::clamped_line_charcol_to_pos(self.active_buffer(), line + 1, col)
                 }
             }
             Movement::PageUp => {
-                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                let (line, col) = core::cursor_char_linecol(self.active_buffer(), pos);
                 let page = self.viewport_lines();
                 if line == 0 {
                     0
                 } else {
                     let target = line.saturating_sub(page);
-                    self.clamped_linecol_to_pos(target, col)
+                    core::clamped_line_charcol_to_pos(self.active_buffer(), target, col)
                 }
             }
             Movement::PageDown => {
-                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                let (line, col) = core::cursor_char_linecol(self.active_buffer(), pos);
                 let page = self.viewport_lines();
                 let last = self.active_buffer().line_count().saturating_sub(1);
                 let target = (line + page).min(last);
-                self.clamped_linecol_to_pos(target, col)
+                core::clamped_line_charcol_to_pos(self.active_buffer(), target, col)
             }
             Movement::WordLeft => self.skip_word_left_from(pos),
             Movement::WordRight => self.skip_word_right_from(pos),
@@ -1006,29 +1000,6 @@ impl App {
             Movement::DocumentStart => 0,
             Movement::DocumentEnd => len,
         }
-    }
-
-    /// Resolve `(line, col)` to a byte position, clamping `col` to the
-    /// target line's actual byte length when it exceeds the line.
-    /// Without this clamp, `linecol_to_pos` returns `None` for a col
-    /// past the end of a line, and the vertical-movement handlers
-    /// would silently fail to move the cursor when the target line
-    /// is shorter than the current column (e.g. cursor at column 30
-    /// on a long line, Up to a 5-char line above — should land at
-    /// the end of that 5-char line, not stay put).
-    fn clamped_linecol_to_pos(&self, line: usize, col: usize) -> usize {
-        let Some(range) = self.active_buffer().line_byte_range(line) else {
-            // Line is out of range — fall back to buffer end. This
-            // shouldn't happen in normal Up/Down/PageUp/PageDown
-            // because the caller bounds-checks, but we don't want a
-            // panic if it ever does.
-            return self.active_buffer().len();
-        };
-        let line_byte_len = range.end - range.start;
-        let clamped_col = col.min(line_byte_len);
-        self.active_buffer()
-            .linecol_to_pos(line, clamped_col)
-            .unwrap_or(range.end)
     }
 
     /// Number of lines that fit in the current viewport. Falls back to
@@ -2425,6 +2396,33 @@ mod tests {
         assert_eq!(app.active_buffer().cursor(), 0);
         app.handle_event(EditorEvent::Move(Movement::Right));
         assert_eq!(app.active_buffer().cursor(), 1);
+    }
+
+    #[test]
+    fn arrow_left_right_skip_over_multibyte_characters() {
+        let mut app = app_with("héllo");
+        app.active_buffer_mut().set_cursor(3);
+        app.handle_event(EditorEvent::Move(Movement::Left));
+        assert_eq!(app.active_buffer().cursor(), 1);
+        app.handle_event(EditorEvent::Move(Movement::Left));
+        assert_eq!(app.active_buffer().cursor(), 0);
+        app.handle_event(EditorEvent::Move(Movement::Right));
+        assert_eq!(app.active_buffer().cursor(), 1);
+        app.handle_event(EditorEvent::Move(Movement::Right));
+        assert_eq!(app.active_buffer().cursor(), 3);
+    }
+
+    #[test]
+    fn down_arrow_preserves_visual_column_on_multibyte_target_line() {
+        let mut app = app_with("ab\néx");
+        app.active_buffer_mut().set_cursor(2);
+        app.handle_event(EditorEvent::Move(Movement::Down));
+        assert_eq!(app.active_buffer().cursor(), 6);
+        assert_eq!(
+            app.active_buffer()
+                .pos_to_linecol(app.active_buffer().cursor()),
+            Some((1, 3))
+        );
     }
 
     #[test]
