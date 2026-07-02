@@ -478,6 +478,7 @@ fn render_project_tree_sidebar(ctx: &egui::Context, app: &mut EditorApp) {
                                 ui.selectable_label(false, text)
                             };
                             if response.clicked() {
+                                app.project_tree_focused = true;
                                 app.project_tree_selected = i;
                                 if is_dir {
                                     if let Some(tree) = app.project_tree.as_mut() {
@@ -1524,6 +1525,8 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         let text_x = rect.left() + prefix_chars as f32 * char_width
             - app.active_doc().view.scroll_x_cols as f32 * char_width;
         if response.clicked() || response.drag_started() || response.dragged() {
+            // Clicking or dragging in the editor gives the editor focus.
+            app.project_tree_focused = false;
             if let Some(pos) = response.interact_pointer_pos() {
                 if let Some(byte_pos) = pixel_to_byte_pos(
                     app,

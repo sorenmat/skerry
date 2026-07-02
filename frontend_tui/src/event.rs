@@ -261,6 +261,8 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Delete => Some(EditorEvent::DeleteWordRight),
             KeyCode::Left => Some(movement(Movement::WordLeft, false)),
             KeyCode::Right => Some(movement(Movement::WordRight, false)),
+            KeyCode::Home => Some(movement(Movement::DocumentStart, false)),
+            KeyCode::End => Some(movement(Movement::DocumentEnd, false)),
             _ => None,
         };
     }
@@ -776,6 +778,30 @@ mod tests {
                 None
             ),
             Some(EditorEvent::GoToLine(None))
+        );
+    }
+
+    #[test]
+    fn ctrl_arrows_move_by_word() {
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL), None),
+            Some(EditorEvent::Move(Movement::WordLeft))
+        );
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL), None),
+            Some(EditorEvent::Move(Movement::WordRight))
+        );
+    }
+
+    #[test]
+    fn ctrl_home_end_jump_to_document_edges() {
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL), None),
+            Some(EditorEvent::Move(Movement::DocumentStart))
+        );
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL), None),
+            Some(EditorEvent::Move(Movement::DocumentEnd))
         );
     }
 }

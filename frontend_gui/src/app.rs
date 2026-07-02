@@ -59,6 +59,8 @@ pub struct EditorApp {
     pub project_tree: Option<core::ProjectTree>,
     /// Index of the selected row in the visible (flattened) project tree.
     pub project_tree_selected: usize,
+    /// Whether the project tree sidebar currently has keyboard focus.
+    pub project_tree_focused: bool,
     /// Project-wide search dialog state.
     pub project_search: ProjectSearch,
     /// Fuzzy file finder state.
@@ -198,6 +200,7 @@ impl EditorApp {
             project_tree_open: config.project_tree_open.unwrap_or(true),
             project_tree: None,
             project_tree_selected: 0,
+            project_tree_focused: false,
             project_search: ProjectSearch::default(),
             fuzzy_finder: FuzzyFinder::default(),
             command_palette: CommandPalette::default(),
@@ -357,9 +360,10 @@ impl EditorApp {
                         continue;
                     }
                 }
-                // Project-tree sidebar intercepts navigation keys while
-                // it's open. Mouse clicks are handled directly in the UI.
-                if self.project_tree_open {
+                // Project-tree sidebar intercepts navigation keys only
+                // when it has keyboard focus. Mouse clicks update focus
+                // in the UI renderers.
+                if self.project_tree_open && self.project_tree_focused {
                     if let Some(tree_event) = project_tree_translate(event) {
                         self.handle_event(tree_event);
                         continue;
@@ -1593,6 +1597,9 @@ impl EditorApp {
         self.project_tree_open = !self.project_tree_open;
         if self.project_tree_open {
             self.refresh_project_tree();
+            self.project_tree_focused = true;
+        } else {
+            self.project_tree_focused = false;
         }
     }
 
@@ -2324,6 +2331,43 @@ mod tests {
         let buf: Box<dyn Buffer> =
             Box::new(PieceTableBuffer::from_bytes(content.as_bytes().to_vec()));
         EditorApp::new(buf)
+    }
+
+    fn arrow_down_event() -> eframe::egui::Event {
+        eframe::egui::Event::Key {
+            key: eframe::egui::Key::ArrowDown,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: eframe::egui::Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn project_tree_focus_routes_arrow_keys() {
+        let mut app = app_with("a\nb\n");
+        app.project_tree_open = true;
+        app.project_tree_focused = true;
+
+        let ctx = eframe::egui::Context::default();
+        ctx.input_mut(|i| i.events.push(arrow_down_event()));
+        app.handle_input(&ctx);
+        let (line, _) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
+        // Project tree consumed the event; cursor stayed put.
+        assert_eq!(line, 0);
+
+        app.project_tree_focused = false;
+        let ctx2 = eframe::egui::Context::default();
+        ctx2.input_mut(|i| i.events.push(arrow_down_event()));
+        app.handle_input(&ctx2);
+        let (line, _) = app
+            .active_buffer()
+            .pos_to_linecol(app.active_buffer().cursor())
+            .unwrap();
+        assert_eq!(line, 1);
     }
 
     #[test]

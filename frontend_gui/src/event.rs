@@ -71,6 +71,19 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         };
     }
 
+    // Ctrl-modified navigation keys. These run after the primary
+    // (Cmd/Ctrl) block so Ctrl+S still saves on Windows/Linux while
+    // Ctrl+Left/Right/Home/End perform navigation on all platforms.
+    if modifiers.ctrl && !shift && !modifiers.alt {
+        return match key {
+            Key::ArrowLeft => Some(movement(Movement::WordLeft, false)),
+            Key::ArrowRight => Some(movement(Movement::WordRight, false)),
+            Key::Home => Some(movement(Movement::DocumentStart, false)),
+            Key::End => Some(movement(Movement::DocumentEnd, false)),
+            _ => None,
+        };
+    }
+
     // Cmd/Ctrl+Shift-modified keys. Tab cycles the other direction;
     // Shift+W toggles soft-wrap (W alone is close); Shift+F opens
     // project-wide search; Shift+P opens the command palette.
@@ -306,6 +319,13 @@ mod tests {
         }
     }
 
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn text_event_inserts_char() {
         let ev = Event::Text("x".to_string());
@@ -370,6 +390,30 @@ mod tests {
         assert_eq!(
             translate_event(&key_event(Key::ArrowRight, true, shift())),
             Some(EditorEvent::ScrollRight)
+        );
+    }
+
+    #[test]
+    fn ctrl_arrows_move_by_word() {
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowLeft, true, ctrl())),
+            Some(EditorEvent::Move(Movement::WordLeft))
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowRight, true, ctrl())),
+            Some(EditorEvent::Move(Movement::WordRight))
+        );
+    }
+
+    #[test]
+    fn ctrl_home_end_jump_to_document_edges() {
+        assert_eq!(
+            translate_event(&key_event(Key::Home, true, ctrl())),
+            Some(EditorEvent::Move(Movement::DocumentStart))
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::End, true, ctrl())),
+            Some(EditorEvent::Move(Movement::DocumentEnd))
         );
     }
 

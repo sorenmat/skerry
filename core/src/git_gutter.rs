@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn untracked_file_is_all_added() {
-        let (dir, path) = temp_repo("untracked");
+        let (_dir, path) = temp_repo("untracked");
         // Commit nothing; file is untracked.
         fs::write(&path, "a\nb\n").unwrap();
 
