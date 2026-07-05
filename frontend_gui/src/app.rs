@@ -1448,16 +1448,37 @@ impl EditorApp {
     /// [`EditorApp::confirm_close_choice`]. If the buffer is clean
     /// (or it is the only document), close immediately.
     pub fn request_close_active(&mut self) {
-        if self.active_doc().is_dirty() {
+        self.request_close_doc(self.active);
+    }
+
+    /// Begin closing a document by index. Mirrors
+    /// [`request_close_active`] but works for any open tab.
+    pub fn request_close_doc(&mut self, idx: usize) {
+        if idx >= self.documents.len() {
+            return;
+        }
+        if self.documents[idx].is_dirty() {
+            self.active = idx;
             self.go_to_line_dialog = None;
             self.close_confirm = Some(CloseConfirm {
-                doc_index: self.active,
+                doc_index: idx,
                 choice: CloseChoice::Save,
             });
             self.status_message = None;
             return;
         }
+        let old_active = self.active;
+        self.active = idx;
         self.perform_close_active();
+        // Restore the active index if we closed an inactive tab, but
+        // keep the new index if it was already the last document.
+        if old_active != idx && self.documents.len() > 1 {
+            if old_active > idx {
+                self.active = old_active - 1;
+            } else {
+                self.active = old_active;
+            }
+        }
     }
 
     /// Cycle the focused choice on the close-confirm prompt. `delta`
@@ -2810,6 +2831,29 @@ mod tests {
         // not closing). This keeps the close path free of any
         // post-close indexing surprises.
         assert_eq!(app.doc_count(), 1);
+    }
+
+    #[test]
+    fn close_inactive_tab_keeps_active_selection() {
+        let mut app = app_with_docs(&["alpha", "beta", "gamma"]);
+        app.active = 1; // beta is active
+        app.request_close_doc(0); // close alpha
+        assert_eq!(app.doc_count(), 2);
+        assert_eq!(app.active(), 0, "active should shift left with closed tab");
+        assert_eq!(app.active_buffer().to_bytes(), b"beta".to_vec());
+    }
+
+    #[test]
+    fn close_inactive_dirty_tab_opens_prompt_for_that_doc() {
+        let mut app = app_with_docs(&["alpha", "beta"]);
+        app.active = 1;
+        // Make the inactive doc dirty.
+        app.documents[0].buffer.insert(0, "!").unwrap();
+        assert!(app.documents[0].is_dirty());
+        app.request_close_doc(0);
+        assert!(app.close_confirm.is_some());
+        assert_eq!(app.close_confirm.as_ref().unwrap().doc_index, 0);
+        assert_eq!(app.active(), 0, "prompt focuses the doc being closed");
     }
 
     #[test]

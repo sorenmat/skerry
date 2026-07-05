@@ -65,33 +65,58 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
     // Multi-doc tab strip. Each tab is its own label so egui tracks
     // click responses per-tab. The active tab uses the accent color;
     // inactive tabs are dimmed. Clicking an inactive tab switches
-    // `app.active`.
+    // `app.active`; clicking the × closes that tab.
     ui.horizontal(|ui| {
         ui.add_space(4.0);
+        let mut close_idx: Option<usize> = None;
         for i in 0..app.doc_count() {
             let is_active = i == app.active;
             let doc = &app.documents[i];
             let name = doc.display_name();
             let dirty = if doc.is_dirty() { "*" } else { "" };
             let stale = if doc.external_change { "!" } else { "" };
-            let label = format!(" {}{}{} ", name, dirty, stale);
 
-            let text = if is_active {
-                egui::RichText::new(&label)
-                    .monospace()
-                    .strong()
-                    .color(theme.accent_text)
-                    .background_color(theme.accent)
+            let bg = if is_active { theme.accent } else { theme.panel_bg };
+            let text_color = if is_active {
+                theme.accent_text
             } else {
-                egui::RichText::new(&label)
-                    .monospace()
-                    .color(theme.dim_text)
+                theme.dim_text
             };
 
-            let response = ui.label(text);
-            if !is_active && response.clicked() {
-                app.active = i;
-            }
+            egui::Frame::none()
+                .fill(bg)
+                .inner_margin(egui::vec2(6.0, 3.0))
+                .rounding(4.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let label_text = format!("{}{}{}", name, dirty, stale);
+                        let label = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(label_text)
+                                    .monospace()
+                                    .strong()
+                                    .color(text_color),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        if !is_active && label.clicked() {
+                            app.active = i;
+                        }
+
+                        let close = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("×")
+                                    .monospace()
+                                    .strong()
+                                    .color(text_color),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        if close.clicked() {
+                            close_idx = Some(i);
+                        }
+                    });
+                });
 
             if i + 1 < app.doc_count() {
                 // Thin separator between tabs. egui's add_space gives
@@ -101,6 +126,9 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
                 ui.label(egui::RichText::new("│").monospace().color(theme.separator));
                 ui.add_space(2.0);
             }
+        }
+        if let Some(idx) = close_idx {
+            app.request_close_doc(idx);
         }
     });
 }
