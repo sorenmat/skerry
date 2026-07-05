@@ -43,9 +43,32 @@ fn is_primary_modifier(modifiers: &Modifiers) -> bool {
     modifiers.command
 }
 
+/// Runtime macOS detection so the keybindings match the host OS even
+/// when the binary was not cross-compiled for that OS.
+fn is_macos() -> bool {
+    std::env::consts::OS == "macos"
+}
+
 fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
     let primary = is_primary_modifier(&modifiers);
     let shift = modifiers.shift;
+
+    // macOS-specific primary-modifier navigation. On Mac, Cmd+Left/Right
+    // jump to line start/end and Cmd+Up/Down jump to document edges. Only
+    // the arrow keys are handled here; everything else falls through to
+    // the generic primary block.
+    if primary && !shift && is_macos() {
+        let mac_event = match key {
+            Key::ArrowLeft => Some(movement(Movement::LineStart, false)),
+            Key::ArrowRight => Some(movement(Movement::LineEnd, false)),
+            Key::ArrowUp => Some(movement(Movement::DocumentStart, false)),
+            Key::ArrowDown => Some(movement(Movement::DocumentEnd, false)),
+            _ => None,
+        };
+        if mac_event.is_some() {
+            return mac_event;
+        }
+    }
 
     // Cmd/Ctrl-modified keys first. Clipboard shortcuts are NOT
     // returned here — they need OS access and are handled by
@@ -110,6 +133,8 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::ArrowDown => Some(EditorEvent::MoveLineDown),
             Key::ArrowLeft => Some(movement(Movement::WordLeft, false)),
             Key::ArrowRight => Some(movement(Movement::WordRight, false)),
+            Key::Backspace => Some(EditorEvent::DeleteWordLeft),
+            Key::Delete => Some(EditorEvent::DeleteWordRight),
             _ => None,
         };
     }
@@ -445,6 +470,39 @@ mod tests {
         assert_eq!(
             translate_event(&key_event(Key::S, true, primary())),
             Some(EditorEvent::Save)
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_primary_arrows_navigate() {
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowLeft, true, primary())),
+            Some(EditorEvent::Move(Movement::LineStart))
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowRight, true, primary())),
+            Some(EditorEvent::Move(Movement::LineEnd))
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowUp, true, primary())),
+            Some(EditorEvent::Move(Movement::DocumentStart))
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowDown, true, primary())),
+            Some(EditorEvent::Move(Movement::DocumentEnd))
+        );
+    }
+
+    #[test]
+    fn alt_backspace_deletes_word() {
+        assert_eq!(
+            translate_event(&key_event(Key::Backspace, true, alt())),
+            Some(EditorEvent::DeleteWordLeft)
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::Delete, true, alt())),
+            Some(EditorEvent::DeleteWordRight)
         );
     }
 
