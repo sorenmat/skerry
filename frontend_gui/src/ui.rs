@@ -28,6 +28,13 @@ const CARET_WIDTH: f32 = 2.0;
 /// responsive without looking like a hard teleport.
 const CARET_ANIM_SPEED: f32 = 25.0;
 
+/// Set the cursor icon to a pointing hand when hovering clickable UI.
+fn hand_cursor(response: &egui::Response, ctx: &egui::Context) {
+    if response.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+}
+
 fn theme(app: &EditorApp) -> &GuiTheme {
     &app.theme
 }
@@ -99,8 +106,11 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
                             )
                             .sense(egui::Sense::click()),
                         );
-                        if !is_active && label.clicked() {
-                            app.active = i;
+                        if !is_active {
+                            hand_cursor(&label, ui.ctx());
+                            if label.clicked() {
+                                app.active = i;
+                            }
                         }
 
                         let close = ui.add(
@@ -112,6 +122,7 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
                             )
                             .sense(egui::Sense::click()),
                         );
+                        hand_cursor(&close, ui.ctx());
                         if close.clicked() {
                             close_idx = Some(i);
                         }
@@ -192,49 +203,53 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                         .color(theme.status_text),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    egui::ComboBox::from_id_salt("syntax_theme_selector")
+                    let syntax_combo = egui::ComboBox::from_id_salt("syntax_theme_selector")
                         .selected_text(&current_syntax_theme)
                         .width(160.0)
                         .show_ui(ui, |ui| {
                             for name in &syntax_theme_names {
                                 let is_active = name == &current_syntax_theme;
-                                if ui.selectable_label(is_active, name).clicked() {
+                                let response = ui.selectable_label(is_active, name);
+                                hand_cursor(&response, ui.ctx());
+                                if response.clicked() {
                                     selected_syntax_theme = Some(name.clone());
                                 }
                             }
                         });
-                    egui::ComboBox::from_id_salt("ui_theme_selector")
+                    hand_cursor(&syntax_combo.response, ui.ctx());
+                    let ui_combo = egui::ComboBox::from_id_salt("ui_theme_selector")
                         .selected_text(&current_ui_theme)
                         .width(100.0)
                         .show_ui(ui, |ui| {
                             for name in &ui_theme_names {
                                 let is_active = name == &current_ui_theme;
-                                if ui.selectable_label(is_active, name).clicked() {
+                                let response = ui.selectable_label(is_active, name);
+                                hand_cursor(&response, ui.ctx());
+                                if response.clicked() {
                                     selected_ui_theme = Some(name.clone());
                                 }
                             }
                         });
+                    hand_cursor(&ui_combo.response, ui.ctx());
                     let tree_label = if app.project_tree_open {
                         "🌳 Tree"
                     } else {
                         "Tree"
                     };
-                    if ui
-                        .selectable_label(app.project_tree_open, tree_label)
-                        .clicked()
-                    {
+                    let tree_btn = ui.selectable_label(app.project_tree_open, tree_label);
+                    hand_cursor(&tree_btn, ui.ctx());
+                    if tree_btn.clicked() {
                         toggle_tree = true;
                     }
-                    if ui
-                        .selectable_label(app.config.caret_animation, "Caret anim")
-                        .clicked()
-                    {
+                    let caret_btn =
+                        ui.selectable_label(app.config.caret_animation, "Caret anim");
+                    hand_cursor(&caret_btn, ui.ctx());
+                    if caret_btn.clicked() {
                         toggle_caret_animation = true;
                     }
-                    if ui
-                        .selectable_label(app.keybindings_help_open, "?")
-                        .clicked()
-                    {
+                    let help_btn = ui.selectable_label(app.keybindings_help_open, "?");
+                    hand_cursor(&help_btn, ui.ctx());
+                    if help_btn.clicked() {
                         app.handle_event(EditorEvent::ToggleKeybindingsHelp);
                     }
                 });
@@ -321,13 +336,18 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                             .color(status_color),
                     );
                     let regex_btn = ui.selectable_label(app.search.regex_mode, ".*");
+                    hand_cursor(&regex_btn, ui.ctx());
                     if regex_btn.clicked() {
                         app.handle_event(EditorEvent::ToggleFindRegex);
                     }
-                    if ui.button("Next").clicked() {
+                    let next_btn = ui.button("Next");
+                    hand_cursor(&next_btn, ui.ctx());
+                    if next_btn.clicked() {
                         app.handle_event(EditorEvent::FindNext);
                     }
-                    if ui.button("Prev").clicked() {
+                    let prev_btn = ui.button("Prev");
+                    hand_cursor(&prev_btn, ui.ctx());
+                    if prev_btn.clicked() {
                         app.handle_event(EditorEvent::FindPrev);
                     }
                     let replace_toggle_label = if app.search.replace_bar_open {
@@ -335,14 +355,18 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                     } else {
                         "Replace"
                     };
-                    if ui.button(replace_toggle_label).clicked() {
+                    let replace_toggle_btn = ui.button(replace_toggle_label);
+                    hand_cursor(&replace_toggle_btn, ui.ctx());
+                    if replace_toggle_btn.clicked() {
                         if app.search.replace_bar_open {
                             app.handle_event(EditorEvent::ReplaceClose);
                         } else {
                             app.handle_event(EditorEvent::ReplaceOpen);
                         }
                     }
-                    if ui.button("Close").clicked() {
+                    let close_btn = ui.button("Close");
+                    hand_cursor(&close_btn, ui.ctx());
+                    if close_btn.clicked() {
                         app.handle_event(EditorEvent::FindClose);
                     }
                 });
@@ -374,10 +398,14 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                         {
                             response.request_focus();
                         }
-                        if ui.button("Replace").clicked() {
+                        let replace_btn = ui.button("Replace");
+                        hand_cursor(&replace_btn, ui.ctx());
+                        if replace_btn.clicked() {
                             app.handle_event(EditorEvent::ReplaceOne);
                         }
-                        if ui.button("Replace All").clicked() {
+                        let replace_all_btn = ui.button("Replace All");
+                        hand_cursor(&replace_all_btn, ui.ctx());
+                        if replace_all_btn.clicked() {
                             app.handle_event(EditorEvent::ReplaceAll);
                         }
                     });
@@ -525,6 +553,7 @@ fn render_project_tree_sidebar(ctx: &egui::Context, app: &mut EditorApp) {
                             } else {
                                 ui.selectable_label(false, text)
                             };
+                            hand_cursor(&response, ui.ctx());
                             if response.clicked() {
                                 app.project_tree_focused = true;
                                 app.project_tree_selected = i;
@@ -622,7 +651,9 @@ fn focused_button(
     } else {
         egui::RichText::new(label).color(theme.dim_text)
     };
-    ui.button(text)
+    let response = ui.button(text);
+    hand_cursor(&response, ui.ctx());
+    response
 }
 
 /// Render the project-wide search / replace dialog as a centred window.
@@ -735,6 +766,7 @@ fn render_project_search_window(ctx: &egui::Context, app: &mut EditorApp) {
                                 } else {
                                     ui.selectable_label(false, text)
                                 };
+                                hand_cursor(&response, ui.ctx());
                                 if response.clicked() {
                                     app.project_search.selected = i;
                                     app.handle_event(EditorEvent::ProjectSearchOpenResult);
@@ -772,10 +804,14 @@ fn render_project_search_window(ctx: &egui::Context, app: &mut EditorApp) {
                         .strong(),
                     );
                     ui.horizontal(|ui| {
-                        if ui.button("Replace").clicked() {
+                        let replace_btn = ui.button("Replace");
+                        hand_cursor(&replace_btn, ui.ctx());
+                        if replace_btn.clicked() {
                             app.handle_event(EditorEvent::ProjectSearchReplaceAllConfirm);
                         }
-                        if ui.button("Cancel").clicked() {
+                        let cancel_btn = ui.button("Cancel");
+                        hand_cursor(&cancel_btn, ui.ctx());
+                        if cancel_btn.clicked() {
                             app.handle_event(EditorEvent::ProjectSearchReplaceAllCancel);
                         }
                     });
@@ -839,6 +875,7 @@ fn render_command_palette_window(ctx: &egui::Context, app: &mut EditorApp) {
                             } else {
                                 ui.selectable_label(false, text)
                             };
+                            hand_cursor(&response, ui.ctx());
                             if response.clicked() {
                                 app.command_palette.selected = i;
                                 app.handle_event(EditorEvent::CommandPaletteExecute);
@@ -914,6 +951,7 @@ fn render_fuzzy_finder_window(ctx: &egui::Context, app: &mut EditorApp) {
                             } else {
                                 ui.selectable_label(false, text)
                             };
+                            hand_cursor(&response, ui.ctx());
                             if response.clicked() {
                                 app.fuzzy_finder.selected = row;
                                 app.handle_event(EditorEvent::FuzzyFinderExecute);
@@ -1196,6 +1234,20 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         );
         let rect = response.rect;
         let painter = ui.painter_at(rect);
+
+        // Show a text cursor over the editable area (right of the
+        // gutter), and a pointing hand over the gutter numbers.
+        if response.hovered() {
+            if let Some(pos) = response.hover_pos() {
+                let gutter_right =
+                    rect.left() + gutter_width as f32 * char_width + char_width;
+                if pos.x >= gutter_right {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                } else {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            }
+        }
 
         // Tell the app how many lines fit in the visible viewport
         // so PageUp/PageDown and the auto-scroll code can use the
@@ -1774,6 +1826,9 @@ fn render_horizontal_scrollbar(
         egui::Id::new("hscrollbar"),
         egui::Sense::click_and_drag(),
     );
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
 
     if response.dragged() {
         let delta = response.drag_delta().x;
