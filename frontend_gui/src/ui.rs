@@ -22,6 +22,10 @@ use crate::theme::GuiTheme;
 
 const FONT_SIZE: f32 = 14.0;
 const CARET_WIDTH: f32 = 2.0;
+/// Width of the dedicated git-gutter column (in pixels) drawn left of
+/// the line numbers. Kept separate from the line-number gutter so the
+/// green/yellow change marker never overlaps the number.
+const GIT_GUTTER_WIDTH: f32 = 14.0;
 /// Exponential-decay speed for caret animation (1/seconds). Higher =
 /// snappier. At 25, the time constant is 40 ms — the caret reaches
 /// ~70 % of the way in 3 frames (50 ms at 60 fps), which feels
@@ -1239,8 +1243,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         // gutter), and a pointing hand over the gutter numbers.
         if response.hovered() {
             if let Some(pos) = response.hover_pos() {
-                let gutter_right =
-                    rect.left() + gutter_width as f32 * char_width + char_width;
+                let gutter_right = rect.left()
+                    + GIT_GUTTER_WIDTH
+                    + gutter_width as f32 * char_width
+                    + char_width;
                 if pos.x >= gutter_right {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                 } else {
@@ -1331,7 +1337,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 max_visible_line_cols = line_cols;
             }
 
-            // Git gutter bar / deletion marker.
+            // Git gutter column (left of the line-number gutter).
             let git_enabled =
                 app.active_doc().view.git_gutter_enabled && app.active_doc().git_gutter.enabled();
             if git_enabled {
@@ -1343,7 +1349,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 };
                 if let Some(color) = bar_color {
                     let bar_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.left() + 2.0, y + 3.0),
+                        egui::pos2(
+                            rect.left() + (GIT_GUTTER_WIDTH - 4.0) / 2.0,
+                            y + 3.0,
+                        ),
                         egui::vec2(4.0, line_height - 6.0),
                     );
                     painter.rect_filled(bar_rect, 2.0, color);
@@ -1357,7 +1366,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                         "▼".to_string()
                     };
                     painter.text(
-                        egui::pos2(rect.left() + 4.0, y - line_height / 2.0),
+                        egui::pos2(rect.left() + GIT_GUTTER_WIDTH / 2.0, y - line_height / 2.0),
                         egui::Align2::CENTER_CENTER,
                         marker,
                         egui::FontId::proportional(8.0),
@@ -1374,14 +1383,16 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 theme.gutter_text
             };
             painter.text(
-                egui::pos2((rect.left()).round(), y),
+                egui::pos2((rect.left() + GIT_GUTTER_WIDTH).round(), y),
                 egui::Align2::LEFT_TOP,
                 gutter,
                 font_id.clone(),
                 gutter_color,
             );
 
-            let text_x = (rect.left() + prefix_chars as f32 * char_width
+            let text_x = (rect.left()
+                + GIT_GUTTER_WIDTH
+                + prefix_chars as f32 * char_width
                 - app.active_doc().view.scroll_x_cols as f32 * char_width)
                 .round();
 
@@ -1695,7 +1706,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 .map(|c| c.into_owned())
                 .unwrap_or_default();
             let char_col = byte_to_char_col(&caret_line_text, cursor_byte_col);
-            let text_x = (rect.left() + prefix_chars as f32 * char_width
+            let text_x = (rect.left()
+                + GIT_GUTTER_WIDTH
+                + prefix_chars as f32 * char_width
                 - app.active_doc().view.scroll_x_cols as f32 * char_width)
                 .round();
             let caret_x = (text_x + char_col as f32 * char_width).round();
@@ -1715,7 +1728,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         // text_x is the SCREEN position of the text origin (gutter
         // right-edge minus horizontal scroll). pixel_to_byte_pos
         // uses it to map pointer.x → char_col.
-        let text_x = rect.left() + prefix_chars as f32 * char_width
+        let text_x = rect.left()
+            + GIT_GUTTER_WIDTH
+            + prefix_chars as f32 * char_width
             - app.active_doc().view.scroll_x_cols as f32 * char_width;
         if response.clicked() || response.drag_started() || response.dragged() {
             // Clicking or dragging in the editor gives the editor focus.
@@ -1762,7 +1777,8 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
 
         // Decide whether a horizontal scrollbar is needed based on the
         // widest line currently visible.
-        let content_width = prefix_chars as f32 * char_width
+        let content_width = GIT_GUTTER_WIDTH
+            + prefix_chars as f32 * char_width
             + max_visible_line_cols as f32 * char_width
             + 4.0 * char_width;
         if content_width > viewport_width {
