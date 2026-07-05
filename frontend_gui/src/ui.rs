@@ -912,6 +912,8 @@ fn render_fuzzy_finder_window(ctx: &egui::Context, app: &mut EditorApp) {
 
 fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
     let mut open = true;
+    let is_mac = std::env::consts::OS == "macos";
+
     egui::Window::new("Keyboard shortcuts")
         .collapsible(false)
         .resizable(false)
@@ -926,11 +928,41 @@ fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
                 .id_salt("keybindings_help_scroll")
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    let mut rows: Vec<(&str, &str)> = core::COMMANDS
-                        .iter()
-                        .filter(|cmd| !cmd.keybinding.is_empty())
-                        .map(|cmd| (cmd.keybinding, cmd.label))
-                        .collect();
+                    let mut rows: Vec<(String, &str)> = Vec::new();
+
+                    // Editor navigation entries that are not represented
+                    // by command-palette commands.
+                    if is_mac {
+                        rows.push(("Cmd+← / Cmd+→".to_string(), "Line start / end"));
+                        rows.push(("Cmd+↑ / Cmd+↓".to_string(), "Document start / end"));
+                        rows.push(("Opt+← / Opt+→".to_string(), "Word left / right"));
+                        rows.push(("Opt+Delete".to_string(), "Delete word right"));
+                        rows.push(("Opt+Backspace".to_string(), "Delete word left"));
+                    } else {
+                        rows.push(("Home / End".to_string(), "Line start / end"));
+                        rows.push(("Ctrl+Home / Ctrl+End".to_string(), "Document start / end"));
+                        rows.push(("Ctrl+← / Ctrl+→".to_string(), "Word left / right"));
+                        rows.push(("Ctrl+Delete".to_string(), "Delete word right"));
+                        rows.push(("Ctrl+Backspace".to_string(), "Delete word left"));
+                    }
+                    rows.push(("↑ / ↓ / ← / →".to_string(), "Move cursor"));
+                    rows.push(("Shift + arrows".to_string(), "Select text"));
+                    rows.push(("PageUp / PageDown".to_string(), "Page up / down"));
+
+                    // Command palette entries. Their stored keybinding
+                    // strings are Windows/Linux style, so swap Ctrl for
+                    // Cmd and Alt for Option on macOS.
+                    for cmd in core::COMMANDS.iter().filter(|c| !c.keybinding.is_empty()) {
+                        let key = if is_mac {
+                            cmd.keybinding
+                                .replace("Ctrl+", "Cmd+")
+                                .replace("Alt+", "Opt+")
+                        } else {
+                            cmd.keybinding.to_string()
+                        };
+                        rows.push((key, cmd.label));
+                    }
+
                     rows.sort_by(|a, b| a.1.cmp(b.1));
 
                     for (key, action) in rows {
