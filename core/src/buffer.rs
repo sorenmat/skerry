@@ -11,8 +11,8 @@ use std::borrow::Cow;
 use std::ops::Range;
 use std::path::Path;
 
-/// A position on the `Buffer`, expressed as a UTF-8 byte offset.
 ///
+/// A position on the `Buffer`, expressed as a UTF-8 byte offset.
 /// The core never deals in characters; byte offsets are unambiguous and
 /// match the Piece Table's internal descriptor format (`Piece::start`,
 /// `Piece::length`).

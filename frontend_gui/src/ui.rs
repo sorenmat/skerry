@@ -155,6 +155,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
             let mut selected_ui_theme: Option<String> = None;
 
             let mut toggle_tree = false;
+            let mut toggle_caret_animation = false;
 
             ui.horizontal(|ui| {
                 ui.label(
@@ -196,11 +197,27 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                     {
                         toggle_tree = true;
                     }
+                    if ui
+                        .selectable_label(app.config.caret_animation, "Caret anim")
+                        .clicked()
+                    {
+                        toggle_caret_animation = true;
+                    }
+                    if ui
+                        .selectable_label(app.keybindings_help_open, "?")
+                        .clicked()
+                    {
+                        app.handle_event(EditorEvent::ToggleKeybindingsHelp);
+                    }
                 });
             });
 
             if toggle_tree {
                 app.handle_event(EditorEvent::ToggleProjectTree);
+            }
+            if toggle_caret_animation {
+                app.toggle_caret_animation();
+                app.sync_config();
             }
 
             if let Some(name) = selected_syntax_theme {
@@ -398,6 +415,9 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     }
     if app.fuzzy_finder.open {
         render_fuzzy_finder_window(ctx, app);
+    }
+    if app.keybindings_help_open {
+        render_keybindings_help_window(ctx, app);
     }
 }
 
@@ -890,6 +910,53 @@ fn render_fuzzy_finder_window(ctx: &egui::Context, app: &mut EditorApp) {
     }
 }
 
+fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+    egui::Window::new("Keyboard shortcuts")
+        .collapsible(false)
+        .resizable(false)
+        .default_size([420.0, 520.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label("Click a row or press Esc to close.");
+            ui.separator();
+
+            egui::ScrollArea::vertical()
+                .id_salt("keybindings_help_scroll")
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    let mut rows: Vec<(&str, &str)> = core::COMMANDS
+                        .iter()
+                        .filter(|cmd| !cmd.keybinding.is_empty())
+                        .map(|cmd| (cmd.keybinding, cmd.label))
+                        .collect();
+                    rows.sort_by(|a, b| a.1.cmp(b.1));
+
+                    for (key, action) in rows {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(key)
+                                    .monospace()
+                                    .strong()
+                                    .color(ui.visuals().hyperlink_color),
+                            );
+                            ui.with_layout(
+                                egui::Layout::top_down(egui::Align::LEFT),
+                                |ui| {
+                                    ui.label(action);
+                                },
+                            );
+                        });
+                    }
+                });
+        });
+
+    if !open {
+        app.keybindings_help_open = false;
+    }
+}
+
 fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     // Compute the ScrollArea's persistent id up front so we can read
     // its `State.offset` from inside the closure (where the auto-scroll
@@ -1004,8 +1071,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         None
     };
 
-    // Animate the caret's vertical position so it slides between
-    // lines instead of teleporting. Three cases:
+    // If enabled, animate the caret's vertical position so it slides
+    // between lines instead of teleporting. Otherwise, snap directly
+    // to the target line. Three animation snap cases:
     //
     // 1. View scrolled (edge-stick) → snap. The scroll override
     //    already moved the content; animating on top would make the
@@ -1017,7 +1085,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     //    without lagging behind rapid key repeats.
     let target_caret_y = cursor_line as f32 * line_height;
     let tab_switched = app.active != app.prev_active;
-    if scroll_override_y.is_some() || tab_switched || app.caret_anim_y.is_nan() {
+    if !app.config.caret_animation
+        || scroll_override_y.is_some()
+        || tab_switched
+        || app.caret_anim_y.is_nan()
+    {
         app.caret_anim_y = target_caret_y;
     } else {
         let dt = ui.input(|i| i.stable_dt).min(0.1);

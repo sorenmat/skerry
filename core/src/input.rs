@@ -225,6 +225,8 @@ pub enum EditorEvent {
     FuzzyFinderExecute,
     /// Close the fuzzy finder.
     FuzzyFinderClose,
+    /// Toggle the keybindings help window.
+    ToggleKeybindingsHelp,
     /// Toggle the git gutter on the active document.
     ToggleGitGutter,
     /// Refresh the git gutter for the active document.
@@ -361,6 +363,7 @@ mod tests {
         let _ = EditorEvent::FuzzyFinderMove { delta: 1 };
         let _ = EditorEvent::FuzzyFinderExecute;
         let _ = EditorEvent::FuzzyFinderClose;
+        let _ = EditorEvent::ToggleKeybindingsHelp;
         let _ = EditorEvent::ToggleGitGutter;
         let _ = EditorEvent::RefreshGitGutter;
         let _ = EditorEvent::NextHunk;

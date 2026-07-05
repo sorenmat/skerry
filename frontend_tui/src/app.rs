@@ -851,6 +851,9 @@ impl App {
             EditorEvent::FuzzyFinderClose => {
                 self.fuzzy_finder.open = false;
             }
+            EditorEvent::ToggleKeybindingsHelp => {
+                // GUI-only help window; ignored in the TUI for now.
+            }
             EditorEvent::ToggleGitGutter => {
                 let enabled = !self.active_doc().view.git_gutter_enabled;
                 self.active_doc_mut().view.git_gutter_enabled = enabled;

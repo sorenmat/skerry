@@ -63,6 +63,8 @@ pub struct EditorApp {
     pub project_tree_focused: bool,
     /// Project-wide search dialog state.
     pub project_search: ProjectSearch,
+    /// Whether the keybindings help window is open.
+    pub keybindings_help_open: bool,
     /// Fuzzy file finder state.
     pub fuzzy_finder: FuzzyFinder,
     /// Command palette state.
@@ -202,6 +204,7 @@ impl EditorApp {
             project_tree_selected: 0,
             project_tree_focused: false,
             project_search: ProjectSearch::default(),
+            keybindings_help_open: false,
             fuzzy_finder: FuzzyFinder::default(),
             command_palette: CommandPalette::default(),
             config,
@@ -228,6 +231,17 @@ impl EditorApp {
         } else {
             false
         }
+    }
+
+    /// Toggle smooth vertical caret animation in the GUI.
+    pub fn toggle_caret_animation(&mut self) {
+        self.config.caret_animation = !self.config.caret_animation;
+        self.snap_caret_animation();
+        self.status_message = Some(if self.config.caret_animation {
+            "Caret animation: on".to_string()
+        } else {
+            "Caret animation: off".to_string()
+        });
     }
 
     /// Index of the currently focused document.
@@ -374,6 +388,18 @@ impl EditorApp {
                 // bounce back into a close-confirm prompt.
                 if self.dispatch_modal_event(event) {
                     continue;
+                }
+                // The keybindings help window closes on Esc.
+                if self.keybindings_help_open {
+                    if let eframe::egui::Event::Key {
+                        key: eframe::egui::Key::Escape,
+                        pressed: true,
+                        ..
+                    } = event
+                    {
+                        self.keybindings_help_open = false;
+                        continue;
+                    }
                 }
                 if let Some(editor_event) = crate::event::translate_event(event) {
                     self.handle_event(editor_event);
@@ -896,6 +922,9 @@ impl EditorApp {
             }
             EditorEvent::FuzzyFinderClose => {
                 self.fuzzy_finder.open = false;
+            }
+            EditorEvent::ToggleKeybindingsHelp => {
+                self.keybindings_help_open = !self.keybindings_help_open;
             }
             EditorEvent::ToggleGitGutter => {
                 let enabled = !self.active_doc().view.git_gutter_enabled;
@@ -3397,6 +3426,28 @@ mod tests {
         let buf: Box<dyn Buffer> = Box::new(core::PieceTableBuffer::from_bytes(b"hi".to_vec()));
         let app = EditorApp::new_with_documents(vec![core::Document::new(buf)], config);
         assert_eq!(app.theme.name, "Light");
+    }
+
+    #[test]
+    fn caret_animation_defaults_off() {
+        let app = app_with("hello");
+        assert!(!app.config.caret_animation);
+    }
+
+    #[test]
+    fn toggle_caret_animation_updates_config_and_status() {
+        let mut app = app_with("hello");
+        app.caret_anim_y = 12.0;
+
+        app.toggle_caret_animation();
+        assert!(app.config.caret_animation);
+        assert!(app.caret_anim_y.is_nan());
+        assert_eq!(app.status_message, Some("Caret animation: on".to_string()));
+
+        app.toggle_caret_animation();
+        assert!(!app.config.caret_animation);
+        assert!(app.caret_anim_y.is_nan());
+        assert_eq!(app.status_message, Some("Caret animation: off".to_string()));
     }
 
     // ----- project-wide search / replace -----

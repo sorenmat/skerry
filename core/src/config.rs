@@ -60,6 +60,9 @@ pub struct Config {
     /// Whether the git gutter is enabled by default for new documents.
     #[serde(default = "default_git_gutter")]
     pub git_gutter: bool,
+    /// Whether the GUI caret slides between lines instead of snapping.
+    #[serde(default)]
+    pub caret_animation: bool,
 }
 
 fn default_git_gutter() -> bool {
@@ -95,6 +98,7 @@ impl Default for Config {
             soft_wrap: None,
             scroll_margin_lines: None,
             git_gutter: default_git_gutter(),
+            caret_animation: false,
         }
     }
 }
@@ -217,6 +221,7 @@ mod tests {
             soft_wrap: Some(true),
             scroll_margin_lines: Some(5),
             git_gutter: false,
+            caret_animation: true,
             ..Config::default()
         };
         let path = dir.path().join("config.json");
@@ -224,6 +229,12 @@ mod tests {
 
         let loaded: Config = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn missing_caret_animation_defaults_to_off() {
+        let loaded: Config = serde_json::from_str("{}").unwrap();
+        assert!(!loaded.caret_animation);
     }
 
     #[test]
