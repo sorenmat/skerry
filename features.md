@@ -321,13 +321,19 @@ is open.
 - **Find-match highlight** — amber rectangles for every match;
   current match in a brighter shade. Suppressed when a selection is
   active.
-- **Syntax highlighting** — powered by syntect; 200+ bundled
-  languages. Per-line, lazily cached, invalidated on edit. Files
-  over 2 MB skip highlighting to stay responsive.
+- **Syntax highlighting** — powered by [tree-sitter](https://tree-sitter.github.io/);
+  incremental parsing with per-document parse trees reparsed on edits
+  via `InputEdit`, and viewport-scoped highlight queries
+  (`QueryCursor::set_byte_range`) so only visible lines are tokenised.
+  Languages: Rust, Go, JavaScript/TypeScript (incl. TSX/JSX), Python,
+  C/C++, JSON. Files over 32 MB skip the tree to keep load fast;
+  queries carry a 15 ms cancellation budget so a pathological region
+  can't stall a frame.
 - **Theme selector** — active theme name shown in the status bar.
   Click it (GUI) or press F5 (both frontends) to cycle through the
-  bundled syntect themes. Changing themes invalidates the highlight
-  cache so colors update immediately.
+  bundled themes (Ocean Dark, Gruvbox Dark, Solarized Light, One Dark).
+  Changing themes invalidates the highlight cache so colors update
+  immediately.
 - **Status bar** — single line at the bottom showing the latest
   status message and the cursor position `L{line}:{col} / L{total}`.
 - **GUI: monospace 14 pt font**, 2 px caret. Tab characters render
@@ -440,9 +446,9 @@ use different conventions without re-configuring.
 
 ## Known limitations (shipped today)
 
-- **No custom theme files.** Bundled syntect themes and the built-in
+- **No custom theme files.** Bundled tree-sitter themes and the built-in
   dark/light UI themes can be cycled at runtime, but loading a user
-  `.tmTheme` or custom UI theme file is not implemented.
+  theme file is not implemented.
 - **TUI soft-wrap rendering is deferred** — the toggle changes
   state and the status bar reports the new value, but long lines do
   not yet wrap visually in the TUI. The state is preserved

@@ -182,11 +182,24 @@ impl Document {
     /// Build the per-document tree-sitter parse tree from the buffer's
     /// current bytes. No-op for languages with no bundled grammar
     /// (`ts_tree` stays `None`, document renders as plain text).
+    /// Maximum file size (in bytes) for which we build a tree-sitter parse
+    /// tree on load. Above this the initial full parse could stall load;
+    /// the document renders as plain text instead. Multi-MB JSON (the case
+    /// that motivated this) is well under the limit — this guards against
+    /// the 100 MB+ extreme.
+    const TS_TREE_SIZE_LIMIT: usize = 32 * 1024 * 1024;
+
     pub fn init_ts_tree(&mut self) {
         let path = self.path();
         let Some(grammar) = crate::ts::grammar_for_path(path) else {
             return;
         };
+        // Skip very large files: the initial full parse would stall load.
+        // The doc renders as plain text; highlighting is a nice-to-have,
+        // not worth a multi-second hang.
+        if self.buffer.len() > Self::TS_TREE_SIZE_LIMIT {
+            return;
+        }
         let Some(mut tree) = crate::ts::DocTree::new(grammar) else {
             return;
         };

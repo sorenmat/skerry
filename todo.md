@@ -14,13 +14,13 @@ Prioritized plan based on the current feature set and the biggest gaps next to m
 ## Phase 2 — Language smarts (the "world-class" leap)
 
 - [ ] LSP client integration
-  - [ ] Autocomplete
-  - [ ] Go to definition
-  - [ ] Hover documentation
-  - [ ] Diagnostics / error squiggles
+  - [x] Autocomplete
+  - [x] Go to definition
+  - [x] Hover documentation
+  - [x] Diagnostics / error squiggles
   - [ ] Rename symbol
   - [ ] Format on save
-- [ ] Tree-sitter parser for accurate highlighting and local-variable colors
+- [x] Tree-sitter parser for accurate highlighting and local-variable colors
 - [ ] Basic symbol outline / breadcrumbs
 
 ## Phase 3 — Search & project workflow

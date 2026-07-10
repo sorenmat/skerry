@@ -2,36 +2,50 @@
 //! document's parse tree, scoped to a byte range, and produces
 //! [`ColorSegment`]s the renderer draws.
 //!
-//! This is the tree-sitter analogue of `SyntaxEngine::highlight_line_with`.
-//! The key difference is **viewport-limited** querying: `QueryCursor` is
+//! The key property is **viewport-limited** querying: `QueryCursor` is
 //! constrained to `byte_range` via `set_byte_range`, so only the visible
-//! region of the document is examined — critical for the multi-MB file case
-//! that motivated the syntect swap.
+//! region of the document is examined — critical for the multi-MB file
+//! case. A time-based cancellation budget is wired via
+//! `captures_with_options` so a pathological query on a huge region can't
+//! stall a frame; partial results are returned and re-tried next frame.
 //!
 //! Queries are compiled once per grammar and cached in a process-global
 //! `OnceLock` table (compilation parses the `.scm` source and is the most
 //! expensive one-time cost per language).
 
+use std::ops::ControlFlow;
 use std::ops::Range;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
-use tree_sitter::{Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Query, QueryCursor, QueryCursorOptions, StreamingIterator, Tree};
 
 use crate::{ColorSegment, HighlightColor};
 
 use super::theme::TsTheme;
 use super::Grammar;
 
+/// Maximum wall-clock time a single highlight pass may take before it is
+/// cancelled. The viewport is already byte-range-limited so this is a
+/// safety net for pathological queries (deeply nested captures, regex-heavy
+/// patterns), not the primary bound. At 15 ms it leaves headroom in a 60 fps
+/// frame (~16.6 ms) for layout and painting.
+const HIGHLIGHT_BUDGET: Duration = Duration::from_millis(15);
+
 /// Highlight the portion of `tree` within `byte_range`, returning merged
 /// [`ColorSegment`]s whose ranges are **document-absolute** byte offsets
-/// (the caller — both frontends' `get_syntax_segments` — translates them to
-/// line-local offsets when building per-line caches).
+/// (the caller translates them to line-local offsets when building per-line
+/// caches).
 ///
 /// Captures whose name the theme doesn't recognise are skipped (that span
 /// renders with the default text color). Overlapping captures are resolved
 /// by query order: later captures paint over earlier ones, matching how
 /// tree-sitter queries express precedence (e.g. a `variable.parameter`
 /// capture inside a `function` capture wins).
+///
+/// If the query exceeds [`HIGHLIGHT_BUGET`], it is cancelled and whatever
+/// captures were collected so far are returned (the caller caches partial
+/// results and re-runs the next frame when the viewport is revisited).
 pub fn highlight_range(
     tree: &Tree,
     grammar: &Grammar,
@@ -47,17 +61,30 @@ pub fn highlight_range(
     let mut cursor = QueryCursor::new();
     cursor.set_byte_range(byte_range);
 
-    // Collect raw captures (node byte range + capture name), then sort and
-    // merge into non-overlapping ColorSegments. We collect first because
-    // the streaming iterator borrows the cursor and we want to own the
+    // Collect raw captures (node byte range + capture name), then merge
+    // into non-overlapping ColorSegments. We collect first because the
+    // streaming iterator borrows the cursor and we want to own the
     // results before building segments.
     //
     // `QueryCaptures` yields `(QueryMatch, capture_index_within_match)` —
     // one capture at a time, in document order — which is exactly what we
     // need for a left-to-right paint walk.
+    //
+    // The progress callback cancels the query if it exceeds the budget.
+    // Partial results are fine — the caller caches them and re-queries the
+    // next time the viewport is revisited.
+    let deadline = Instant::now() + HIGHLIGHT_BUDGET;
+    let mut callback = move |_state: &tree_sitter::QueryCursorState| {
+        if Instant::now() > deadline {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let mut options = QueryCursorOptions::new().progress_callback(&mut callback);
     let mut raw: Vec<(Range<usize>, HighlightColor)> = Vec::new();
     let root = tree.root_node();
-    let mut captures = cursor.captures(query, root, source);
+    let mut captures = cursor.captures_with_options(query, root, source, options.reborrow());
     // StreamingIterator contract: advance() must be called before get()
     // returns data. Loop = advance, then read, then break when done.
     loop {
