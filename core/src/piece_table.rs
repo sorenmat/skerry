@@ -206,6 +206,10 @@ impl PieceTableBuffer {
     ///
     /// Empty files fall back to in-memory `Bytes` storage because
     /// `memmap2` cannot map a zero-length file.
+    ///
+    /// The `source_path` is canonicalized to an absolute path (resolving
+    /// symlinks and `.`/`..` components). This matters because LSP needs
+    /// a `file://` URI, and `Url::from_file_path` rejects relative paths.
     pub fn from_path(path: PathBuf) -> Result<Self, std::io::Error> {
         let file = std::fs::File::open(&path)?;
         let len = file.metadata()?.len() as usize;
@@ -225,7 +229,7 @@ impl PieceTableBuffer {
 
         let saved = storage.as_slice().to_vec();
         let mut buf = Self::new();
-        buf.source_path = Some(path);
+        buf.source_path = Some(absolutize(&path));
         buf.original = storage;
         let bytes_len = buf.original.len();
         if bytes_len > 0 {
@@ -242,9 +246,11 @@ impl PieceTableBuffer {
     }
 
     /// Like [`Self::from_bytes`] but records a source path for save.
+    /// The path is made absolute (see [`absolutize`]) so LSP URIs and
+    /// save both work for relative CLI arguments.
     pub fn from_bytes_with_path(content: Vec<u8>, path: PathBuf) -> Self {
         let mut buf = Self::from_bytes(content);
-        buf.source_path = Some(path);
+        buf.source_path = Some(absolutize(&path));
         buf
     }
 
@@ -999,6 +1005,51 @@ impl Buffer for PieceTableBuffer {
     }
 }
 
+/// Resolve `path` to an absolute path. If the file exists, use
+/// [`std::fs::canonicalize`] (which resolves symlinks too); otherwise join
+/// the path with the current working directory so it's at least absolute.
+///
+/// This exists because LSP needs a `file://` URI and `Url::from_file_path`
+/// rejects relative paths — so a buffer opened from a relative CLI argument
+/// like `../src/main.go` would have no URI and LSP would silently never
+/// start for it.
+fn absolutize(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        // File doesn't exist yet (new buffer) — make it absolute by
+        // joining with the cwd. canonicalize would fail here.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // Normalize `.`/`..` without requiring the file to exist.
+        let joined = cwd.join(path);
+        normalize_path(&joined)
+    })
+}
+
+/// Normalize `.` and `..` components in `path` without touching the
+/// filesystem (unlike `canonicalize`, which requires the file to exist).
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut stack: Vec<std::path::Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                // Pop the last normal component; if there's none (e.g. the
+                // path starts with `..`), keep it so we don't lose info.
+                match stack.last() {
+                    Some(std::path::Component::Normal(_)) => {
+                        stack.pop();
+                    }
+                    _ => stack.push(component),
+                }
+            }
+            std::path::Component::CurDir => {} // drop `.`
+            other => stack.push(other),
+        }
+    }
+    stack.iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1592,6 +1643,52 @@ mod tests {
 
         let result = PieceTableBuffer::from_path(path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_path_canonicalizes_relative_path_to_absolute() {
+        // Regression: a relative CLI path like "src/main.rs" used to be
+        // stored as-is, which made Url::from_file_path reject it (it
+        // requires absolute paths) and LSP silently never started. The
+        // source_path must now be absolute.
+        let dir = std::env::temp_dir();
+        let file = dir.join(format!(
+            "the_editor_abs_path_{}.rs",
+            std::process::id()
+        ));
+        std::fs::write(&file, b"x").unwrap();
+
+        // Run from `dir` so the relative path "the_editor_abs_path_<pid>.rs"
+        // resolves. Save and restore the cwd so the test is isolated.
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let rel = std::path::PathBuf::from(file.file_name().unwrap().to_str().unwrap());
+        let buf = PieceTableBuffer::from_path(rel).unwrap();
+        std::env::set_current_dir(&prev_cwd).unwrap();
+        std::fs::remove_file(&file).ok();
+
+        let stored = buf.source_path().unwrap();
+        assert!(
+            stored.is_absolute(),
+            "source_path should be absolute, got {stored:?}"
+        );
+        // And it should produce a valid file:// URI (the thing that was
+        // actually broken).
+        assert!(url::Url::from_file_path(stored).is_ok());
+    }
+
+    #[test]
+    fn from_bytes_with_path_makes_relative_path_absolute() {
+        // Same regression but for the new-buffer path (file doesn't exist
+        // yet). Uses the cwd-join fallback since canonicalize would fail.
+        let rel = std::path::PathBuf::from("some/relative/new.rs");
+        let buf = PieceTableBuffer::from_bytes_with_path(Vec::new(), rel);
+        let stored = buf.source_path().unwrap();
+        assert!(
+            stored.is_absolute(),
+            "source_path should be absolute, got {stored:?}"
+        );
+        assert!(url::Url::from_file_path(stored).is_ok());
     }
 
     #[test]
