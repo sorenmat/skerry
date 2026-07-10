@@ -65,6 +65,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     </array>
     <key>CFBundleExecutable</key>
     <string>droplet</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.smo.the-editor</string>
     <key>CFBundleIconFile</key>
     <string>droplet</string>
     <key>CFBundleIconName</key>

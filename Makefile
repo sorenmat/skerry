@@ -28,7 +28,7 @@ help:
 	@echo ""
 	@echo "macOS app bundle:"
 	@echo "  make app-bundle     Build target/the_editor.app from debug binary"
-	@echo "  make register-app   Register bundle as default app for .rs and .go"
+	@echo "  make register-app   Build bundle and set it as default app for .rs, .go, .json"
 
 run_tui:
 	cargo run -p frontend_tui -- $(ARGS)
@@ -61,7 +61,5 @@ app-bundle: build-release
 	@./scripts/build-app-bundle.sh
 
 register-app: app-bundle
-	@/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -u "$$(pwd)/target/the_editor.app" 2>/dev/null || true
-	@/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$$(pwd)/target/the_editor.app"
-	@open -a "$$(pwd)/target/the_editor.app"
-	@echo "Registered target/the_editor.app for .rs, .go, and .json"
+	@./scripts/register-app.sh
+	@echo "Set target/the_editor.app as default for .rs, .go, and .json"
