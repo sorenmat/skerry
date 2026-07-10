@@ -18,7 +18,7 @@
 
 use core::selection_in_line;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Position, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -213,6 +213,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Fuzzy file finder draws on top of everything else.
     if app.fuzzy_finder.open {
         render_fuzzy_finder_overlay(f, area, app);
+    }
+
+    // LSP completion popup draws on top of everything else.
+    if app.lsp_completion.open {
+        render_lsp_completion_overlay(f, area, app);
     }
 }
 
@@ -474,6 +479,12 @@ fn command_palette_rect(area: Rect) -> Rect {
     centered_rect(width, height, area)
 }
 
+fn lsp_completion_rect(area: Rect) -> Rect {
+    let width = (area.width as f32 * 0.5).clamp(30.0, 60.0) as u16;
+    let height = (area.height as f32 * 0.5).clamp(8.0, 20.0) as u16;
+    centered_rect(width, height, area)
+}
+
 /// Render the command palette as a centred popup.
 fn render_command_palette_overlay(f: &mut Frame, area: Rect, app: &App) {
     let overlay_rect = command_palette_rect(area);
@@ -538,6 +549,76 @@ fn render_command_palette_overlay(f: &mut Frame, area: Rect, app: &App) {
         height: 1,
     };
     let hint = Line::from(" Enter to run · Up/Down · Esc to close ".to_string());
+    f.render_widget(Paragraph::new(hint), hint_area);
+}
+
+/// Render the LSP completion popup as a centred popup.
+fn render_lsp_completion_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let overlay_rect = lsp_completion_rect(area);
+
+    f.render_widget(Clear, overlay_rect);
+    let title = format!(" Completions ({}) ", app.lsp_completion.items.len());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green))
+        .title(title);
+    let inner = block.inner(overlay_rect);
+    f.render_widget(block, overlay_rect);
+
+    if app.lsp_completion.items.is_empty() {
+        let msg = if app.lsp_completion.pending {
+            "Loading..."
+        } else {
+            "No completions"
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(msg)).alignment(Alignment::Center),
+            inner,
+        );
+        return;
+    }
+
+    // Reserve top row for title context and bottom row for hint.
+    let items_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: inner.height.saturating_sub(1),
+    };
+
+    let selected = app.lsp_completion.selected;
+    let selected_style = Style::default()
+        .bg(Color::Rgb(60, 120, 80))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, item) in app.lsp_completion.items.iter().enumerate() {
+        if lines.len() >= items_area.height as usize {
+            break;
+        }
+        let label = item.label.clone();
+        let truncated = label
+            .chars()
+            .take(items_area.width as usize)
+            .collect::<String>();
+        let line = if i == selected {
+            Line::from(Span::styled(truncated, selected_style))
+        } else {
+            Line::from(truncated)
+        };
+        lines.push(line);
+    }
+
+    f.render_widget(Paragraph::new(lines), items_area);
+
+    let hint_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height - 1,
+        width: inner.width,
+        height: 1,
+    };
+    let hint = Line::from(" Enter/Tab insert · Up/Down · Esc close ".to_string());
     f.render_widget(Paragraph::new(hint), hint_area);
 }
 
@@ -777,7 +858,26 @@ fn render_status(app: &App, area_width: u16) -> Line<'static> {
         } else {
             String::new()
         };
-    let left = format!(" {message}  |  {pos}{wrap_indicator}{git_indicator}");
+    let lsp_status = app
+        .active_doc()
+        .uri()
+        .and_then(|uri| app.lsp_manager.document_server_status(&uri));
+    let lsp_indicator = if let Some(status) = lsp_status {
+        let name = core::lsp::LspManager::server_display_name(&status.language_id)
+            .unwrap_or(&status.language_id);
+        let symbol = if status.running { '●' } else { '○' };
+        format!("  |  {symbol} {name}")
+    } else if let Some(name) = app
+        .active_doc()
+        .language_id()
+        .filter(|lang| core::lsp::LspManager::is_language_supported(lang))
+        .and_then(|lang| core::lsp::LspManager::server_display_name(lang))
+    {
+        format!("  |  ○ {name}")
+    } else {
+        String::new()
+    };
+    let left = format!(" {message}  |  {pos}{wrap_indicator}{git_indicator}{lsp_indicator}");
     let theme = format!(" {theme} ", theme = app.syntax.theme_name());
     let tree_label = " Tree ";
     let width = area_width as usize;
@@ -804,6 +904,11 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
     let total_lines = app.active_buffer().line_count();
     // Gutter: enough digits to fit the largest line number, minimum 2.
     let gutter_width = total_lines.to_string().len().max(2);
+    let diagnostics: Vec<lsp_types::Diagnostic> = app
+        .active_doc()
+        .uri()
+        .map(|uri| app.lsp_manager.diagnostics(&uri).to_vec())
+        .unwrap_or_default();
 
     let selection_style = Style::default()
         .bg(Color::Rgb(60, 80, 140))
@@ -880,8 +985,44 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             '▲' => Style::default().fg(Color::Red),
             _ => gutter_style,
         };
+
+        // LSP diagnostic severity marker in the gutter.
+        let diag_on_line = diagnostics
+            .iter()
+            .filter(|d| {
+                let start = d.range.start.line as usize;
+                let end = d.range.end.line as usize;
+                start <= line_idx && end >= line_idx
+            })
+            .fold(None, |max_sev, d| match (max_sev, d.severity) {
+                (Some(lsp_types::DiagnosticSeverity::ERROR), _) => max_sev,
+                (_, Some(lsp_types::DiagnosticSeverity::ERROR)) => {
+                    Some(lsp_types::DiagnosticSeverity::ERROR)
+                }
+                (Some(lsp_types::DiagnosticSeverity::WARNING), _) => max_sev,
+                (_, Some(lsp_types::DiagnosticSeverity::WARNING)) => {
+                    Some(lsp_types::DiagnosticSeverity::WARNING)
+                }
+                (Some(lsp_types::DiagnosticSeverity::INFORMATION), _) => max_sev,
+                (_, Some(lsp_types::DiagnosticSeverity::INFORMATION)) => {
+                    Some(lsp_types::DiagnosticSeverity::INFORMATION)
+                }
+                _ => Some(lsp_types::DiagnosticSeverity::HINT),
+            });
+        let (diag_marker, diag_style) = match diag_on_line {
+            Some(lsp_types::DiagnosticSeverity::ERROR) => ('E', Style::default().fg(Color::Red)),
+            Some(lsp_types::DiagnosticSeverity::WARNING) => {
+                ('W', Style::default().fg(Color::Yellow))
+            }
+            Some(lsp_types::DiagnosticSeverity::INFORMATION) => {
+                ('I', Style::default().fg(Color::Blue))
+            }
+            Some(lsp_types::DiagnosticSeverity::HINT) => ('H', Style::default().fg(Color::Gray)),
+            _ => (' ', gutter_style),
+        };
+
         let number_prefix = format!("{:>width$} │ ", line_idx + 1, width = gutter_width);
-        let prefix_chars = 1 + number_prefix.chars().count();
+        let prefix_chars = 2 + number_prefix.chars().count();
         let avail = (viewport_width as usize).saturating_sub(prefix_chars);
 
         // Compute the selected sub-range within this line, if any.
@@ -940,6 +1081,7 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
 
         let mut spans: Vec<Span<'static>> = vec![
             Span::styled(marker.to_string(), marker_style),
+            Span::styled(diag_marker.to_string(), diag_style),
             Span::styled(number_prefix, gutter_style),
         ];
 
@@ -1359,7 +1501,8 @@ fn compute_cursor_screen_pos(app: &App, area: Rect) -> Option<Position> {
     let total_lines = app.active_buffer().line_count();
     let gutter_width = total_lines.to_string().len().max(2);
     let prefix = format!("{:>gutter_width$} │ ", cursor_line + 1);
-    let prefix_chars = prefix.chars().count();
+    // Account for the git-gutter marker and LSP diagnostic marker columns.
+    let prefix_chars = 2 + prefix.chars().count();
 
     // Convert byte column to char column for the cursor's line.
     let line_text = app

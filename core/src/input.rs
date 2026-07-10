@@ -227,6 +227,12 @@ pub enum EditorEvent {
     FuzzyFinderClose,
     /// Toggle the keybindings help window.
     ToggleKeybindingsHelp,
+    /// Request LSP completions at the cursor.
+    LspCompletion,
+    /// Request LSP hover at the cursor.
+    LspHover,
+    /// Request LSP go-to-definition at the cursor.
+    LspGoToDefinition,
     /// Toggle the git gutter on the active document.
     ToggleGitGutter,
     /// Refresh the git gutter for the active document.
@@ -364,6 +370,9 @@ mod tests {
         let _ = EditorEvent::FuzzyFinderExecute;
         let _ = EditorEvent::FuzzyFinderClose;
         let _ = EditorEvent::ToggleKeybindingsHelp;
+        let _ = EditorEvent::LspCompletion;
+        let _ = EditorEvent::LspHover;
+        let _ = EditorEvent::LspGoToDefinition;
         let _ = EditorEvent::ToggleGitGutter;
         let _ = EditorEvent::RefreshGitGutter;
         let _ = EditorEvent::NextHunk;

@@ -66,6 +66,37 @@ pub fn char_col_to_byte_col(line_text: &str, char_col: usize) -> usize {
         .unwrap_or(line_text.len())
 }
 
+/// Convert a visual column within a line into a byte offset.
+///
+/// This is the variant used by mouse/pixel click handlers: each character
+/// occupies one visual column except tab characters, which occupy
+/// `tab_width` columns. The returned byte offset is the start of the
+/// character whose visual span contains `visual_col`, so clicking inside a
+/// tab lands at the tab character, and clicking past the last character
+/// lands at the end of the line.
+pub fn visual_col_to_byte_col(line_text: &str, visual_col: usize, tab_width: usize) -> usize {
+    let tab_width = tab_width.max(1);
+    let mut current = 0usize;
+    for (byte, ch) in line_text.char_indices() {
+        let width = if ch == '\t' { tab_width } else { 1 };
+        if visual_col < current + width {
+            return byte;
+        }
+        current += width;
+    }
+    line_text.len()
+}
+
+/// Return the total visual width of `line_text` in columns, treating tabs
+/// as `tab_width` columns and every other character as one.
+pub fn visual_line_width(line_text: &str, tab_width: usize) -> usize {
+    let tab_width = tab_width.max(1);
+    line_text
+        .chars()
+        .map(|ch| if ch == '\t' { tab_width } else { 1 })
+        .sum()
+}
+
 /// Convert a buffer byte position into `(line, character_column)`.
 pub fn cursor_char_linecol(buffer: &dyn Buffer, pos: usize) -> (usize, usize) {
     let (line, byte_col) = buffer.pos_to_linecol(pos).unwrap_or((0, 0));
@@ -291,5 +322,33 @@ mod tests {
     fn format_position_basic() {
         assert_eq!(format_position(0, 0, 10), "L1:1 / L10");
         assert_eq!(format_position(41, 4, 100), "L42:5 / L100");
+    }
+
+    #[test]
+    fn visual_col_to_byte_col_accounts_for_tabs() {
+        let s = "\tfoo";
+        // Tab occupies columns 0..4, then 'f' at 4, 'o' at 5, 'o' at 6.
+        assert_eq!(visual_col_to_byte_col(s, 0, 4), 0, "start of tab");
+        assert_eq!(visual_col_to_byte_col(s, 3, 4), 0, "inside tab");
+        assert_eq!(visual_col_to_byte_col(s, 4, 4), 1, "start of 'f'");
+        assert_eq!(visual_col_to_byte_col(s, 6, 4), 3, "start of last 'o'");
+        assert_eq!(visual_col_to_byte_col(s, 100, 4), 4, "past end clamps");
+    }
+
+    #[test]
+    fn visual_col_to_byte_col_no_tabs() {
+        let s = "héllo";
+        assert_eq!(visual_col_to_byte_col(s, 0, 4), 0);
+        assert_eq!(visual_col_to_byte_col(s, 1, 4), 1);
+        assert_eq!(visual_col_to_byte_col(s, 4, 4), 5);
+        assert_eq!(visual_col_to_byte_col(s, 5, 4), 6);
+        assert_eq!(visual_col_to_byte_col(s, 100, 4), 6);
+    }
+
+    #[test]
+    fn visual_line_width_counts_tabs() {
+        assert_eq!(visual_line_width("abc", 4), 3);
+        assert_eq!(visual_line_width("a\tb", 4), 6);
+        assert_eq!(visual_line_width("\t\t", 2), 4);
     }
 }

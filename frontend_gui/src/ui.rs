@@ -14,7 +14,10 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 
-use core::{byte_to_char_col, format_position, selection_in_line, EditorEvent};
+use core::{
+    byte_to_char_col, char_col_to_byte_col, format_position, selection_in_line,
+    visual_col_to_byte_col, EditorEvent,
+};
 use eframe::egui;
 
 use crate::app::{CloseChoice, EditorApp};
@@ -87,7 +90,11 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
             let dirty = if doc.is_dirty() { "*" } else { "" };
             let stale = if doc.external_change { "!" } else { "" };
 
-            let bg = if is_active { theme.accent } else { theme.panel_bg };
+            let bg = if is_active {
+                theme.accent
+            } else {
+                theme.panel_bg
+            };
             let text_color = if is_active {
                 theme.accent_text
             } else {
@@ -149,6 +156,23 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
 }
 
 pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
+    app.lsp_manager.poll();
+    app.lsp_open_active();
+    app.lsp_change_active();
+    if let Some(status) = app.lsp_manager.take_status() {
+        app.status_message = Some(status);
+    }
+
+    // Update the LSP completion popup if a response just arrived.
+    if app.lsp_completion.pending {
+        if let Some(uri) = app.active_doc().uri() {
+            if let Some(list) = app.lsp_manager.completion_result(&uri) {
+                app.lsp_completion.items = list.items.clone();
+                app.lsp_completion.pending = false;
+            }
+        }
+    }
+
     let theme = *theme(app);
     let (status_message, status_pos) = {
         let msg = app.status_message.clone().unwrap_or_default();
@@ -170,6 +194,20 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
             }
         }
         (msg, pos)
+    };
+
+    let lsp_status = app
+        .active_doc()
+        .uri()
+        .and_then(|uri| app.lsp_manager.document_server_status(&uri));
+    let lsp_fallback = if lsp_status.is_none() {
+        app.active_doc()
+            .language_id()
+            .filter(|lang| core::lsp::LspManager::is_language_supported(lang))
+            .and_then(|lang| core::lsp::LspManager::server_display_name(lang))
+            .map(|name| name.to_string())
+    } else {
+        None
     };
 
     egui::TopBottomPanel::top("header")
@@ -235,6 +273,30 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                             }
                         });
                     hand_cursor(&ui_combo.response, ui.ctx());
+                    if let Some(status) = lsp_status {
+                        let name = core::lsp::LspManager::server_display_name(&status.language_id)
+                            .unwrap_or(&status.language_id);
+                        let (symbol, color) = if status.running {
+                            ("●", theme.git_added)
+                        } else {
+                            ("○", theme.error)
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("{symbol} {name}"))
+                                .color(color)
+                                .monospace(),
+                        );
+                    } else if let Some(name) = lsp_fallback.as_ref() {
+                        // The language is supported but the document has not
+                        // been registered with the LSP manager yet (e.g. first
+                        // frame) or server spawn failed. Show a greyed-out
+                        // placeholder so the user still sees the language.
+                        ui.label(
+                            egui::RichText::new(format!("○ {name}"))
+                                .color(theme.error)
+                                .monospace(),
+                        );
+                    }
                     let tree_label = if app.project_tree_open {
                         "🌳 Tree"
                     } else {
@@ -245,8 +307,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                     if tree_btn.clicked() {
                         toggle_tree = true;
                     }
-                    let caret_btn =
-                        ui.selectable_label(app.config.caret_animation, "Caret anim");
+                    let caret_btn = ui.selectable_label(app.config.caret_animation, "Caret anim");
                     hand_cursor(&caret_btn, ui.ctx());
                     if caret_btn.clicked() {
                         toggle_caret_animation = true;
@@ -478,6 +539,12 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     }
     if app.keybindings_help_open {
         render_keybindings_help_window(ctx, app);
+    }
+    if app.lsp_completion.open {
+        render_lsp_completion_popup(ctx, app);
+    }
+    if app.lsp_hover.open {
+        render_lsp_hover_tooltip(ctx, app);
     }
 }
 
@@ -1043,12 +1110,9 @@ fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
                                     .strong()
                                     .color(ui.visuals().hyperlink_color),
                             );
-                            ui.with_layout(
-                                egui::Layout::top_down(egui::Align::LEFT),
-                                |ui| {
-                                    ui.label(action);
-                                },
-                            );
+                            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                ui.label(action);
+                            });
                         });
                     }
                 });
@@ -1057,6 +1121,83 @@ fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
     if !open {
         app.keybindings_help_open = false;
     }
+}
+
+fn render_lsp_hover_tooltip(ctx: &egui::Context, app: &mut EditorApp) {
+    if !app.lsp_hover.open || app.lsp_hover.text.is_empty() {
+        return;
+    }
+    let theme = *theme(app);
+    let text = app.lsp_hover.text.clone();
+    let pos = ctx
+        .input(|i| i.pointer.latest_pos())
+        .unwrap_or_else(|| ctx.screen_rect().center());
+    egui::Window::new("Hover")
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .fixed_pos(pos + egui::vec2(12.0, 12.0))
+        .default_size([320.0, 120.0])
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .color(theme.panel_text)
+                    .monospace(),
+            );
+        });
+}
+
+fn render_lsp_completion_popup(ctx: &egui::Context, app: &mut EditorApp) {
+    let theme = *theme(app);
+    egui::Window::new("Completions")
+        .collapsible(false)
+        .resizable(false)
+        .default_size([320.0, 240.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            if app.lsp_completion.pending && app.lsp_completion.items.is_empty() {
+                ui.label("Loading completions...");
+                return;
+            }
+            if app.lsp_completion.items.is_empty() {
+                ui.label("No completions.");
+                return;
+            }
+
+            egui::ScrollArea::vertical()
+                .id_salt("lsp_completion_scroll")
+                .auto_shrink([false; 2])
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    // Clone the items so clicking can mutate app state.
+                    let items: Vec<lsp_types::CompletionItem> = app.lsp_completion.items.clone();
+                    for (i, item) in items.iter().enumerate() {
+                        let is_selected = i == app.lsp_completion.selected;
+                        let label = if let Some(detail) = item.detail.as_deref() {
+                            format!("{} — {}", item.label, detail)
+                        } else {
+                            item.label.clone()
+                        };
+                        let text = if is_selected {
+                            egui::RichText::new(label)
+                                .monospace()
+                                .strong()
+                                .color(theme.accent_text)
+                                .background_color(theme.accent)
+                        } else {
+                            egui::RichText::new(label)
+                                .monospace()
+                                .color(theme.panel_text)
+                        };
+                        let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                        hand_cursor(&response, ui.ctx());
+                        if response.clicked() {
+                            app.lsp_completion.selected = i;
+                            app.apply_lsp_completion();
+                        }
+                    }
+                });
+        });
 }
 
 fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
@@ -1074,6 +1215,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     let total_lines = app.active_buffer().line_count();
     let gutter_width = total_lines.to_string().len().max(2);
     let font_id = egui::FontId::monospace(FONT_SIZE);
+    let diagnostics: Vec<lsp_types::Diagnostic> = app
+        .active_doc()
+        .uri()
+        .map(|uri| app.lsp_manager.diagnostics(&uri).to_vec())
+        .unwrap_or_default();
 
     // Detect cursor movement so we can auto-scroll the ScrollArea to
     // bring the cursor back into view. Without this, PageUp/PageDown
@@ -1119,6 +1265,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         .active_buffer()
         .pos_to_linecol(cursor_pos)
         .unwrap_or((0, 0));
+
+    // Clear the Cmd-key link highlight; it will be recomputed below
+    // if Command is held and the pointer is over an identifier.
+    app.cmd_link.range = None;
 
     let selection = app.active_buffer().selection();
     let sel_range: Option<std::ops::Range<usize>> = if selection.is_collapsed() {
@@ -1240,13 +1390,14 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         let painter = ui.painter_at(rect);
 
         // Show a text cursor over the editable area (right of the
-        // gutter), and a pointing hand over the gutter numbers.
+        // gutter), a pointing hand when Command is held over a linkable
+        // token, and a pointing hand over the gutter numbers.
         if response.hovered() {
-            if let Some(pos) = response.hover_pos() {
-                let gutter_right = rect.left()
-                    + GIT_GUTTER_WIDTH
-                    + gutter_width as f32 * char_width
-                    + char_width;
+            if app.cmd_link.range.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            } else if let Some(pos) = response.hover_pos() {
+                let gutter_right =
+                    rect.left() + GIT_GUTTER_WIDTH + gutter_width as f32 * char_width + char_width;
                 if pos.x >= gutter_right {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                 } else {
@@ -1272,6 +1423,34 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         if visible_lines > 0 {
             app.viewport_lines = visible_lines;
         }
+
+        // While Command is held on macOS, track the token under the
+        // pointer so we can underline it and turn clicks into
+        // go-to-definition requests.
+        let cmd_pressed = ui.input(|i| i.modifiers.command);
+        let cmd_pointer: Option<(usize, usize)> = if cmd_pressed && response.hovered() {
+            response.hover_pos().and_then(|pos| {
+                let rel_x = pos.x - rect.left();
+                let rel_y = pos.y - rect.top();
+                if rel_y < 0.0 {
+                    return None;
+                }
+                let line_offset = (rel_y / line_height).floor() as usize;
+                if line_offset >= total_lines {
+                    return None;
+                }
+                let text_x_relative = GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
+                    - app.active_doc().view.scroll_x_cols as f32 * char_width;
+                let char_col = if rel_x < text_x_relative {
+                    0usize
+                } else {
+                    ((rel_x - text_x_relative) / char_width) as usize
+                };
+                Some((line_offset, char_col))
+            })
+        } else {
+            None
+        };
 
         // Compute the visible line range from the ScrollArea's clip
         // rect. Rendering only visible lines keeps large files
@@ -1349,10 +1528,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 };
                 if let Some(color) = bar_color {
                     let bar_rect = egui::Rect::from_min_size(
-                        egui::pos2(
-                            rect.left() + (GIT_GUTTER_WIDTH - 4.0) / 2.0,
-                            y + 3.0,
-                        ),
+                        egui::pos2(rect.left() + (GIT_GUTTER_WIDTH - 4.0) / 2.0, y + 3.0),
                         egui::vec2(4.0, line_height - 6.0),
                     );
                     painter.rect_filled(bar_rect, 2.0, color);
@@ -1390,9 +1566,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 gutter_color,
             );
 
-            let text_x = (rect.left()
-                + GIT_GUTTER_WIDTH
-                + prefix_chars as f32 * char_width
+            let text_x = (rect.left() + GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
                 - app.active_doc().view.scroll_x_cols as f32 * char_width)
                 .round();
 
@@ -1405,6 +1579,21 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 .active_buffer()
                 .line_byte_range(line_idx)
                 .unwrap_or(0..0);
+
+            // If Command is held and the pointer is on this line,
+            // identify the identifier token under the pointer.
+            if cmd_pointer.map(|(l, _)| l) == Some(line_idx) {
+                let (_, char_col) = cmd_pointer.unwrap();
+                let (start_char, end_char) = word_range_at_char_col(&line_text, char_col);
+                let start_byte =
+                    line_byte_range.start + core::char_col_to_byte_col(&line_text, start_char);
+                let end_byte =
+                    line_byte_range.start + core::char_col_to_byte_col(&line_text, end_char);
+                if end_byte > start_byte {
+                    app.cmd_link.range = Some((start_byte, end_byte));
+                }
+            }
+
             let sel_in_line: Option<(usize, usize)> = sel_range.as_ref().and_then(|sr| {
                 let intersect = selection_in_line(line_byte_range.clone(), sr.clone())?;
                 let start = line_byte_range.start;
@@ -1692,6 +1881,72 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 }
             }
 
+            // LSP diagnostic underlines.
+            for diag in &diagnostics {
+                let diag_start_line = diag.range.start.line as usize;
+                let diag_end_line = diag.range.end.line as usize;
+                if diag_start_line > line_idx || diag_end_line < line_idx {
+                    continue;
+                }
+
+                let start_byte_in_line = if diag_start_line < line_idx {
+                    line_byte_range.start
+                } else {
+                    line_byte_range.start
+                        + char_col_to_byte_col(&line_text, diag.range.start.character as usize)
+                };
+                let end_byte_in_line = if diag_end_line > line_idx {
+                    line_byte_range.end
+                } else {
+                    line_byte_range.start
+                        + char_col_to_byte_col(&line_text, diag.range.end.character as usize)
+                };
+                let start_byte =
+                    start_byte_in_line.clamp(line_byte_range.start, line_byte_range.end);
+                let end_byte = end_byte_in_line.clamp(line_byte_range.start, line_byte_range.end);
+                if end_byte <= start_byte {
+                    continue;
+                }
+
+                let start_col = byte_to_char_col(&line_text, start_byte - line_byte_range.start);
+                let end_col = byte_to_char_col(&line_text, end_byte - line_byte_range.start);
+                let x1 = text_x + width_of(&line_text.chars().take(start_col).collect::<String>());
+                let x2 = text_x + width_of(&line_text.chars().take(end_col).collect::<String>());
+                let color = match diag.severity {
+                    Some(lsp_types::DiagnosticSeverity::ERROR) => theme.error,
+                    Some(lsp_types::DiagnosticSeverity::WARNING) => theme.warning,
+                    _ => theme.dim_text,
+                };
+                let y_under = y + line_height - 2.0;
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(x1, y_under),
+                        egui::pos2(x2, y_under + 2.0),
+                    ),
+                    0.0,
+                    color,
+                );
+            }
+
+            // macOS Cmd-link underline for the token under the pointer.
+            if let Some((link_start, link_end)) = app.cmd_link.range {
+                let start = link_start.clamp(line_byte_range.start, line_byte_range.end);
+                let end = link_end.clamp(line_byte_range.start, line_byte_range.end);
+                if end > start {
+                    let start_col = byte_to_char_col(&line_text, start - line_byte_range.start);
+                    let end_col = byte_to_char_col(&line_text, end - line_byte_range.start);
+                    let x1 =
+                        text_x + width_of(&line_text.chars().take(start_col).collect::<String>());
+                    let x2 =
+                        text_x + width_of(&line_text.chars().take(end_col).collect::<String>());
+                    let y_under = y + line_height - 3.0;
+                    painter.line_segment(
+                        [egui::pos2(x1, y_under), egui::pos2(x2, y_under)],
+                        egui::Stroke::new(1.5, theme.accent),
+                    );
+                }
+            }
+
             // (Caret painting moved outside the loop — see below.)
         }
 
@@ -1706,9 +1961,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 .map(|c| c.into_owned())
                 .unwrap_or_default();
             let char_col = byte_to_char_col(&caret_line_text, cursor_byte_col);
-            let text_x = (rect.left()
-                + GIT_GUTTER_WIDTH
-                + prefix_chars as f32 * char_width
+            let text_x = (rect.left() + GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
                 - app.active_doc().view.scroll_x_cols as f32 * char_width)
                 .round();
             let caret_x = (text_x + char_col as f32 * char_width).round();
@@ -1728,15 +1981,46 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         // text_x is the SCREEN position of the text origin (gutter
         // right-edge minus horizontal scroll). pixel_to_byte_pos
         // uses it to map pointer.x → char_col.
-        let text_x = rect.left()
-            + GIT_GUTTER_WIDTH
-            + prefix_chars as f32 * char_width
+        let text_x = rect.left() + GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
             - app.active_doc().view.scroll_x_cols as f32 * char_width;
-        if response.clicked() || response.drag_started() || response.dragged() {
+        if response.clicked() || response.dragged() {
             // Clicking or dragging in the editor gives the editor focus.
             app.project_tree_focused = false;
             if let Some(pos) = response.interact_pointer_pos() {
-                if let Some(byte_pos) = pixel_to_byte_pos(
+                // macOS Command+click on a linkable token triggers
+                // go-to-definition instead of moving the cursor.
+                let cmd_click = response.clicked() && ui.input(|i| i.modifiers.command);
+                if cmd_click {
+                    if let Some(byte_pos) = pixel_to_byte_pos(
+                        app,
+                        pos,
+                        rect,
+                        text_x,
+                        char_width,
+                        line_height,
+                        prefix_chars,
+                        gutter_width,
+                    ) {
+                        if let Some((uri, lsp_pos)) = app.lsp_position_for_byte(byte_pos) {
+                            if let Some(resp) = app.lsp_manager.request_definition(&uri, lsp_pos) {
+                                if let Some((target_uri, target_pos)) =
+                                    core::lsp::LspManager::definition_target(resp)
+                                {
+                                    app.jump_to_lsp_location(target_uri, target_pos);
+                                } else {
+                                    app.status_message =
+                                        Some("LSP: no definition found.".to_string());
+                                }
+                            } else {
+                                app.lsp_definition.pending = true;
+                                app.lsp_definition.request_pos = Some(lsp_pos);
+                                app.lsp_definition.from_cmd_click = true;
+                                app.status_message =
+                                    Some("LSP: requesting definition...".to_string());
+                            }
+                        }
+                    }
+                } else if let Some(byte_pos) = pixel_to_byte_pos(
                     app,
                     pos,
                     rect,
@@ -1746,7 +2030,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     prefix_chars,
                     gutter_width,
                 ) {
-                    if response.drag_started() || response.dragged() {
+                    if response.dragged() {
                         app.handle_event(EditorEvent::SelectExtendTo { pos: byte_pos });
                     } else {
                         app.handle_event(EditorEvent::SetCursor { pos: byte_pos });
@@ -1988,10 +2272,12 @@ fn pixel_to_byte_pos(
         return Some(app.active_buffer().len());
     }
 
-    // Determine char column from x. If the click is in the gutter, snap
-    // to the start of the line.
+    // Determine visual column from x. If the click is in the gutter,
+    // snap to the start of the line. Tabs are treated as `tab_width`
+    // visual columns so clicks on indented lines land where the user
+    // expects.
     let text_x_relative = text_x - rect.left();
-    let char_col = if rel_x < text_x_relative {
+    let visual_col = if rel_x < text_x_relative {
         0usize
     } else {
         ((rel_x - text_x_relative) / char_width) as usize
@@ -2003,10 +2289,72 @@ fn pixel_to_byte_pos(
         .line_text(line_offset)
         .map(|c| c.into_owned())
         .unwrap_or_default();
-    let total_chars = line_text.chars().count();
-    let char_col = char_col.min(total_chars);
-    let byte_col = core::char_col_to_byte_col(&line_text, char_col);
+    let tab_width = app.active_doc().view.tab_width;
+    let byte_col = visual_col_to_byte_col(&line_text, visual_col, tab_width);
 
     let line_byte_start = app.active_buffer().line_byte_range(line_offset)?.start;
     Some(line_byte_start + byte_col)
+}
+
+/// Expand a character column in a line to the boundaries of the
+/// identifier-like token it sits on. Returns `(start_char, end_char)`
+/// using character (not byte) indices. If the column is not on an
+/// identifier character, the nearest preceding identifier character is
+/// used so that clicking just after a token still selects it.
+fn word_range_at_char_col(line_text: &str, char_col: usize) -> (usize, usize) {
+    let chars: Vec<char> = line_text.chars().collect();
+    if chars.is_empty() {
+        return (0, 0);
+    }
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+
+    let mut col = char_col.min(chars.len().saturating_sub(1));
+    if !is_id(chars[col]) && col > 0 && is_id(chars[col - 1]) {
+        col -= 1;
+    }
+    if !is_id(chars[col]) {
+        return (col, col);
+    }
+
+    let mut start = col;
+    while start > 0 && is_id(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end < chars.len() && is_id(chars[end]) {
+        end += 1;
+    }
+    (start, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::word_range_at_char_col;
+
+    #[test]
+    fn word_range_finds_identifier_at_col() {
+        let line = "let foo_bar = 42;";
+        // "foo_bar" starts at char column 4.
+        assert_eq!(word_range_at_char_col(line, 6), (4, 11));
+    }
+
+    #[test]
+    fn word_range_uses_preceding_identifier_when_after_token() {
+        let line = "let foo = 42;";
+        // Column 7 is the space immediately after "foo".
+        assert_eq!(word_range_at_char_col(line, 7), (4, 7));
+    }
+
+    #[test]
+    fn word_range_returns_empty_for_non_identifier() {
+        let line = "let foo = 42;";
+        // Column 9 is the space between '=' and '42'; neither side is
+        // an identifier, so no token is selected.
+        assert_eq!(word_range_at_char_col(line, 9), (9, 9));
+    }
+
+    #[test]
+    fn word_range_handles_empty_line() {
+        assert_eq!(word_range_at_char_col("", 0), (0, 0));
+    }
 }

@@ -153,7 +153,6 @@ fn try_merge(a: &UndoEntry, b: &UndoEntry) -> Option<UndoEntry> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

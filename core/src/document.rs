@@ -217,6 +217,57 @@ impl Document {
     pub fn path_buf(&self) -> Option<PathBuf> {
         self.path().map(|p| p.to_path_buf())
     }
+
+    /// LSP language id inferred from the file extension, if any.
+    pub fn language_id(&self) -> Option<&'static str> {
+        self.path()
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .and_then(language_id_from_extension)
+    }
+
+    /// `file://` URI for this document, if it has a path.
+    pub fn uri(&self) -> Option<url::Url> {
+        self.path().and_then(|p| url::Url::from_file_path(p).ok())
+    }
+
+    /// Full document text as a UTF-8 string. Invalid UTF-8 sequences
+    /// are replaced with the Unicode replacement character so the LSP
+    /// client always has a valid `String` to send.
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buffer.to_bytes()).to_string()
+    }
+
+    /// Root URI to pass to the LSP server. Uses the project root when
+    /// known, otherwise the file's parent directory.
+    pub fn lsp_root_uri(&self) -> Option<url::Url> {
+        if let Some(project) = &self.project {
+            return url::Url::from_file_path(&project.root).ok();
+        }
+        self.path()
+            .and_then(|p| p.parent())
+            .and_then(|p| url::Url::from_file_path(p).ok())
+    }
+}
+
+fn language_id_from_extension(ext: &str) -> Option<&'static str> {
+    let ext = ext.to_ascii_lowercase();
+    match ext.as_str() {
+        "rs" => Some("rust"),
+        "go" => Some("go"),
+        "js" => Some("javascript"),
+        "ts" => Some("typescript"),
+        "tsx" => Some("typescriptreact"),
+        "jsx" => Some("javascriptreact"),
+        "py" => Some("python"),
+        "c" => Some("c"),
+        "cpp" | "cc" | "cxx" | "hpp" => Some("cpp"),
+        "h" => Some("c"),
+        "json" => Some("json"),
+        "toml" => Some("toml"),
+        "md" => Some("markdown"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -256,5 +307,30 @@ mod tests {
         assert!(!doc.is_dirty());
         doc.buffer.insert(0, "x").unwrap();
         assert!(doc.is_dirty());
+    }
+
+    #[test]
+    fn language_id_from_path_extension() {
+        let cases = &[
+            ("main.rs", Some("rust")),
+            ("main.go", Some("go")),
+            ("main.ts", Some("typescript")),
+            ("main.tsx", Some("typescriptreact")),
+            ("main.js", Some("javascript")),
+            ("main.jsx", Some("javascriptreact")),
+            ("main.py", Some("python")),
+            ("main.cpp", Some("cpp")),
+            ("main.c", Some("c")),
+            ("readme.txt", None),
+        ];
+        for (name, expected) in cases {
+            let path = std::env::temp_dir().join(name);
+            let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
+                b"".to_vec(),
+                path.clone(),
+            ));
+            let doc = Document::new(buf);
+            assert_eq!(doc.language_id(), *expected, "for {name}");
+        }
     }
 }

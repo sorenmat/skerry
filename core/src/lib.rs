@@ -12,6 +12,7 @@ mod file_watcher;
 mod fuzzy;
 mod git_gutter;
 mod input;
+pub mod lsp;
 mod piece_table;
 mod project;
 pub mod search;
@@ -38,4 +39,5 @@ pub use syntect::easy::HighlightLines;
 pub use view::{
     byte_to_char_col, char_col_to_byte_col, clamped_line_charcol_to_pos, cursor_char_linecol,
     format_position, move_left_by_char, move_right_by_char, selection_in_line,
+    visual_col_to_byte_col, visual_line_width,
 };

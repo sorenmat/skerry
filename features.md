@@ -220,6 +220,43 @@ the_editor/
   in sync. Dirty open files are marked stale instead of being silently
   overwritten.
 
+## Language Server Protocol (LSP)
+
+- **`core::lsp::LspManager`** — synchronous, frontend-agnostic manager
+  that owns a Tokio runtime and stdio language-server processes.
+  Frontends call `poll()` once per frame; the manager hides all
+  async I/O behind a blocking API.
+- **JSON-RPC stdio transport** — full header/body framing, request/response
+  routing, and notification handling in `core::lsp`.
+- **Per-(root, language) server process** — language servers are started
+  on demand. Currently wired: `rust-analyzer` (Rust), `gopls` (Go),
+  `typescript-language-server --stdio` (JavaScript / TypeScript / JSX /
+  TSX), `pylsp` (Python), and `clangd` (C / C++). Adding another server
+  is a one-line change in `server_command`.
+- **Document lifecycle** — `textDocument/didOpen`, debounced
+  `textDocument/didChange` (full-text, 300 ms), `textDocument/didSave`,
+  and `textDocument/didClose` keep the server in sync with the buffer.
+- **Diagnostics** — `textDocument/publishDiagnostics` is rendered as
+  colored underlines in the GUI and as `E`/`W`/`I`/`H` severity markers
+  in the TUI gutter.
+- **Completions** — `Ctrl+Space` fires `textDocument/completion`. A
+  popup appears in both frontends; Up/Down navigate, Enter/Tab insert
+  the selected item, Esc closes.
+- **Hover** — `Shift+K` requests `textDocument/hover`. The GUI shows a
+  tooltip near the pointer; the TUI shows the first line of the hover
+  text in the status bar.
+- **Go to definition** — `F12` requests `textDocument/definition`. If
+  the target is in the current file, the cursor jumps to it; otherwise
+  the editor opens the target file and then jumps. The jump is ignored
+  if the cursor moved while the response was in flight.
+- **macOS Command-click to definition** — holding `Cmd` in the GUI
+  underlines the identifier under the pointer and turns the cursor into
+  a pointing hand; clicking the underlined token requests
+  `textDocument/definition` and jumps to the result.
+- **LSP status indicator** — the status bar shows a filled circle
+  (e.g. `● rust-analyzer`) when a language server is running and an empty
+  circle (e.g. `○ rust-analyzer`) when the server failed to start.
+
 ## File I/O
 
 - **Open via CLI args** — `the_editor_gui path1 path2` and
@@ -415,7 +452,16 @@ use different conventions without re-configuring.
   scope (CONTEXT.md).
 - **Project-wide search is literal only.** Single-file search supports
   regex; project-wide search still uses `memmem` substring matching.
-- **No LSP / tree-sitter / semantic coloring.** Out of scope.
+- **LSP is opt-in per language.** Rust, Go, JavaScript/TypeScript,
+  Python, and C/C++ are wired. Other languages need a one-line addition
+  in `core::lsp::manager::server_command` plus an extension mapping in
+  `core::Document::language_id`.
+- **LSP sync is full-text.** Every debounced change sends the whole
+  document, which is fine for source files but not optimised for
+  multi-GB files.
+- **LSP columns use character columns.** The editor maps its internal
+  character columns directly to LSP positions; languages with complex
+  Unicode or non-UTF-8 content may see minor position drift.
 - **Search matches capped at 10 000.** Beyond that, the oldest
   matches drop off. For 1 KB–100 KB source files this is more than
   enough; multi-GB log files are not the target use case for find.

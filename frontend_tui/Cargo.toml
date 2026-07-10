@@ -17,6 +17,9 @@ arboard = "3"
 # Native file dialogs for the terminal frontend. Opens the platform
 # picker even when launched from a terminal on macOS/Linux.
 rfd = "0.15"
+# Transitive dependencies exposed by core's LSP API.
+lsp-types = "0.95"
+url = "2"
 
 [lints]
 workspace = true

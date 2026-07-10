@@ -263,6 +263,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Right => Some(movement(Movement::WordRight, false)),
             KeyCode::Home => Some(movement(Movement::DocumentStart, false)),
             KeyCode::End => Some(movement(Movement::DocumentEnd, false)),
+            KeyCode::Char(' ') => Some(EditorEvent::LspCompletion),
             _ => None,
         };
     }
@@ -296,6 +297,9 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
     let select = shift;
 
     match key.code {
+        KeyCode::Char('K') if shift && !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+            Some(EditorEvent::LspHover)
+        }
         KeyCode::Char(c) => Some(EditorEvent::Insert(c)),
         KeyCode::Backspace => Some(EditorEvent::DeleteLeft),
         KeyCode::Delete => Some(EditorEvent::DeleteRight),
@@ -304,6 +308,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
         KeyCode::Esc => Some(EditorEvent::CloseDoc),
         KeyCode::F(2) => Some(EditorEvent::ToggleProjectTree),
         KeyCode::F(5) => Some(EditorEvent::CycleTheme),
+        KeyCode::F(12) => Some(EditorEvent::LspGoToDefinition),
         KeyCode::Left if shift => Some(EditorEvent::ScrollLeft),
         KeyCode::Right if shift => Some(EditorEvent::ScrollRight),
         KeyCode::Left => Some(movement(Movement::Left, select)),

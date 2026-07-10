@@ -11,6 +11,9 @@ core = { path = "../core" }
 egui = "0.30"
 eframe = "0.30"
 rfd = "0.15"
+# Transitive dependencies exposed by core's LSP API.
+lsp-types = "0.95"
+url = "2"
 
 [lints]
 workspace = true

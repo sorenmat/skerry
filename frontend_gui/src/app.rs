@@ -69,6 +69,14 @@ pub struct EditorApp {
     pub fuzzy_finder: FuzzyFinder,
     /// Command palette state.
     pub command_palette: CommandPalette,
+    /// LSP completion popup state.
+    pub lsp_completion: LspCompletionState,
+    /// LSP hover tooltip state.
+    pub lsp_hover: LspHoverState,
+    /// LSP go-to-definition request state.
+    pub lsp_definition: LspDefinitionState,
+    /// macOS Cmd-key link overlay state.
+    pub cmd_link: CmdLinkState,
     /// Persistent user configuration / session state.
     pub config: core::Config,
     /// Active GUI chrome theme. Applied to egui's global visuals each
@@ -83,6 +91,9 @@ pub struct EditorApp {
     /// File-system watcher for externally changed files. `None` if the
     /// watcher could not be initialized on this platform.
     pub file_watcher: Option<core::FileWatcher>,
+    /// LSP manager. Spawns language servers on demand and exposes a
+    /// synchronous API used by both frontends.
+    pub lsp_manager: core::lsp::LspManager,
 }
 
 /// State for the project-wide search / replace dialog.
@@ -139,6 +150,51 @@ pub struct CommandPalette {
     pub items: Vec<&'static core::Command>,
     /// Index of the selected command.
     pub selected: usize,
+}
+
+/// State for the LSP completion popup.
+#[derive(Debug, Clone, Default)]
+pub struct LspCompletionState {
+    /// Whether the completion popup is visible.
+    pub open: bool,
+    /// Completion items from the language server.
+    pub items: Vec<lsp_types::CompletionItem>,
+    /// Index of the selected item.
+    pub selected: usize,
+    /// True when a request has been fired but no response has arrived.
+    pub pending: bool,
+}
+
+/// State for the LSP hover tooltip.
+#[derive(Debug, Clone, Default)]
+pub struct LspHoverState {
+    /// Whether the hover tooltip is visible.
+    pub open: bool,
+    /// Plain-text hover contents to display.
+    pub text: String,
+    /// Cursor position the hover request was issued for.
+    pub request_pos: Option<lsp_types::Position>,
+}
+
+/// State for an in-flight LSP go-to-definition request.
+#[derive(Debug, Clone, Default)]
+pub struct LspDefinitionState {
+    /// True when a request has been fired but no response has arrived.
+    pub pending: bool,
+    /// Cursor position the definition request was issued for.
+    pub request_pos: Option<lsp_types::Position>,
+    /// True when the request was triggered by a Command-click. In that
+    /// case the jump should happen even though the text cursor never
+    /// moved to the click position.
+    pub from_cmd_click: bool,
+}
+
+/// State for the macOS Cmd-key "click to go to definition" link overlay.
+#[derive(Debug, Clone, Default)]
+pub struct CmdLinkState {
+    /// Byte range in the active buffer of the token currently under
+    /// the pointer while Command is held.
+    pub range: Option<(usize, usize)>,
 }
 
 /// The three choices offered when closing a dirty document. Mirrors
@@ -207,11 +263,16 @@ impl EditorApp {
             keybindings_help_open: false,
             fuzzy_finder: FuzzyFinder::default(),
             command_palette: CommandPalette::default(),
+            lsp_completion: LspCompletionState::default(),
+            lsp_hover: LspHoverState::default(),
+            lsp_definition: LspDefinitionState::default(),
+            cmd_link: CmdLinkState::default(),
             config,
             theme,
             last_edit_time: Instant::now(),
             window_focused: true,
             file_watcher: core::FileWatcher::new().ok(),
+            lsp_manager: core::lsp::LspManager::new(),
         };
         if let Some(theme) = app.config.theme.clone() {
             app.syntax.set_theme_by_name(&theme);
@@ -268,6 +329,27 @@ impl EditorApp {
     /// Shortcut for `self.active_doc_mut().buffer` as `&mut dyn Buffer`.
     pub fn active_buffer_mut(&mut self) -> &mut dyn Buffer {
         &mut *self.documents[self.active].buffer
+    }
+
+    /// Return the active document URI and current cursor position in
+    /// LSP coordinates, if both are available.
+    fn lsp_cursor_position(&self) -> Option<(url::Url, lsp_types::Position)> {
+        self.lsp_position_for_byte(self.active_buffer().cursor())
+    }
+
+    /// Return the active document URI and the LSP position for a given
+    /// byte offset, if the document has a URI.
+    pub(crate) fn lsp_position_for_byte(
+        &self,
+        byte_pos: usize,
+    ) -> Option<(url::Url, lsp_types::Position)> {
+        let uri = self.active_doc().uri()?;
+        let (line, col) = self.active_buffer().pos_to_linecol(byte_pos)?;
+        let pos = lsp_types::Position {
+            line: line as u32,
+            character: col as u32,
+        };
+        Some((uri, pos))
     }
 
     /// Number of currently open documents.
@@ -367,6 +449,62 @@ impl EditorApp {
                 // keys, swallow all remaining key/text events so they
                 // don't reach the buffer.
                 if self.fuzzy_finder.open || self.command_palette.open {
+                    if matches!(
+                        event,
+                        eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
+                    ) {
+                        continue;
+                    }
+                }
+                // LSP hover tooltip closes on Esc.
+                if self.lsp_hover.open {
+                    if let eframe::egui::Event::Key {
+                        key: eframe::egui::Key::Escape,
+                        pressed: true,
+                        ..
+                    } = event
+                    {
+                        self.lsp_hover.open = false;
+                        continue;
+                    }
+                }
+
+                // LSP completion popup intercepts navigation and insertion
+                // keys while it's open.
+                if self.lsp_completion.open {
+                    if let eframe::egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } = event
+                    {
+                        match *key {
+                            eframe::egui::Key::Escape => self.lsp_completion.open = false,
+                            eframe::egui::Key::ArrowUp => {
+                                if !self.lsp_completion.items.is_empty() {
+                                    self.lsp_completion.selected =
+                                        self.lsp_completion.selected.saturating_sub(1);
+                                }
+                            }
+                            eframe::egui::Key::ArrowDown => {
+                                if !self.lsp_completion.items.is_empty() {
+                                    self.lsp_completion.selected = (self.lsp_completion.selected
+                                        + 1)
+                                    .min(self.lsp_completion.items.len() - 1);
+                                }
+                            }
+                            eframe::egui::Key::Enter => {
+                                self.apply_lsp_completion();
+                            }
+                            eframe::egui::Key::Tab if !modifiers.shift => {
+                                self.apply_lsp_completion();
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Swallow all key/text events so typing doesn't leak
+                    // into the buffer while the popup is open.
                     if matches!(
                         event,
                         eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
@@ -782,6 +920,7 @@ impl EditorApp {
                 Ok(()) => {
                     self.status_message = Some("Saved.".to_string());
                     self.active_doc_mut().refresh_git_gutter();
+                    self.lsp_save_active();
                     self.sync_config();
                 }
                 Err(e) => self.status_message = Some(format!("Save error: {e}")),
@@ -935,6 +1074,51 @@ impl EditorApp {
                 ));
                 if enabled {
                     self.active_doc_mut().refresh_git_gutter();
+                }
+            }
+            EditorEvent::LspCompletion => {
+                let Some(uri) = self.active_doc().uri() else {
+                    self.status_message = Some("LSP: no file URI.".to_string());
+                    return;
+                };
+                let Some((line, col)) = self
+                    .active_buffer()
+                    .pos_to_linecol(self.active_buffer().cursor())
+                else {
+                    self.status_message = Some("LSP: cursor position unknown.".to_string());
+                    return;
+                };
+                let pos = lsp_types::Position {
+                    line: line as u32,
+                    character: col as u32,
+                };
+                self.lsp_completion.open = true;
+                self.lsp_completion.pending = true;
+                self.lsp_completion.selected = 0;
+                self.lsp_completion.items.clear();
+                self.lsp_manager.request_completion(&uri, pos);
+                self.status_message = Some("LSP: requesting completions...".to_string());
+            }
+            EditorEvent::LspHover => {
+                if let Some((uri, pos)) = self.lsp_cursor_position() {
+                    self.lsp_hover.open = false;
+                    self.lsp_hover.text.clear();
+                    self.lsp_hover.request_pos = Some(pos);
+                    self.lsp_manager.request_hover(&uri, pos);
+                    self.status_message = Some("LSP: requesting hover...".to_string());
+                } else {
+                    self.status_message = Some("LSP: hover not available.".to_string());
+                }
+            }
+            EditorEvent::LspGoToDefinition => {
+                if let Some((uri, pos)) = self.lsp_cursor_position() {
+                    self.lsp_definition.pending = true;
+                    self.lsp_definition.request_pos = Some(pos);
+                    self.lsp_definition.from_cmd_click = false;
+                    self.lsp_manager.request_definition(&uri, pos);
+                    self.status_message = Some("LSP: requesting definition...".to_string());
+                } else {
+                    self.status_message = Some("LSP: definition not available.".to_string());
                 }
             }
             EditorEvent::RefreshGitGutter => {
@@ -1534,6 +1718,7 @@ impl EditorApp {
             self.status_message = Some("Closed last document — quitting.".to_string());
             return;
         }
+        self.lsp_close_active();
         self.documents.remove(self.active);
         if self.active >= self.documents.len() {
             self.active = self.documents.len() - 1;
@@ -1569,6 +1754,7 @@ impl EditorApp {
                 .unwrap_or("<path>")
         ));
         self.sync_watcher();
+        self.lsp_open_active();
     }
 
     /// Open `path` in a document, switching to an existing document
@@ -1594,6 +1780,172 @@ impl EditorApp {
         self.open_path(path);
         self.sync_config();
         self.sync_watcher();
+    }
+
+    /// Notify the LSP manager that the active document was opened.
+    pub fn lsp_open_active(&mut self) {
+        let doc = &self.documents[self.active];
+        let Some(uri) = doc.uri() else { return };
+        let Some(lang) = doc.language_id() else {
+            return;
+        };
+        if !core::lsp::LspManager::is_language_supported(lang) {
+            return;
+        }
+        let root = doc.lsp_root_uri().unwrap_or_else(|| uri.clone());
+        let text = doc.text();
+        self.lsp_manager
+            .open_document(uri, lang.to_string(), root, text);
+    }
+
+    /// Queue an LSP change notification for the active document.
+    pub fn lsp_change_active(&mut self) {
+        let Some(uri) = self.active_doc().uri() else {
+            return;
+        };
+        let text = self.active_doc().text();
+        self.lsp_manager.change_document(uri, text);
+    }
+
+    /// Notify the LSP manager that the active document was saved.
+    pub fn lsp_save_active(&mut self) {
+        let Some(uri) = self.active_doc().uri() else {
+            return;
+        };
+        self.lsp_manager.save_document(&uri);
+    }
+
+    /// Notify the LSP manager that the active document was closed.
+    pub fn lsp_close_active(&mut self) {
+        let Some(uri) = self.active_doc().uri() else {
+            return;
+        };
+        self.lsp_manager.close_document(&uri);
+    }
+
+    /// Insert the selected LSP completion item at the cursor and close
+    /// the completion popup.
+    pub fn apply_lsp_completion(&mut self) {
+        if !self.lsp_completion.open || self.lsp_completion.items.is_empty() {
+            self.lsp_completion.open = false;
+            return;
+        }
+        let item = self.lsp_completion.items[self.lsp_completion.selected].clone();
+        let text = item.insert_text.as_ref().unwrap_or(&item.label).clone();
+        let selection = self.active_buffer().selection().range();
+        let pos = selection.start;
+        match self.active_buffer_mut().replace(selection, &text) {
+            Ok(_) => {
+                let new_pos = pos + text.len();
+                self.active_buffer_mut().set_cursor(new_pos);
+                self.active_buffer_mut()
+                    .set_selection(core::Selection::collapsed(new_pos));
+                self.status_message = Some(format!("Completed: {}", item.label));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Completion insert error: {e}"));
+            }
+        }
+        self.lsp_completion.open = false;
+        self.lsp_completion.pending = false;
+    }
+
+    /// Drain pending LSP responses and update completion, hover, and
+    /// go-to-definition UI state.
+    fn process_lsp_responses(&mut self) {
+        if self.lsp_completion.pending {
+            if let Some((uri, _)) = self.lsp_cursor_position() {
+                if let Some(list) = self.lsp_manager.completion_result(&uri) {
+                    self.lsp_completion.items = list.items.clone();
+                    self.lsp_completion.pending = false;
+                }
+            } else {
+                self.lsp_completion.pending = false;
+            }
+        }
+
+        if let Some(request_pos) = self.lsp_hover.request_pos {
+            if let Some((uri, _)) = self.lsp_cursor_position() {
+                if let Some(hover) = self.lsp_manager.hover_result(&uri, request_pos) {
+                    self.lsp_hover.text = core::lsp::hover_text(hover);
+                    self.lsp_hover.open = !self.lsp_hover.text.is_empty();
+                    self.lsp_hover.request_pos = None;
+                }
+            } else {
+                self.lsp_hover.request_pos = None;
+            }
+        }
+
+        if self.lsp_definition.pending {
+            if let Some((uri, current_pos)) = self.lsp_cursor_position() {
+                if let Some(request_pos) = self.lsp_definition.request_pos {
+                    if let Some(resp) = self.lsp_manager.definition_result(&uri, request_pos) {
+                        self.lsp_definition.pending = false;
+                        self.lsp_definition.request_pos = None;
+                        let from_click = self.lsp_definition.from_cmd_click;
+                        self.lsp_definition.from_cmd_click = false;
+                        if !from_click && request_pos != current_pos {
+                            self.status_message =
+                                Some("LSP: cursor moved; definition ignored.".to_string());
+                            return;
+                        }
+                        if let Some((target_uri, target_pos)) =
+                            core::lsp::LspManager::definition_target(resp)
+                        {
+                            self.jump_to_lsp_location(target_uri, target_pos);
+                        } else {
+                            self.status_message = Some("LSP: no definition found.".to_string());
+                        }
+                    }
+                }
+            } else {
+                self.lsp_definition.pending = false;
+                self.lsp_definition.request_pos = None;
+            }
+        }
+    }
+
+    /// Open or focus the file containing an LSP definition target and
+    /// move the cursor to the target position.
+    pub(crate) fn jump_to_lsp_location(
+        &mut self,
+        target_uri: url::Url,
+        target_pos: lsp_types::Position,
+    ) {
+        let active_uri = self.active_doc().uri();
+        if active_uri.as_ref() == Some(&target_uri) {
+            self.set_cursor_lsp_position(target_pos);
+            return;
+        }
+        if let Ok(path) = target_uri.to_file_path() {
+            if let Some(idx) = self
+                .documents
+                .iter()
+                .position(|d| d.uri().as_ref() == Some(&target_uri))
+            {
+                self.active = idx;
+                self.set_cursor_lsp_position(target_pos);
+            } else {
+                self.open_or_switch_to_path(&path);
+                if self.active_doc().uri().as_ref() == Some(&target_uri) {
+                    self.set_cursor_lsp_position(target_pos);
+                } else {
+                    self.status_message = Some("LSP: could not open definition file.".to_string());
+                }
+            }
+        } else {
+            self.status_message = Some("LSP: definition target is not a local file.".to_string());
+        }
+    }
+
+    /// Move the cursor to an LSP position in the active document.
+    fn set_cursor_lsp_position(&mut self, pos: lsp_types::Position) {
+        let line = pos.line as usize;
+        let col = pos.character as usize;
+        let byte_pos = core::clamped_line_charcol_to_pos(self.active_buffer(), line, col);
+        self.active_buffer_mut().set_cursor(byte_pos);
+        self.active_buffer_mut()
+            .set_selection(core::Selection::collapsed(byte_pos));
     }
 
     /// Flatten the project tree into visible `(depth, node)` rows
@@ -2189,14 +2541,23 @@ impl App for EditorApp {
         // 5. Refresh the git gutter after the user has been idle briefly.
         self.maybe_refresh_git_gutter();
 
-        // 6. Capture the current window size for persistence. Only saved
+        // 6. Poll the LSP manager and apply any responses.
+        self.lsp_manager.poll();
+        self.lsp_open_active();
+        self.lsp_change_active();
+        if let Some(status) = self.lsp_manager.take_status() {
+            self.status_message = Some(status);
+        }
+        self.process_lsp_responses();
+
+        // 7. Capture the current window size for persistence. Only saved
         // to disk on quit / explicit sync_config, so this is cheap.
         if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
             self.config.window_width = Some(rect.width().round() as u32);
             self.config.window_height = Some(rect.height().round() as u32);
         }
 
-        // 6. Render the frame.
+        // 8. Render the frame.
         crate::ui::render(ctx, self);
 
         // 7. Close the window if the user requested quit (Ctrl+Q / Esc).

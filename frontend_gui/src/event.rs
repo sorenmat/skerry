@@ -103,6 +103,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::ArrowRight => Some(movement(Movement::WordRight, false)),
             Key::Home => Some(movement(Movement::DocumentStart, false)),
             Key::End => Some(movement(Movement::DocumentEnd, false)),
+            Key::Space => Some(EditorEvent::LspCompletion),
             _ => None,
         };
     }
@@ -149,6 +150,10 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         Key::Escape => Some(EditorEvent::Quit),
         Key::F2 => Some(EditorEvent::ToggleProjectTree),
         Key::F5 => Some(EditorEvent::CycleTheme),
+        Key::F12 => Some(EditorEvent::LspGoToDefinition),
+        Key::K if shift && !modifiers.ctrl && !modifiers.alt && !primary => {
+            Some(EditorEvent::LspHover)
+        }
         Key::ArrowLeft if shift => Some(EditorEvent::ScrollLeft),
         Key::ArrowRight if shift => Some(EditorEvent::ScrollRight),
         Key::ArrowLeft => Some(movement(Movement::Left, select)),
