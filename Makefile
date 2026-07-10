@@ -57,7 +57,7 @@ fmt:
 clean:
 	cargo clean
 
-app-bundle: build
+app-bundle: build-release
 	@./scripts/build-app-bundle.sh
 
 register-app: app-bundle

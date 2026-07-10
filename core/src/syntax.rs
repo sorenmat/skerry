@@ -53,6 +53,22 @@ impl SyntaxCache {
         self.lines.clear();
         self.dirty = true;
     }
+
+    /// Invalidate only entries at or past `line`. Lines strictly above the
+    /// edit keep their cached segments, so a keystroke on line 10 of a
+    /// 4000-line file only re-tokenizes the visible portion of line 10 and
+    /// below instead of the whole viewport.
+    ///
+    /// This is a superset-correct over-approximation: edits that change
+    /// content above `line` (never happens) or that don't shift line
+    /// counts could be invalidated more narrowly, but "drop from the edit
+    /// onwards" is always safe because syntect highlighters are strictly
+    /// left-to-right within a line and a changed line only affects itself
+    /// and lines below it.
+    pub fn invalidate_from(&mut self, line: usize) {
+        self.lines.retain(|&k, _| k < line);
+        self.dirty = true;
+    }
 }
 
 /// Global syntax engine. Created once at startup and shared across
@@ -202,6 +218,27 @@ mod tests {
 
     fn engine() -> SyntaxEngine {
         SyntaxEngine::default_dark()
+    }
+
+    #[test]
+    fn invalidate_from_drops_at_and_after_line() {
+        let mut cache = SyntaxCache::default();
+        let color = SColor { r: 1, g: 2, b: 3, a: 255 };
+        for line in 0..10 {
+            cache.lines.insert(
+                line,
+                vec![ColorSegment { range: 0..1, color }],
+            );
+        }
+        cache.invalidate_from(4);
+        assert!(cache.dirty, "should mark dirty");
+        assert_eq!(cache.lines.len(), 4, "lines 0..4 survive");
+        for kept in 0..4 {
+            assert!(cache.lines.contains_key(&kept), "line {kept} kept");
+        }
+        for dropped in 4..10 {
+            assert!(!cache.lines.contains_key(&dropped), "line {dropped} dropped");
+        }
     }
 
     #[test]

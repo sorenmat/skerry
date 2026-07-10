@@ -2,7 +2,7 @@
 set -e
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$PROJECT_ROOT/target/the_editor.app"
-BIN="$PROJECT_ROOT/target/debug/frontend_gui"
+BIN="$PROJECT_ROOT/target/release/frontend_gui"
 SCRIPT="$PROJECT_ROOT/scripts/the_editor.applescript"
 
 cat > "$SCRIPT" <<APPLESCRIPT

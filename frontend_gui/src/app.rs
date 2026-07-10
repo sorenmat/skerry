@@ -660,6 +660,22 @@ impl EditorApp {
                 | EditorEvent::ReplaceOne
                 | EditorEvent::ReplaceAll
         );
+        // Capture the cursor BEFORE the edit runs so we know which line
+        // was touched. Used to invalidate only that line's cached syntax
+        // segments (and those below) instead of nuking the whole cache.
+        let edit_start_line = if modifies_buffer {
+            self.active_buffer().pos_to_linecol(self.active_buffer().cursor()).map(|(l, _)| l)
+        } else {
+            None
+        };
+        // Undo/Redo/Replace can move/delete content across arbitrary line
+        // ranges, so they get the conservative full-cache wipe. Localized
+        // edits (inserts, deletes, paste, move/duplicate line) only affect
+        // the edit line downwards — those get surgical invalidation.
+        let full_invalidate = matches!(
+            &event,
+            EditorEvent::Undo | EditorEvent::Redo | EditorEvent::ReplaceAll
+        );
         match event {
             EditorEvent::Insert(ch) => {
                 // Selection-aware: a non-collapsed selection is replaced
@@ -1153,7 +1169,18 @@ impl EditorApp {
         }
 
         if modifies_buffer {
-            self.active_doc_mut().syntax.invalidate();
+            // Invalidate syntax cache. For localized edits, drop only the
+            // edited line and below so a keystroke doesn't re-tokenize the
+            // whole viewport — critical for large files where each visible
+            // line costs ~0.3ms+ in release. Undo/Redo/Replace can touch
+            // arbitrary regions, so they wipe everything.
+            if full_invalidate {
+                self.active_doc_mut().syntax.invalidate();
+            } else if let Some(line) = edit_start_line {
+                self.active_doc_mut().syntax.invalidate_from(line);
+            } else {
+                self.active_doc_mut().syntax.invalidate();
+            }
             self.active_doc_mut().git_gutter.mark_dirty();
             self.last_edit_time = Instant::now();
         }
