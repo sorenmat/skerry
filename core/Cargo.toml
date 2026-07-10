@@ -20,25 +20,9 @@ url = "2"
 # lsp-types is pinned to a version known to build with the workspace
 # MSRV (Rust 1.75). Verify before upgrading.
 lsp-types = "0.95"
-# syntect provides syntax highlighting for 200+ languages via
-# Sublime Text syntax definitions. We use default-syntaxes +
-# default-themes so every language and several themes ship baked-in.
-# The `plist-load` feature lets us load custom syntax/theme files at
-# runtime later. `onig` (the default regex engine) uses C FFI via
-# Oniguruma — the workspace `unsafe_code = "deny"` lint only applies
-# to our own crates, not to dependencies, so this is fine.
-syntect = { version = "5", default-features = false, features = [
-    "parsing",
-    "default-syntaxes",
-    "default-themes",
-    "plist-load",
-    "regex-fancy",
-] }
-# tree-sitter will replace syntect as the highlighting backend across
-# phases 2-4. Kept optional until the swap is complete so unused- dep
-# warnings don't fire while syntect still drives highlighting. Each
-# grammar crate compiles a small C parser via `cc`; a working C
-# toolchain (Xcode CLT on macOS) is required to build.
+# tree-sitter is the syntax highlighting backend. Each grammar crate
+# compiles a small C parser via `cc`; a working C toolchain (Xcode CLT
+# on macOS) is required to build.
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-go = "0.25"

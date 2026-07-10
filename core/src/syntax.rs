@@ -1,45 +1,25 @@
-//! Syntax highlighting via [syntect](https://crates.io/crates/syntect).
+//! Syntax highlighting — shared types and the theme-name manager.
 //!
-//! syntect wraps the Sublime Text highlighting engine: 200+ languages
-//! via `.sublime-syntax` definitions, theme support via `.tmTheme`
-//! files. This module exposes a thin API that the frontends call —
-//! they don't need to know about syntect internals.
-//!
-//! Architecture:
-//! - [`SyntaxEngine`] — global, created once at startup. Holds the
-//!   `SyntaxSet` (all language defs) and `Theme` (active color scheme).
+//! The actual highlighting engine lives in [`crate::ts`] (tree-sitter).
+//! This module holds the types both frontends depend on:
+//! - [`SyntaxEngine`] — global, created once at startup. Tracks the
+//!   active theme *name* and resolves it to a [`crate::ts::TsTheme`].
 //! - [`SyntaxCache`] — per-document, lives on `Document`. Lazily
 //!   populated, invalidated on every edit.
-//! - [`ColorSegment`] — a byte range + color. What the renderer
-//!   receives per line.
+//! - [`ColorSegment`] / [`HighlightColor`] — a byte range + color. What
+//!   the renderer receives per line.
 
 use std::collections::HashMap;
-use std::path::Path;
 
-use syntect::easy::HighlightLines;
-use syntect::highlighting::{Color as SColor, Style, Theme, ThemeSet};
-use syntect::parsing::{SyntaxReference, SyntaxSet};
-
-/// A theme-agnostic sRGB color carried by [`ColorSegment`]. Today it is
-/// filled from a syntect theme; phases 2-4 of the tree-sitter swap will
-/// fill it from a tree-sitter capture → color map instead. The field
-/// names (`r`, `g`, `b`) match what both frontends' color converters
-/// already read, so changing only this type leaves the renderers intact.
+/// A theme-agnostic sRGB color carried by [`ColorSegment`]. Filled from
+/// the active tree-sitter theme's capture → color map by
+/// [`crate::ts::highlight_range`]. The field names (`r`, `g`, `b`) match
+/// what both frontends' color converters already read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct HighlightColor {
     pub r: u8,
     pub g: u8,
     pub b: u8,
-}
-
-impl From<SColor> for HighlightColor {
-    fn from(c: SColor) -> Self {
-        Self {
-            r: c.r,
-            g: c.g,
-            b: c.b,
-        }
-    }
 }
 
 /// A colored byte range within a line. The color comes from the active
@@ -80,7 +60,7 @@ impl SyntaxCache {
     /// This is a superset-correct over-approximation: edits that change
     /// content above `line` (never happens) or that don't shift line
     /// counts could be invalidated more narrowly, but "drop from the edit
-    /// onwards" is always safe because syntect highlighters are strictly
+    /// onwards" is always safe because tree-sitter queries are strictly
     /// left-to-right within a line and a changed line only affects itself
     /// and lines below it.
     pub fn invalidate_from(&mut self, line: usize) {
@@ -90,38 +70,21 @@ impl SyntaxCache {
 }
 
 /// Global syntax engine. Created once at startup and shared across
-/// all documents. Holds all language definitions and the active theme.
+/// all documents. Tracks the active theme name and resolves it to a
+/// [`crate::ts::TsTheme`] for the tree-sitter highlighter.
 ///
 /// Lives on the frontend's `App` struct (not on `Document`) because
 /// it's window-global, not per-document. Both frontends create their
 /// own instance — the user runs either GUI or TUI, not both.
 pub struct SyntaxEngine {
-    syntax_set: SyntaxSet,
-    theme_set: ThemeSet,
     theme_name: String,
-    theme: Theme,
 }
 
 impl SyntaxEngine {
-    /// Create with syntect's bundled syntaxes + a dark theme.
-    /// `Ocean Dark` is the tree-sitter theme that ports syntect's
-    /// `base16-ocean.dark`; it's the default for continuity.
+    /// Create with the default dark theme (`Ocean Dark`).
     pub fn default_dark() -> Self {
-        let syntax_set = SyntaxSet::load_defaults_newlines();
-        let theme_set = ThemeSet::load_defaults();
-        let theme_name = "Ocean Dark".to_string();
-        // Fall back to a syntect theme for the legacy highlight path;
-        // tree-sitter uses ts_theme() which keys off theme_name.
-        let theme = theme_set
-            .themes
-            .get("base16-ocean.dark")
-            .cloned()
-            .unwrap_or_default();
         Self {
-            syntax_set,
-            theme_set,
-            theme_name,
-            theme,
+            theme_name: "Ocean Dark".to_string(),
         }
     }
 
@@ -130,10 +93,7 @@ impl SyntaxEngine {
         &self.theme_name
     }
 
-    /// All bundled theme names, in deterministic order. Backed by the
-    /// tree-sitter theme set so the combo box shows the names the new
-    /// backend recognises (the syntect ThemeSet is still loaded for the
-    /// legacy highlight path but no longer drives theme naming).
+    /// All bundled theme names, in deterministic order.
     pub fn theme_names(&self) -> Vec<&str> {
         crate::ts::bundled_themes()
             .iter()
@@ -141,11 +101,10 @@ impl SyntaxEngine {
             .collect()
     }
 
-    /// The active tree-sitter theme. Tree-sitter highlighting (phase 3)
-    /// reads colors from this; it resolves the current theme name to a
-    /// [`crate::ts::TsTheme`], falling back to the default (Ocean Dark)
+    /// The active tree-sitter theme. Resolves the current theme name to
+    /// a [`crate::ts::TsTheme`], falling back to the default (Ocean Dark)
     /// when the name doesn't match a bundled tree-sitter theme (e.g. an
-    /// old persisted syntect name like `base16-ocean.dark`).
+    /// old persisted name like `base16-ocean.dark` from the syntect era).
     pub fn ts_theme(&self) -> &'static crate::ts::TsTheme {
         crate::ts::find_theme(&self.theme_name)
             .unwrap_or_else(|| &crate::ts::bundled_themes()[0])
@@ -182,64 +141,6 @@ impl SyntaxEngine {
         self.theme_name = name.to_string();
         true
     }
-
-    /// Find the syntax definition for a file path by extension.
-    /// Returns `None` for unrecognized extensions or no path.
-    pub fn syntax_for_path(&self, path: Option<&Path>) -> Option<&SyntaxReference> {
-        let path = path?;
-        self.syntax_set.find_syntax_for_file(path).ok().flatten()
-    }
-
-    /// Create a fresh `HighlightLines` for `syntax`. The renderer should
-    /// create one highlighter per render pass and reuse it for every
-    /// visible line; this avoids the per-line setup cost of the pure-Rust
-    /// `regex-fancy` backend and lets multi-line constructs (block
-    /// comments, etc.) carry state across consecutive lines.
-    pub fn highlighter_for<'a>(&'a self, syntax: &'a SyntaxReference) -> HighlightLines<'a> {
-        HighlightLines::new(syntax, &self.theme)
-    }
-
-    /// Highlight a single line using an existing `HighlightLines`. Pass
-    /// the highlighter created by [`Self::highlighter_for`] at the start
-    /// of the render pass and reuse it for each visible line.
-    pub fn highlight_line_with(
-        &self,
-        highlighter: &mut HighlightLines<'_>,
-        line: &str,
-    ) -> Vec<ColorSegment> {
-        let regions: Vec<(Style, &str)> = match highlighter.highlight_line(line, &self.syntax_set) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
-
-        // Convert (Style, &str) pairs into ColorSegments with byte
-        // ranges, merging adjacent segments that share the same color.
-        let mut segments: Vec<ColorSegment> = Vec::new();
-        let mut byte_pos = 0;
-        for (style, text) in &regions {
-            let len = text.len();
-            if len == 0 {
-                continue;
-            }
-            let start = byte_pos;
-            let end = byte_pos + len;
-            byte_pos = end;
-
-            let seg = ColorSegment {
-                range: start..end,
-                color: style.foreground.into(),
-            };
-            // Merge with previous if same color and contiguous.
-            if let Some(last) = segments.last_mut() {
-                if last.color == seg.color && last.range.end == seg.range.start {
-                    last.range.end = seg.range.end;
-                    continue;
-                }
-            }
-            segments.push(seg);
-        }
-        segments
-    }
 }
 
 #[cfg(test)]
@@ -271,87 +172,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rust_file_gets_syntax() {
-        let e = engine();
-        let path = std::path::Path::new("main.rs");
-        assert!(e.syntax_for_path(Some(path)).is_some());
-    }
-
-    #[test]
-    fn markdown_file_gets_syntax() {
-        let e = engine();
-        let path = std::path::Path::new("README.md");
-        assert!(e.syntax_for_path(Some(path)).is_some());
-    }
-
-    #[test]
-    fn python_file_gets_syntax() {
-        let e = engine();
-        let path = std::path::Path::new("script.py");
-        assert!(e.syntax_for_path(Some(path)).is_some());
-    }
-
-    #[test]
-    fn json_file_gets_syntax() {
-        let e = engine();
-        let path = std::path::Path::new("data.json");
-        assert!(e.syntax_for_path(Some(path)).is_some());
-    }
-
-    #[test]
-    fn unknown_extension_no_syntax() {
-        let e = engine();
-        let path = std::path::Path::new("file.xyz123");
-        // Might or might not match — just verify it doesn't panic.
-        let _ = e.syntax_for_path(Some(path));
-    }
-
-    #[test]
-    fn no_path_no_syntax() {
-        let e = engine();
-        assert!(e.syntax_for_path(None).is_none());
-    }
-
-    #[test]
-    fn highlight_rust_line_produces_segments() {
-        let e = engine();
-        let path = std::path::Path::new("main.rs");
-        let syntax = e.syntax_for_path(Some(path)).unwrap();
-        let mut h = e.highlighter_for(syntax);
-        let segments = e.highlight_line_with(&mut h, "let x = 42;");
-        assert!(!segments.is_empty(), "should produce at least one segment");
-        // The full line should be covered by the segments.
-        let covered: usize = segments.iter().map(|s| s.range.len()).sum();
-        assert_eq!(covered, "let x = 42;".len());
-    }
-
-    #[test]
-    fn highlight_merges_adjacent_same_color() {
-        let e = engine();
-        let path = std::path::Path::new("main.rs");
-        let syntax = e.syntax_for_path(Some(path)).unwrap();
-        let mut h = e.highlighter_for(syntax);
-        let segments = e.highlight_line_with(&mut h, "let x = 42;");
-        // Verify no two adjacent segments have the same color
-        // (the merge step should have coalesced them).
-        for w in segments.windows(2) {
-            assert!(
-                w[0].color != w[1].color || w[0].range.end != w[1].range.start,
-                "adjacent segments with same color were not merged"
-            );
-        }
-    }
-
-    #[test]
-    fn highlight_empty_line() {
-        let e = engine();
-        let path = std::path::Path::new("main.rs");
-        let syntax = e.syntax_for_path(Some(path)).unwrap();
-        let mut h = e.highlighter_for(syntax);
-        let segments = e.highlight_line_with(&mut h, "");
-        assert!(segments.is_empty() || segments.iter().all(|s| s.range.is_empty()));
-    }
+    // Grammar resolution (extension → language) is tested in
+    // ts::grammar::tests, and the highlight path in ts::highlight::tests.
+    // These tests cover the SyntaxEngine theme-name API and SyntaxCache.
 
     #[test]
     fn syntax_cache_invalidate_clears_and_sets_dirty() {

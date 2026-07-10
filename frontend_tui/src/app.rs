@@ -1528,7 +1528,7 @@ impl App {
         });
     }
 
-    /// Cycle to the next syntect theme and invalidate the syntax cache
+    /// Cycle to the next theme and invalidate the syntax cache
     /// for every open document so the new colors appear immediately.
     /// Mirrors `frontend_gui::EditorApp::cycle_theme`.
     pub fn cycle_theme(&mut self) {

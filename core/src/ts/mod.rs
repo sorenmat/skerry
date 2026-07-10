@@ -1,11 +1,10 @@
 //! Tree-sitter integration — grammar registry, per-document parse trees,
-//! and (phase 3) highlight queries.
+//! and highlight queries.
 //!
-//! This module is the home for the tree-sitter backend that is replacing
-//! syntect across phases 2-4. During the transition both backends coexist:
-//! syntect still drives highlighting, while this module builds and
-//! incrementally maintains a parse tree per document. Phase 3 wires the
-//! tree into highlighting; phase 4 removes syntect.
+//! This module is the syntax highlighting backend. It builds and
+//! incrementally maintains a parse tree per document, then runs
+//! viewport-scoped highlight queries to produce the [`ColorSegment`]s
+//! both frontends render.
 //!
 //! See `docs/adr/0001-piece-table-as-primary-buffer.md` for the buffer
 //! architecture this layers on top of — the tree is derived from the

@@ -1742,7 +1742,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     );
                 } else {
                     // Walk segments left-to-right, drawing each
-                    // in its syntect theme color. Since segments
+                    // in its theme color. Since segments
                     // cover the entire line (no gaps), we just
                     // draw each one sequentially.
                     let mut char_cursor = 0usize;
