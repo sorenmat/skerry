@@ -7,3 +7,4 @@ Cargo.lock.bak
 .vscode/
 *.iml
 scripts/the_editor.applescript
+.zcode/

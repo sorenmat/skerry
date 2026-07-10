@@ -20,14 +20,36 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color as SColor, Style, Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
-/// A colored byte range within a line. The color comes directly from
-/// the syntect theme — the frontend just converts it to its native
-/// color type and draws.
+/// A theme-agnostic sRGB color carried by [`ColorSegment`]. Today it is
+/// filled from a syntect theme; phases 2-4 of the tree-sitter swap will
+/// fill it from a tree-sitter capture → color map instead. The field
+/// names (`r`, `g`, `b`) match what both frontends' color converters
+/// already read, so changing only this type leaves the renderers intact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct HighlightColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl From<SColor> for HighlightColor {
+    fn from(c: SColor) -> Self {
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        }
+    }
+}
+
+/// A colored byte range within a line. The color comes from the active
+/// syntax theme — the frontend converts it to its native color type and
+/// draws.
 #[derive(Debug, Clone)]
 pub struct ColorSegment {
     /// Byte range within the line's text (line-local, NOT document).
     pub range: std::ops::Range<usize>,
-    pub color: SColor,
+    pub color: HighlightColor,
 }
 
 /// Per-document, lazily-populated, edit-invalidated per-line
@@ -193,7 +215,7 @@ impl SyntaxEngine {
 
             let seg = ColorSegment {
                 range: start..end,
-                color: style.foreground,
+                color: style.foreground.into(),
             };
             // Merge with previous if same color and contiguous.
             if let Some(last) = segments.last_mut() {
@@ -219,7 +241,7 @@ mod tests {
     #[test]
     fn invalidate_from_drops_at_and_after_line() {
         let mut cache = SyntaxCache::default();
-        let color = SColor { r: 1, g: 2, b: 3, a: 255 };
+        let color = HighlightColor { r: 1, g: 2, b: 3 };
         for line in 0..10 {
             cache.lines.insert(
                 line,

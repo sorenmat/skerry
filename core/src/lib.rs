@@ -34,7 +34,7 @@ pub use project::{
     FsNode, Project, ProjectSearchResult, ProjectTree, ReplaceError, ReplacePreview,
 };
 pub use search::Search;
-pub use syntax::{ColorSegment, SyntaxCache, SyntaxEngine};
+pub use syntax::{ColorSegment, HighlightColor, SyntaxCache, SyntaxEngine};
 pub use syntect::easy::HighlightLines;
 pub use view::{
     byte_to_char_col, char_col_to_byte_col, clamped_line_charcol_to_pos, cursor_char_linecol,
