@@ -1544,6 +1544,46 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 }
             }
 
+            // LSP diagnostic gutter stripe — a thin colored bar at the
+            // far-left edge of the editor for every line that has a
+            // diagnostic. Uses the most severe diagnostic on the line.
+            // This makes errors unmissable even when the inline underline
+            // is subtle.
+            let diag_severity = diagnostics.iter().fold(None, |max_sev, d| {
+                let on_this_line = (d.range.start.line as usize) <= line_idx
+                    && (d.range.end.line as usize) >= line_idx;
+                if !on_this_line {
+                    return max_sev;
+                }
+                match (max_sev, d.severity) {
+                    (Some(lsp_types::DiagnosticSeverity::ERROR), _) => max_sev,
+                    (_, Some(lsp_types::DiagnosticSeverity::ERROR)) => {
+                        Some(lsp_types::DiagnosticSeverity::ERROR)
+                    }
+                    (Some(lsp_types::DiagnosticSeverity::WARNING), _) => max_sev,
+                    (_, Some(lsp_types::DiagnosticSeverity::WARNING)) => {
+                        Some(lsp_types::DiagnosticSeverity::WARNING)
+                    }
+                    _ => d.severity.or(max_sev),
+                }
+            });
+            if let Some(sev) = diag_severity {
+                let stripe_color = match sev {
+                    lsp_types::DiagnosticSeverity::ERROR => theme.error,
+                    lsp_types::DiagnosticSeverity::WARNING => theme.warning,
+                    lsp_types::DiagnosticSeverity::INFORMATION => theme.accent,
+                    _ => theme.dim_text,
+                };
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(rect.left(), y),
+                        egui::vec2(3.0, line_height),
+                    ),
+                    0.0,
+                    stripe_color,
+                );
+            }
+
             // Gutter (line number + separator).
             let gutter = format!("{:>width$} \u{2502} ", line_idx + 1, width = gutter_width);
             let gutter_color = if line_idx == cursor_line {
@@ -1928,11 +1968,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     Some(lsp_types::DiagnosticSeverity::WARNING) => theme.warning,
                     _ => theme.dim_text,
                 };
-                let y_under = y + line_height - 2.0;
+                let y_under = y + line_height - 3.0;
                 painter.rect_filled(
                     egui::Rect::from_min_max(
                         egui::pos2(x1, y_under),
-                        egui::pos2(x2, y_under + 2.0),
+                        egui::pos2(x2, y_under + 3.0),
                     ),
                     0.0,
                     color,
