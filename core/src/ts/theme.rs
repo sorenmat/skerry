@@ -9,9 +9,9 @@
 //! `function.builtin`.
 //!
 //! The theme set is hand-authored (a handful of palettes) rather than
-//! loaded from syntect's `.tmTheme` files, so it survives the syntect
-//! removal in phase 4. The default is `Ocean Dark`, a port of syntect's
-//! `base16-ocean.dark` that the editor shipped before the swap.
+//! loaded from `.tmTheme` files, so it has no external file dependencies.
+//! The default is `Ocean Dark`, a port of the `base16-ocean.dark` scheme
+//! the editor shipped before the tree-sitter swap.
 //!
 //! Themes are stored as `&'static` slices so the whole set can live in a
 //! process-global `&'static [TsTheme]` without any heap allocation or

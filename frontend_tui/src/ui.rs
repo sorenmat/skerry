@@ -1017,7 +1017,7 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             if idx > 0 {
                 // A match may start on the previous line but extend
                 // into this one; include it if it overlaps.
-                idx -= 1;
+                idx = idx.saturating_sub(1);
             }
             for &(m_start, m_end) in &app.search.matches[idx..] {
                 if m_start >= line_byte_range.end {

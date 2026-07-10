@@ -448,13 +448,13 @@ impl EditorApp {
                 // widgets for their queries. After handling navigation
                 // keys, swallow all remaining key/text events so they
                 // don't reach the buffer.
-                if self.fuzzy_finder.open || self.command_palette.open {
-                    if matches!(
+                if (self.fuzzy_finder.open || self.command_palette.open)
+                    && matches!(
                         event,
                         eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
-                    ) {
-                        continue;
-                    }
+                    )
+                {
+                    continue;
                 }
                 // LSP hover tooltip closes on Esc.
                 if self.lsp_hover.open {

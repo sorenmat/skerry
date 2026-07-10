@@ -21,8 +21,7 @@ the_editor/
 ├── core/          # UI-agnostic text engine (Buffer, Document, search, undo)
 ├── frontend_gui/  # egui + eframe GUI
 ├── frontend_tui/  # ratatui + crossterm TUI
-├── docs/adr/      # 7 architectural decision records
-└── docs/plans/    # upcoming-feature plans (syntax highlighting)
+└── docs/adr/      # architectural decision records
 ```
 
 ## Core engine (`core` crate)
