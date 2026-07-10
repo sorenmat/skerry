@@ -739,6 +739,16 @@ impl App {
             &event,
             EditorEvent::Undo | EditorEvent::Redo | EditorEvent::ReplaceAll
         );
+        // Snapshot the buffer length before a localized edit so we can
+        // derive the tree-sitter InputEdit delta afterward. Only needed
+        // for localized edits — Undo/Redo/Replace re-parse fully.
+        let ts_pre_edit = if modifies_buffer && !full_invalidate {
+            let pos = self.active_buffer().cursor();
+            let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+            Some((pos, self.active_buffer().len(), line, col))
+        } else {
+            None
+        };
         match event {
             EditorEvent::Insert(ch) => {
                 // Selection-aware: a non-collapsed selection is replaced
@@ -1234,6 +1244,20 @@ impl App {
                 self.active_doc_mut().syntax.invalidate_from(line);
             } else {
                 self.active_doc_mut().syntax.invalidate();
+            }
+            // Keep the tree-sitter parse tree current. Localized edits get
+            // an incremental re-parse via InputEdit; Undo/Redo/Replace
+            // re-parse fully. No-op when the doc has no tree.
+            if full_invalidate {
+                let bytes = self.active_doc_mut().buffer.to_bytes();
+                if let Some(tree) = self.active_doc_mut().ts_tree.as_mut() {
+                    tree.parse(&bytes);
+                }
+            } else if let Some((start_byte, old_len, line, col)) = ts_pre_edit {
+                let new_len = self.active_buffer().len();
+                let len_diff = new_len as i64 - old_len as i64;
+                let delta = core::ts::EditDelta::single_line(line, col, start_byte, len_diff as i32);
+                self.active_doc_mut().apply_ts_edit(delta);
             }
             self.active_doc_mut().git_gutter.mark_dirty();
             self.last_edit_time = Instant::now();

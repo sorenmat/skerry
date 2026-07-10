@@ -124,6 +124,13 @@ pub struct Document {
     /// invalidated on every edit. See [`crate::SyntaxCache`].
     pub syntax: crate::SyntaxCache,
 
+    /// Per-document tree-sitter parse tree, kept current via incremental
+    /// reparsing on edits. `None` when the document's language has no
+    /// bundled grammar (plain-text rendering). Used by the tree-sitter
+    /// highlighter (phase 3); built here in phase 2 so it is correct and
+    /// current before highlighting depends on it.
+    pub ts_tree: Option<crate::ts::DocTree>,
+
     /// The detected project/workspace for this document, if any.
     /// Derived from the buffer path by walking ancestors and looking
     /// for project markers (`.git`, `Cargo.toml`, etc.). Lives on the
@@ -154,10 +161,12 @@ impl Document {
             buffer,
             view,
             syntax: crate::SyntaxCache::default(),
+            ts_tree: None,
             project,
             external_change: false,
             git_gutter: crate::GitGutter::new(),
         };
+        doc.init_ts_tree();
         if doc.path().is_some() {
             doc.refresh_git_gutter();
         }
@@ -168,6 +177,36 @@ impl Document {
     pub fn refresh_git_gutter(&mut self) {
         let path = self.path().map(|p| p.to_path_buf());
         self.git_gutter.refresh(path.as_deref(), &*self.buffer);
+    }
+
+    /// Build the per-document tree-sitter parse tree from the buffer's
+    /// current bytes. No-op for languages with no bundled grammar
+    /// (`ts_tree` stays `None`, document renders as plain text).
+    pub fn init_ts_tree(&mut self) {
+        let path = self.path();
+        let Some(grammar) = crate::ts::grammar_for_path(path) else {
+            return;
+        };
+        let Some(mut tree) = crate::ts::DocTree::new(grammar) else {
+            return;
+        };
+        // to_bytes allocates the full buffer; acceptable for the one-time
+        // initial parse. Incremental updates avoid it.
+        tree.parse(&self.buffer.to_bytes());
+        self.ts_tree = Some(tree);
+    }
+
+    /// Apply a buffer edit to the parse tree and re-parse incrementally.
+    /// Call this AFTER the buffer mutation has been committed, passing a
+    /// delta that describes the change in the coordinates of the
+    /// pre-edit buffer. No-op when the document has no tree-sitter tree.
+    pub fn apply_ts_edit(&mut self, delta: crate::ts::EditDelta) {
+        if let Some(tree) = self.ts_tree.as_mut() {
+            // to_bytes after the edit: the tree-sitter parser needs the
+            // post-edit source. The incremental edit has already shifted
+            // the old tree, so re-parsing reuses unchanged nodes.
+            tree.apply_edit(delta, &self.buffer.to_bytes());
+        }
     }
 
     /// Create a fresh, empty, unsaved document.

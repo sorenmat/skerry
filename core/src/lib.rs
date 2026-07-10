@@ -17,6 +17,7 @@ mod piece_table;
 mod project;
 pub mod search;
 mod syntax;
+pub mod ts;
 mod undo;
 mod view;
 
