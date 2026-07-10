@@ -20,10 +20,6 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color as SColor, Style, Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
-/// Maximum file size (in bytes) for which syntax highlighting is
-/// enabled. Files above this skip tokenization entirely.
-pub const SYNTAX_SIZE_LIMIT: usize = 2 * 1024 * 1024;
-
 /// A colored byte range within a line. The color comes directly from
 /// the syntect theme — the frontend just converts it to its native
 /// color type and draws.
