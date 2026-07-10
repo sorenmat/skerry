@@ -209,6 +209,93 @@ impl Document {
         }
     }
 
+    /// Highlight a contiguous range of lines using the tree-sitter parse
+    /// tree, returning per-line color segments with **line-local** byte
+    /// ranges (the format `SyntaxCache` and both renderers expect).
+    ///
+    /// `theme` is the active syntax theme. Returns an empty `Vec` for any
+    /// line with no tree (unsupported language) or no captures — the
+    /// caller renders those lines with the default text color.
+    ///
+    /// This highlights the whole `start..end` line range as a single
+    /// tree-sitter query over the combined byte range, then buckets the
+    /// resulting document-absolute segments back into per-line entries.
+    /// One query for the viewport is cheaper than one-per-line and is how
+    /// tree-sitter queries are meant to be used.
+    pub fn highlight_lines_ts(
+        &self,
+        start_line: usize,
+        end_line: usize,
+        theme: &crate::ts::TsTheme,
+    ) -> Vec<Vec<crate::ColorSegment>> {
+        let count = end_line.saturating_sub(start_line);
+        let mut per_line = vec![Vec::new(); count];
+
+        let Some(tree) = self.ts_tree.as_ref().and_then(|t| t.tree()) else {
+            return per_line;
+        };
+        let Some(grammar) = crate::ts::grammar_for_path(self.path()) else {
+            return per_line;
+        };
+
+        // Byte range covering start_line..=end_line. We extend one line
+        // past end_line (if it exists) so captures that straddle a line
+        // boundary aren't clipped at the bottom edge.
+        let Some(first_range) = self.buffer.line_byte_range(start_line) else {
+            return per_line;
+        };
+        let last_end = self
+            .buffer
+            .line_byte_range(end_line)
+            .map(|r| r.end)
+            .unwrap_or_else(|| self.buffer.len());
+        let source = self.buffer.to_bytes();
+        let doc_segs =
+            crate::ts::highlight_range(tree, &grammar, theme, first_range.start..last_end, &source);
+
+        // Bucket document-absolute segments into their lines, translating
+        // ranges to line-local byte offsets.
+        let mut line_starts: Vec<usize> = Vec::with_capacity(count);
+        for i in start_line..end_line {
+            let start = self
+                .buffer
+                .line_byte_range(i)
+                .map(|r| r.start)
+                .unwrap_or(last_end);
+            line_starts.push(start);
+        }
+        for seg in doc_segs {
+            // Find which line this segment starts on.
+            let rel = seg
+                .range
+                .start
+                .saturating_sub(first_range.start);
+            let line_offset = match line_starts
+                .iter()
+                .position(|&s| s > seg.range.start)
+            {
+                Some(idx) => idx.saturating_sub(1),
+                None => count.saturating_sub(1),
+            };
+            let _ = rel; // kept for clarity; line_offset is what we use
+            if line_offset >= count {
+                continue;
+            }
+            let line_start = line_starts[line_offset];
+            let local_start = seg.range.start.saturating_sub(line_start);
+            let local_end = seg.range.end.saturating_sub(line_start);
+            if local_end <= local_start {
+                continue;
+            }
+            per_line[line_offset].push(crate::ColorSegment {
+                range: local_start..local_end,
+                color: seg.color,
+            });
+        }
+
+        per_line
+    }
+
     /// Create a fresh, empty, unsaved document.
     pub fn empty() -> Self {
         Self::new(Box::new(crate::PieceTableBuffer::new()))

@@ -1374,13 +1374,6 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     let mut hbar_viewport: Option<(f32, f32, egui::Rect)> = None;
 
     scroll_area.show(ui, |ui| {
-        // Create one highlighter for this render pass and reuse it for
-        // every visible line. This avoids per-line setup cost without
-        // leaking memory in `SyntaxEngine`.
-        let path = app.active_doc().path_buf();
-        let syntax = app.syntax.syntax_for_path(path.as_deref());
-        let mut highlighter = syntax.map(|s| app.syntax.highlighter_for(s));
-
         let total_height = total_lines as f32 * line_height;
         let response = ui.allocate_response(
             egui::vec2(ui.available_width(), total_height),
@@ -1711,14 +1704,32 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 // lazily populated. Only lines without selection
                 // and without match highlights get syntax colors
                 // (precedence: selection > matches > syntax).
-                let doc = &mut app.documents[app.active];
-                let segments = get_syntax_segments(
-                    &app.syntax,
-                    &mut doc.syntax,
-                    &mut highlighter,
-                    line_idx,
-                    &line_text,
-                );
+                // Cache lookup first (immutable borrow of doc.syntax). If
+                // present and not dirty, skip the tree-sitter query.
+                let cached = if !app.documents[app.active].syntax.dirty {
+                    app.documents[app.active].syntax.lines.get(&line_idx).cloned()
+                } else {
+                    None
+                };
+                let segments: Vec<core::ColorSegment> = match cached {
+                    Some(s) => s,
+                    None => {
+                        // Cache miss: highlight this line via tree-sitter
+                        // (immutable doc borrow ends here, producing an
+                        // owned Vec), then insert into the cache.
+                        let syntax_theme = app.syntax.ts_theme();
+                        let per_line = app.documents[app.active]
+                            .highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
+                        let segs = per_line.into_iter().next().unwrap_or_default();
+                        let doc = &mut app.documents[app.active];
+                        if doc.syntax.dirty {
+                            doc.syntax.lines.clear();
+                            doc.syntax.dirty = false;
+                        }
+                        doc.syntax.lines.insert(line_idx, segs.clone());
+                        segs
+                    }
+                };
                 if segments.is_empty() {
                     // No syntax (unknown extension, too large, or
                     // passthrough) — draw as before.
@@ -2150,43 +2161,6 @@ fn render_horizontal_scrollbar(
     let painter = ui.painter();
     painter.rect_filled(track_rect, 4.0, theme.panel_bg);
     painter.rect_filled(thumb_rect, 4.0, theme.dim_text);
-}
-
-/// Get syntax tokens for a line, using the per-document cache.
-/// Tokenizes on cache miss (lazy population). Returns an empty Vec
-/// Get syntax color segments for a line, using the per-document
-/// cache and the global `SyntaxEngine`. Tokenizes on cache miss
-/// (lazy population). Returns an empty Vec when syntax highlighting
-/// is disabled (file too large, unknown extension, or no path).
-///
-/// `highlighter` is created once per render pass and reused for each
-/// visible line; the caller owns it so we don't need a self-referential
-/// `SyntaxEngine`.
-fn get_syntax_segments(
-    syntax_engine: &core::SyntaxEngine,
-    cache: &mut core::SyntaxCache,
-    highlighter: &mut Option<core::HighlightLines<'_>>,
-    line_idx: usize,
-    line_text: &str,
-) -> Vec<core::ColorSegment> {
-    if !cache.dirty {
-        if let Some(segs) = cache.lines.get(&line_idx) {
-            return segs.clone();
-        }
-    }
-
-    let segments = if let Some(ref mut h) = highlighter {
-        syntax_engine.highlight_line_with(h, line_text)
-    } else {
-        Vec::new()
-    };
-
-    if cache.dirty {
-        cache.lines.clear();
-        cache.dirty = false;
-    }
-    cache.lines.insert(line_idx, segments.clone());
-    segments
 }
 
 /// Compute the desired vertical scroll offset so the cursor stays

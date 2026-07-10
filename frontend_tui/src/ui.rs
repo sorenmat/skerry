@@ -27,34 +27,6 @@ use ratatui::{
 
 use crate::app::{App, CloseChoice};
 
-/// Get syntax color segments for a line, using the per-document
-/// cache and the global `SyntaxEngine`. `highlighter` is created once
-/// per render pass and reused for each visible line.
-fn get_syntax_segments(
-    syntax_engine: &core::SyntaxEngine,
-    cache: &mut core::SyntaxCache,
-    highlighter: &mut Option<core::HighlightLines<'_>>,
-    line_idx: usize,
-    line_text: &str,
-) -> Vec<core::ColorSegment> {
-    if !cache.dirty {
-        if let Some(segs) = cache.lines.get(&line_idx) {
-            return segs.clone();
-        }
-    }
-    let segments = if let Some(ref mut h) = highlighter {
-        syntax_engine.highlight_line_with(h, line_text)
-    } else {
-        Vec::new()
-    };
-    if cache.dirty {
-        cache.lines.clear();
-        cache.dirty = false;
-    }
-    cache.lines.insert(line_idx, segments.clone());
-    segments
-}
-
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
@@ -949,13 +921,7 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
     let top_line = app.active_doc().view.scroll_top_line;
     let end_line = (top_line + vh).min(total_lines);
 
-    // Create one highlighter for this render pass and reuse it for
-    // every visible line. This avoids per-line setup cost without
-    // leaking memory in `SyntaxEngine`.
-    let path = app.active_doc().path_buf();
     let syntax_engine = &app.syntax;
-    let syntax = syntax_engine.syntax_for_path(path.as_deref());
-    let mut highlighter = syntax.map(|s| syntax_engine.highlighter_for(s));
 
     for line_idx in top_line..end_line {
         let line_text = app
@@ -1085,15 +1051,31 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             Span::styled(number_prefix, gutter_style),
         ];
 
-        // Get syntax segments for this line (lazy cache population).
-        let doc = &mut app.documents[app.active];
-        let syntax_segments = get_syntax_segments(
-            syntax_engine,
-            &mut doc.syntax,
-            &mut highlighter,
-            line_idx,
-            &line_text,
-        );
+        // Get syntax segments for this line. Cache lookup first; on a
+        // miss, highlight via tree-sitter (immutable doc borrow) then
+        // insert into the cache (mutable). The split avoids borrowing
+        // the doc both ways at once.
+        let cached = if !app.documents[app.active].syntax.dirty {
+            app.documents[app.active].syntax.lines.get(&line_idx).cloned()
+        } else {
+            None
+        };
+        let syntax_segments: Vec<core::ColorSegment> = match cached {
+            Some(s) => s,
+            None => {
+                let syntax_theme = syntax_engine.ts_theme();
+                let per_line = app.documents[app.active]
+                    .highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
+                let segs = per_line.into_iter().next().unwrap_or_default();
+                let doc = &mut app.documents[app.active];
+                if doc.syntax.dirty {
+                    doc.syntax.lines.clear();
+                    doc.syntax.dirty = false;
+                }
+                doc.syntax.lines.insert(line_idx, segs.clone());
+                segs
+            }
+        };
 
         push_line_spans(
             &mut spans,

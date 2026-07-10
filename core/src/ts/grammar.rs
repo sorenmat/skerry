@@ -29,6 +29,8 @@ use tree_sitter::Language;
 /// language handle + a static str slice).
 #[derive(Clone)]
 pub struct Grammar {
+    /// Stable language name ("rust", "go", …) used as the query-cache key.
+    pub name: &'static str,
     pub language: Language,
     pub highlights_query: &'static str,
 }
@@ -39,36 +41,41 @@ pub struct Grammar {
 // supported extension in a static `OnceLock`-guarded table built on first
 // lookup.
 
-fn rust() -> Grammar {
+pub(crate) fn rust() -> Grammar {
     Grammar {
+        name: "rust",
         language: tree_sitter_rust::LANGUAGE.into(),
         highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
     }
 }
 
-fn go() -> Grammar {
+pub(crate) fn go() -> Grammar {
     Grammar {
+        name: "go",
         language: tree_sitter_go::LANGUAGE.into(),
         highlights_query: tree_sitter_go::HIGHLIGHTS_QUERY,
     }
 }
 
-fn javascript() -> Grammar {
+pub(crate) fn javascript() -> Grammar {
     Grammar {
+        name: "javascript",
         language: tree_sitter_javascript::LANGUAGE.into(),
         highlights_query: tree_sitter_javascript::HIGHLIGHT_QUERY,
     }
 }
 
-fn typescript() -> Grammar {
+pub(crate) fn typescript() -> Grammar {
     Grammar {
+        name: "typescript",
         language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         highlights_query: tree_sitter_typescript::HIGHLIGHTS_QUERY,
     }
 }
 
-fn tsx() -> Grammar {
+pub(crate) fn tsx() -> Grammar {
     Grammar {
+        name: "tsx",
         language: tree_sitter_typescript::LANGUAGE_TSX.into(),
         // TSX shares the TypeScript highlight query; the grammar's own
         // captures distinguish JSX contexts.
@@ -76,22 +83,25 @@ fn tsx() -> Grammar {
     }
 }
 
-fn python() -> Grammar {
+pub(crate) fn python() -> Grammar {
     Grammar {
+        name: "python",
         language: tree_sitter_python::LANGUAGE.into(),
         highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
     }
 }
 
-fn c() -> Grammar {
+pub(crate) fn c() -> Grammar {
     Grammar {
+        name: "c",
         language: tree_sitter_c::LANGUAGE.into(),
         highlights_query: tree_sitter_c::HIGHLIGHT_QUERY,
     }
 }
 
-fn json() -> Grammar {
+pub(crate) fn json() -> Grammar {
     Grammar {
+        name: "json",
         language: tree_sitter_json::LANGUAGE.into(),
         highlights_query: tree_sitter_json::HIGHLIGHTS_QUERY,
     }

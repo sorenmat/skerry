@@ -104,21 +104,17 @@ pub struct SyntaxEngine {
 
 impl SyntaxEngine {
     /// Create with syntect's bundled syntaxes + a dark theme.
-    /// `base16-ocean.dark` is a high-contrast dark theme that covers
-    /// most syntax scopes; it's what `bat` defaults to.
+    /// `Ocean Dark` is the tree-sitter theme that ports syntect's
+    /// `base16-ocean.dark`; it's the default for continuity.
     pub fn default_dark() -> Self {
         let syntax_set = SyntaxSet::load_defaults_newlines();
         let theme_set = ThemeSet::load_defaults();
-        let default_name = "base16-ocean.dark";
-        let theme_name = theme_set
-            .themes
-            .contains_key(default_name)
-            .then(|| default_name.to_string())
-            .or_else(|| theme_set.themes.keys().next().cloned())
-            .unwrap_or_else(|| "default".to_string());
+        let theme_name = "Ocean Dark".to_string();
+        // Fall back to a syntect theme for the legacy highlight path;
+        // tree-sitter uses ts_theme() which keys off theme_name.
         let theme = theme_set
             .themes
-            .get(&theme_name)
+            .get("base16-ocean.dark")
             .cloned()
             .unwrap_or_default();
         Self {
@@ -134,9 +130,25 @@ impl SyntaxEngine {
         &self.theme_name
     }
 
-    /// All bundled theme names, in deterministic order.
+    /// All bundled theme names, in deterministic order. Backed by the
+    /// tree-sitter theme set so the combo box shows the names the new
+    /// backend recognises (the syntect ThemeSet is still loaded for the
+    /// legacy highlight path but no longer drives theme naming).
     pub fn theme_names(&self) -> Vec<&str> {
-        self.theme_set.themes.keys().map(|s| s.as_str()).collect()
+        crate::ts::bundled_themes()
+            .iter()
+            .map(|t| t.name)
+            .collect()
+    }
+
+    /// The active tree-sitter theme. Tree-sitter highlighting (phase 3)
+    /// reads colors from this; it resolves the current theme name to a
+    /// [`crate::ts::TsTheme`], falling back to the default (Ocean Dark)
+    /// when the name doesn't match a bundled tree-sitter theme (e.g. an
+    /// old persisted syntect name like `base16-ocean.dark`).
+    pub fn ts_theme(&self) -> &'static crate::ts::TsTheme {
+        crate::ts::find_theme(&self.theme_name)
+            .unwrap_or_else(|| &crate::ts::bundled_themes()[0])
     }
 
     /// Switch to the next bundled theme, wrapping around. Returns the
@@ -160,14 +172,14 @@ impl SyntaxEngine {
         &self.theme_name
     }
 
-    /// Activate a theme by exact name. Returns `true` if the name was
-    /// found and the theme changed.
+    /// Activate a theme by exact name. The name must match a bundled
+    /// tree-sitter theme (`Ocean Dark`, `Gruvbox Dark`, etc.). Returns
+    /// `true` if the name was found and the theme changed.
     pub fn set_theme_by_name(&mut self, name: &str) -> bool {
-        let Some(theme) = self.theme_set.themes.get(name) else {
+        if crate::ts::find_theme(name).is_none() {
             return false;
-        };
+        }
         self.theme_name = name.to_string();
-        self.theme = theme.clone();
         true
     }
 

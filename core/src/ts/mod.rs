@@ -12,7 +12,11 @@
 //! buffer's bytes and re-parsed incrementally on edit.
 
 pub mod grammar;
+pub mod highlight;
+pub mod theme;
 pub mod tree;
 
 pub use grammar::{grammar_for_path, Grammar};
+pub use highlight::highlight_range;
+pub use theme::{bundled_themes, find_theme, TsTheme};
 pub use tree::{DocTree, EditDelta};
