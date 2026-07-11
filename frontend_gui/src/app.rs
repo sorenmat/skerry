@@ -690,9 +690,30 @@ impl EditorApp {
         };
         match event {
             EditorEvent::Insert(ch) => {
-                // Selection-aware: a non-collapsed selection is replaced
-                // by the inserted character (matches every editor since
-                // 1995).
+                // Auto-pairing: if the selection is collapsed and the
+                // typed char is an opener, insert the pair and leave the
+                // cursor between them. If the typed char is a closer and
+                // the char after the cursor is the same closer, skip over
+                // it instead of doubling.
+                if self.active_buffer().selection().is_collapsed() {
+                    let pos = self.active_buffer().cursor();
+                    // Skip-over: typing ')' when ')' is already next.
+                    if let Some(open) = core::matching_open(ch) {
+                        let _ = open;
+                        if core::char_after(self.active_buffer(), pos) == Some(ch) {
+                            let new_pos = core::move_right_by_char(self.active_buffer(), pos);
+                            self.active_buffer_mut().set_cursor(new_pos);
+                            self.active_buffer_mut()
+                                .set_selection(Selection::collapsed(new_pos));
+                            return;
+                        }
+                    }
+                    // Auto-pair: typing '(' inserts '()'.
+                    if let Some(close) = core::matching_close(ch) {
+                        self.insert_paired(ch, close);
+                        return;
+                    }
+                }
                 self.insert_text(&ch.to_string());
             }
             EditorEvent::DeleteLeft => {
@@ -701,6 +722,26 @@ impl EditorApp {
                 }
                 let pos = self.active_buffer().cursor();
                 if pos > 0 {
+                    // Auto-pair backspace: if the chars before and after
+                    // the cursor form a matching pair (e.g. '|' inside
+                    // '()'), delete both.
+                    let before = core::char_before(self.active_buffer(), pos);
+                    let after = core::char_after(self.active_buffer(), pos);
+                    if let (Some(open), Some(close)) = (before, after) {
+                        if core::matching_close(open) == Some(close) {
+                            let left = core::move_left_by_char(self.active_buffer(), pos);
+                            match self.active_buffer_mut().delete(left..(pos + 1)) {
+                                Ok(new_pos) => {
+                                    self.active_buffer_mut().set_cursor(new_pos);
+                                    self.active_buffer_mut()
+                                        .set_selection(Selection::collapsed(new_pos));
+                                }
+                                Err(e) => self.status_message =
+                                    Some(format!("delete error: {e}")),
+                            }
+                            return;
+                        }
+                    }
                     match self.active_buffer_mut().delete((pos - 1)..pos) {
                         Ok(new_pos) => {
                             self.active_buffer_mut().set_cursor(new_pos);
@@ -1229,6 +1270,23 @@ impl EditorApp {
                 self.status_message = None;
             }
             Err(e) => self.status_message = Some(format!("insert error: {e}")),
+        }
+    }
+
+    /// Insert an auto-paired open/close (e.g. `()`), leaving the cursor
+    /// between the two chars. Assumes the caller has already checked that
+    /// the selection is collapsed.
+    fn insert_paired(&mut self, open: char, close: char) {
+        let pos = self.active_buffer().cursor();
+        let pair: String = format!("{open}{close}");
+        if self.active_buffer_mut().insert(pos, &pair).is_ok() {
+            // Cursor lands after the pair (after `close`); move it back
+            // one char so it sits between `open` and `close`.
+            let between = core::move_left_by_char(self.active_buffer(), self.active_buffer().cursor());
+            self.active_buffer_mut().set_cursor(between);
+            self.active_buffer_mut()
+                .set_selection(Selection::collapsed(between));
+            self.status_message = None;
         }
     }
 

@@ -97,6 +97,57 @@ pub fn visual_line_width(line_text: &str, tab_width: usize) -> usize {
         .sum()
 }
 
+/// If `ch` is an opener bracket or quote, return its matching closer.
+/// Otherwise return `None`. Used by auto-pairing.
+pub fn matching_close(ch: char) -> Option<char> {
+    match ch {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        _ => None,
+    }
+}
+
+/// If `ch` is a closer bracket or quote, return its matching opener.
+/// Otherwise return `None`. Used by the backspace-deletes-pair check.
+pub fn matching_open(ch: char) -> Option<char> {
+    match ch {
+        ')' => Some('('),
+        ']' => Some('['),
+        '}' => Some('{'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        _ => None,
+    }
+}
+
+/// The character immediately before the cursor, if any. Handles UTF-8
+/// boundaries by walking left to the previous char start.
+pub fn char_before(buffer: &dyn Buffer, pos: usize) -> Option<char> {
+    if pos == 0 {
+        return None;
+    }
+    let prev = move_left_by_char(buffer, pos);
+    if prev >= pos {
+        return None;
+    }
+    buffer.slice(prev..pos).and_then(|s| s.chars().next())
+}
+
+/// The character immediately after the cursor, if any.
+pub fn char_after(buffer: &dyn Buffer, pos: usize) -> Option<char> {
+    if pos >= buffer.len() {
+        return None;
+    }
+    let next = move_right_by_char(buffer, pos);
+    if next <= pos {
+        return None;
+    }
+    buffer.slice(pos..next).and_then(|s| s.chars().next())
+}
+
 /// Convert a buffer byte position into `(line, character_column)`.
 pub fn cursor_char_linecol(buffer: &dyn Buffer, pos: usize) -> (usize, usize) {
     let (line, byte_col) = buffer.pos_to_linecol(pos).unwrap_or((0, 0));
@@ -316,6 +367,40 @@ mod tests {
         assert_eq!(cursor_char_linecol(&buffer, 2), (0, 2));
         assert_eq!(clamped_line_charcol_to_pos(&buffer, 1, 2), 6);
         assert_eq!(buffer.pos_to_linecol(6), Some((1, 3)));
+    }
+
+    #[test]
+    fn matching_close_for_openers() {
+        assert_eq!(matching_close('('), Some(')'));
+        assert_eq!(matching_close('['), Some(']'));
+        assert_eq!(matching_close('{'), Some('}'));
+        assert_eq!(matching_close('"'), Some('"'));
+        assert_eq!(matching_close('\''), Some('\''));
+        assert_eq!(matching_close('x'), None);
+    }
+
+    #[test]
+    fn matching_open_for_closers() {
+        assert_eq!(matching_open(')'), Some('('));
+        assert_eq!(matching_open('}'), Some('{'));
+        assert_eq!(matching_open('x'), None);
+    }
+
+    #[test]
+    fn char_before_and_after_cursor() {
+        let buffer = PieceTableBuffer::from_bytes("hello".as_bytes().to_vec());
+        assert_eq!(char_before(&buffer, 0), None);
+        assert_eq!(char_before(&buffer, 1), Some('h'));
+        assert_eq!(char_after(&buffer, 0), Some('h'));
+        assert_eq!(char_after(&buffer, 5), None); // at end
+    }
+
+    #[test]
+    fn char_before_after_multibyte() {
+        // "éx" — é is 2 bytes. Cursor at byte 2 (after é).
+        let buffer = PieceTableBuffer::from_bytes("éx".as_bytes().to_vec());
+        assert_eq!(char_before(&buffer, 2), Some('é'));
+        assert_eq!(char_after(&buffer, 2), Some('x'));
     }
 
     #[test]
