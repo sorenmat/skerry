@@ -772,6 +772,22 @@ impl App {
                         return;
                     }
                 }
+                // Auto-indent: pressing Enter copies the current line's
+                // leading whitespace to the new line, adding one indent
+                // level if the line ends with {, (, [, or =>.
+                if ch == '\n' && self.active_buffer().selection().is_collapsed() {
+                    let pos = self.active_buffer().cursor();
+                    let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                    let v = &self.active_doc().view;
+                    let indent = core::auto_indent(
+                        self.active_buffer(),
+                        line,
+                        v.use_spaces,
+                        v.tab_width,
+                    );
+                    self.insert_text(&format!("\n{indent}"));
+                    return;
+                }
                 self.insert_text(&ch.to_string());
             }
             EditorEvent::InsertTab => {

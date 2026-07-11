@@ -97,6 +97,48 @@ pub fn visual_line_width(line_text: &str, tab_width: usize) -> usize {
         .sum()
 }
 
+/// Compute the indentation string to insert after a newline on `line` of
+/// `buffer`. Copies the current line's leading whitespace; adds one extra
+/// indent level if the trimmed line ends with `{`, `(`, `[`, or `=>`.
+///
+/// `use_spaces` and `tab_width` match the document's indent mode (same
+/// values `InsertTab` uses). Returns the indent as an owned String (no
+/// leading newline — the caller inserts "\n" + this).
+pub fn auto_indent(
+    buffer: &dyn Buffer,
+    line: usize,
+    use_spaces: bool,
+    tab_width: usize,
+) -> String {
+    let line_text = buffer.line_text(line).map(|c| c.into_owned()).unwrap_or_default();
+
+    // Leading whitespace of the current line (spaces + tabs).
+    let leading: String = line_text
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+
+    // Does the line (ignoring trailing whitespace) end with a token that
+    // opens a new block / continuation?
+    let trimmed = line_text.trim_end();
+    let extra_indent = trimmed.ends_with('{')
+        || trimmed.ends_with('(')
+        || trimmed.ends_with('[')
+        || trimmed.ends_with("=>");
+
+    let one_level = if use_spaces {
+        " ".repeat(tab_width.max(1))
+    } else {
+        "\t".to_string()
+    };
+
+    if extra_indent {
+        format!("{leading}{one_level}")
+    } else {
+        leading
+    }
+}
+
 /// If `ch` is an opener bracket or quote, return its matching closer.
 /// Otherwise return `None`. Used by auto-pairing.
 pub fn matching_close(ch: char) -> Option<char> {
@@ -401,6 +443,34 @@ mod tests {
         let buffer = PieceTableBuffer::from_bytes("éx".as_bytes().to_vec());
         assert_eq!(char_before(&buffer, 2), Some('é'));
         assert_eq!(char_after(&buffer, 2), Some('x'));
+    }
+
+    #[test]
+    fn auto_indent_copies_leading_whitespace() {
+        let buffer = PieceTableBuffer::from_bytes("    let x = 1;".as_bytes().to_vec());
+        let indent = auto_indent(&buffer, 0, true, 4);
+        assert_eq!(indent, "    ");
+    }
+
+    #[test]
+    fn auto_indent_adds_level_after_open_brace() {
+        let buffer = PieceTableBuffer::from_bytes("fn main() {".as_bytes().to_vec());
+        let indent = auto_indent(&buffer, 0, true, 4);
+        assert_eq!(indent, "    ", "no leading WS + one indent level = 4 spaces");
+    }
+
+    #[test]
+    fn auto_indent_adds_level_after_arrow() {
+        let buffer = PieceTableBuffer::from_bytes("    let f = |x| =>".as_bytes().to_vec());
+        let indent = auto_indent(&buffer, 0, true, 2);
+        assert_eq!(indent, "      ", "copies 4 + adds 2");
+    }
+
+    #[test]
+    fn auto_indent_no_extra_for_plain_line() {
+        let buffer = PieceTableBuffer::from_bytes("\tlet x = 1;".as_bytes().to_vec());
+        let indent = auto_indent(&buffer, 0, false, 4);
+        assert_eq!(indent, "\t");
     }
 
     #[test]
