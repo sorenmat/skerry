@@ -1528,8 +1528,22 @@ impl EditorApp {
             Movement::WordLeft => skip_word_left(self.active_buffer(), pos),
             Movement::WordRight => skip_word_right(self.active_buffer(), pos),
             Movement::LineStart => {
-                let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
-                self.active_buffer().linecol_to_pos(line, 0).unwrap_or(0)
+                let (line, col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                // Smart Home: toggle between column 0 and the first
+                // non-whitespace char. If at col 0, jump to first non-WS;
+                // if at first non-WS (and not col 0), jump to col 0.
+                let first_nws = self
+                    .active_buffer()
+                    .line_text(line)
+                    .map(|t| {
+                        core::byte_to_char_col(&t, t.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+                    })
+                    .unwrap_or(0);
+                if col == 0 {
+                    self.active_buffer().linecol_to_pos(line, first_nws).unwrap_or(0)
+                } else {
+                    self.active_buffer().linecol_to_pos(line, 0).unwrap_or(0)
+                }
             }
             Movement::LineEnd => {
                 let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
