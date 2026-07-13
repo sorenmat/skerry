@@ -32,6 +32,7 @@ pub struct App {
     /// Go-to-line dialog. `Some` while the prompt is up. The user types
     /// a 1-based line number; Enter jumps, Esc cancels.
     pub go_to_line_dialog: Option<GoToLineDialog>,
+    pub rename_dialog: Option<RenameDialog>,
     /// Global syntax highlighting engine.
     pub syntax: SyntaxEngine,
     /// Whether the project file-tree sidebar is visible.
@@ -55,6 +56,7 @@ pub struct App {
     pub lsp_hover: LspHoverState,
     /// LSP go-to-definition request state.
     pub lsp_definition: LspDefinitionState,
+    pub pending_format_save: bool,
     /// Persistent user configuration / session state.
     pub config: core::Config,
     /// Time of the most recent buffer-modifying edit. Used by auto-save
@@ -191,6 +193,14 @@ pub struct GoToLineDialog {
     pub query: String,
 }
 
+/// Rename-symbol prompt state. Pre-filled with the word under the cursor.
+/// The TUI doesn't render an interactive rename widget yet (the GUI does);
+/// the dialog struct exists so the event plumbing is in place.
+#[allow(dead_code)]
+pub struct RenameDialog {
+    pub new_name: String,
+}
+
 impl App {
     /// Create an `App` around a single buffer. Wraps the buffer in a
     /// one-element document list. Test convenience — production code
@@ -217,6 +227,7 @@ impl App {
             search: Search::new(),
             close_confirm: None,
             go_to_line_dialog: None,
+            rename_dialog: None,
             syntax: SyntaxEngine::default_dark(),
             project_tree_open: config.project_tree_open.unwrap_or(true),
             project_tree: None,
@@ -228,6 +239,7 @@ impl App {
             lsp_completion: LspCompletionState::default(),
             lsp_hover: LspHoverState::default(),
             lsp_definition: LspDefinitionState::default(),
+            pending_format_save: false,
             config,
             last_edit_time: Instant::now(),
             file_watcher: core::FileWatcher::new().ok(),
@@ -391,7 +403,132 @@ impl App {
         Some((uri, pos))
     }
 
-    /// Number of currently open documents.
+    /// The identifier-like word under (or just before) the cursor.
+    fn word_at_cursor(&self) -> Option<String> {
+        let pos = self.active_buffer().cursor();
+        let (line, byte_col) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+        let text = self.active_buffer().line_text(line)?.into_owned();
+        let chars: Vec<char> = text.chars().collect();
+        if chars.is_empty() {
+            return None;
+        }
+        let is_id = |c: char| c.is_alphanumeric() || c == '_';
+        let mut col = byte_col.min(chars.len());
+        if col > 0 && col <= chars.len() && is_id(chars[col - 1]) {
+            col -= 1;
+        }
+        if col >= chars.len() || !is_id(chars[col]) {
+            return None;
+        }
+        let mut start = col;
+        while start > 0 && is_id(chars[start - 1]) {
+            start -= 1;
+        }
+        let mut end = col;
+        while end < chars.len() && is_id(chars[end]) {
+            end += 1;
+        }
+        Some(chars[start..end].iter().collect())
+    }
+
+    /// If a rename result has landed for the active doc, apply it.
+    pub fn apply_pending_rename(&mut self) {
+        let Some(uri) = self.active_doc().uri() else {
+            return;
+        };
+        let Some(edit) = self.lsp_manager.take_rename_result(&uri) else {
+            return;
+        };
+        let count = self.apply_workspace_edit(&edit);
+        self.status_message = Some(format!("Renamed ({count} edits)."));
+    }
+
+    fn apply_workspace_edit(&mut self, edit: &lsp_types::WorkspaceEdit) -> usize {
+        let Some(changes) = &edit.changes else {
+            return 0;
+        };
+        let mut total = 0;
+        for (uri, edits) in changes {
+            if self.active_doc().uri().as_ref() != Some(uri) {
+                continue;
+            }
+            let mut byte_edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+            for te in edits {
+                if let Some(range) = self.lsp_range_to_byte_range(&te.range) {
+                    byte_edits.push((range, te.new_text.clone()));
+                }
+            }
+            byte_edits.sort_by_key(|e| std::cmp::Reverse(e.0.start));
+            for (range, new_text) in byte_edits {
+                if self.active_buffer_mut().replace(range, &new_text).is_ok() {
+                    total += 1;
+                }
+            }
+            self.active_doc_mut().syntax.invalidate();
+        }
+        total
+    }
+
+    fn lsp_range_to_byte_range(&self, range: &lsp_types::Range) -> Option<std::ops::Range<usize>> {
+        let buf = self.active_buffer();
+        let start_line = range.start.line as usize;
+        let end_line = range.end.line as usize;
+        let start = buf.line_byte_range(start_line)?;
+        let end = buf.line_byte_range(end_line)?;
+        let start_text = buf.line_text(start_line)?;
+        let end_text = buf.line_text(end_line)?;
+        let start_byte = start.start + core::char_col_to_byte_col(&start_text, range.start.character as usize);
+        let end_byte = end.start + core::char_col_to_byte_col(&end_text, range.end.character as usize);
+        Some(start_byte..end_byte)
+    }
+
+    pub fn format_active_document(&mut self) {
+        let Some(uri) = self.active_doc().uri() else {
+            return;
+        };
+        if self.lsp_manager.supports_formatting(&uri) {
+            self.lsp_manager.request_formatting(&uri);
+            self.status_message = Some("Formatting...".to_string());
+        } else {
+            self.status_message = Some("LSP: formatting not supported.".to_string());
+        }
+    }
+
+    pub fn apply_pending_format(&mut self) {
+        let Some(uri) = self.active_doc().uri() else {
+            return;
+        };
+        let Some(edits) = self.lsp_manager.take_formatting_result(&uri) else {
+            return;
+        };
+        if edits.is_empty() {
+            self.pending_format_save = false;
+            return;
+        }
+        let mut byte_edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+        for te in &edits {
+            if let Some(range) = self.lsp_range_to_byte_range(&te.range) {
+                byte_edits.push((range, te.new_text.clone()));
+            }
+        }
+        byte_edits.sort_by_key(|e| std::cmp::Reverse(e.0.start));
+        for (range, new_text) in byte_edits {
+            let _ = self.active_buffer_mut().replace(range, &new_text);
+        }
+        self.active_doc_mut().syntax.invalidate();
+        if self.pending_format_save {
+            self.pending_format_save = false;
+            if self.active_buffer_mut().save().is_ok() {
+                self.active_doc_mut().refresh_git_gutter();
+                self.lsp_save_active();
+                self.status_message = Some("Saved + formatted.".to_string());
+            } else {
+                self.status_message = Some("Formatted (re-save failed).".to_string());
+            }
+        } else {
+            self.status_message = Some("Formatted.".to_string());
+        }
+    }
     #[allow(dead_code)] // API surface for upcoming multi-buffer events; not yet bound in TUI.
     pub fn doc_count(&self) -> usize {
         self.documents.len()
@@ -441,6 +578,10 @@ impl App {
                     self.lsp_completion.pending = false;
                 }
             }
+
+            // Apply rename / format results if they just arrived.
+            self.apply_pending_rename();
+            self.apply_pending_format();
 
             // Update the LSP hover status if a response just arrived.
             if self.lsp_hover.pending {
@@ -720,6 +861,8 @@ impl App {
                 | EditorEvent::Redo
                 | EditorEvent::ReplaceOne
                 | EditorEvent::ReplaceAll
+                | EditorEvent::RenameApply { .. }
+                | EditorEvent::FormatDocument
         );
         // Capture the cursor BEFORE the edit runs so we know which line
         // was touched. Used to invalidate only that line's cached syntax
@@ -1062,6 +1205,12 @@ impl App {
                     self.active_doc_mut().refresh_git_gutter();
                     self.lsp_save_active();
                     self.sync_config();
+                    if let Some(uri) = self.active_doc().uri() {
+                        if self.lsp_manager.supports_formatting(&uri) {
+                            self.lsp_manager.request_formatting(&uri);
+                            self.pending_format_save = true;
+                        }
+                    }
                 }
                 Err(e) => self.status_message = Some(format!("Save error: {e}")),
             },
@@ -1253,6 +1402,31 @@ impl App {
                 } else {
                     self.status_message = Some("LSP: definition not available.".to_string());
                 }
+            }
+            EditorEvent::RenameSymbol => {
+                // TUI rename: read the new name via a status-bar prompt
+                // (no popup widget like the GUI). The TUI's GoToLine
+                // pattern is the model. For now, request directly with a
+                // placeholder; a full TUI rename prompt is a follow-up.
+                if let Some((uri, _pos)) = self.lsp_cursor_position() {
+                    if self.lsp_manager.supports_rename(&uri) {
+                        let word = self.word_at_cursor().unwrap_or_default();
+                        self.rename_dialog = Some(RenameDialog { new_name: word });
+                    } else {
+                        self.status_message =
+                            Some("LSP: rename not supported.".to_string());
+                    }
+                }
+            }
+            EditorEvent::RenameApply { new_name } => {
+                self.rename_dialog = None;
+                if let Some((uri, pos)) = self.lsp_cursor_position() {
+                    self.lsp_manager.request_rename(&uri, pos, &new_name);
+                    self.status_message = Some("LSP: requesting rename...".to_string());
+                }
+            }
+            EditorEvent::FormatDocument => {
+                self.format_active_document();
             }
             EditorEvent::RefreshGitGutter => {
                 self.active_doc_mut().refresh_git_gutter();

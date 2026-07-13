@@ -233,6 +233,13 @@ pub enum EditorEvent {
     LspHover,
     /// Request LSP go-to-definition at the cursor.
     LspGoToDefinition,
+    /// Open the rename-symbol prompt at the cursor (pre-filled with the
+    /// current word).
+    RenameSymbol,
+    /// Apply the rename: send the LSP request with `new_name`.
+    RenameApply { new_name: String },
+    /// Format the active document via the LSP server.
+    FormatDocument,
     /// Toggle the git gutter on the active document.
     ToggleGitGutter,
     /// Refresh the git gutter for the active document.
@@ -373,6 +380,9 @@ mod tests {
         let _ = EditorEvent::LspCompletion;
         let _ = EditorEvent::LspHover;
         let _ = EditorEvent::LspGoToDefinition;
+        let _ = EditorEvent::RenameSymbol;
+        let _ = EditorEvent::RenameApply { new_name: String::new() };
+        let _ = EditorEvent::FormatDocument;
         let _ = EditorEvent::ToggleGitGutter;
         let _ = EditorEvent::RefreshGitGutter;
         let _ = EditorEvent::NextHunk;

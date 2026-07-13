@@ -148,8 +148,9 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         Key::Enter => Some(EditorEvent::Insert('\n')),
         Key::Tab => Some(EditorEvent::InsertTab),
         Key::Escape => Some(EditorEvent::Quit),
-        Key::F2 => Some(EditorEvent::ToggleProjectTree),
+        Key::F2 => Some(EditorEvent::RenameSymbol),
         Key::F5 => Some(EditorEvent::CycleTheme),
+        Key::F8 => Some(EditorEvent::ToggleProjectTree),
         Key::F12 => Some(EditorEvent::LspGoToDefinition),
         Key::K if shift && !modifiers.ctrl && !modifiers.alt && !primary => {
             Some(EditorEvent::LspHover)

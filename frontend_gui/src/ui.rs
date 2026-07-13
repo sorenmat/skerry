@@ -173,6 +173,10 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
         }
     }
 
+    // Apply rename / format results if they just arrived.
+    app.apply_pending_rename();
+    app.apply_pending_format();
+
     let theme = *theme(app);
     let (status_message, status_pos) = {
         let msg = app.status_message.clone().unwrap_or_default();
@@ -505,6 +509,64 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                             .monospace()
                             .color(theme.panel_text),
                     );
+                });
+            });
+    }
+
+    // Rename-symbol bar — appears above the status bar when open.
+    if app.rename_dialog.is_some() {
+        egui::TopBottomPanel::bottom("rename_bar")
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.panel_bg)
+                    .inner_margin(6.0)
+                    .stroke(egui::Stroke::new(1.0, theme.border)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(" Rename symbol: ")
+                            .strong()
+                            .monospace()
+                            .color(theme.panel_text),
+                    );
+                    let mut name = app
+                        .rename_dialog
+                        .as_ref()
+                        .map(|d| d.new_name.clone())
+                        .unwrap_or_default();
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut name).desired_width(300.0),
+                    );
+                    if response.changed() {
+                        if let Some(d) = app.rename_dialog.as_mut() {
+                            d.new_name = name;
+                        }
+                    }
+                    if response.gained_focus()
+                        || (app.rename_dialog.as_ref().map_or(true, |d| {
+                            d.new_name.is_empty() && !response.has_focus()
+                        }))
+                    {
+                        response.request_focus();
+                    }
+                    if response.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        if let Some(d) = app.rename_dialog.take() {
+                            if !d.new_name.is_empty() {
+                                app.handle_event(EditorEvent::RenameApply {
+                                    new_name: d.new_name,
+                                });
+                            }
+                        }
+                    }
+                    let cancel_btn = ui.button("Cancel");
+                    if cancel_btn.clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    {
+                        app.rename_dialog = None;
+                    }
                 });
             });
     }

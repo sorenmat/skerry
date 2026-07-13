@@ -11,9 +11,9 @@ use lsp_types::{
     ClientCapabilities, ClientInfo, CompletionList, CompletionParams, Diagnostic,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, GotoDefinitionResponse, Hover, HoverContents, InitializeParams,
-    MarkedString, Position, ServerCapabilities, TextDocumentContentChangeEvent,
+    MarkedString, Position, RenameParams, ServerCapabilities, TextDocumentContentChangeEvent,
     TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
-    VersionedTextDocumentIdentifier, WorkspaceFolder,
+    VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceFolder,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -47,6 +47,8 @@ pub struct LspManager {
     completion_results: HashMap<Url, CompletionList>,
     hover_results: HashMap<Url, (Hover, Position)>,
     definition_results: HashMap<Url, (GotoDefinitionResponse, Position)>,
+    rename_results: HashMap<Url, (WorkspaceEdit, Position)>,
+    formatting_results: HashMap<Url, Vec<lsp_types::TextEdit>>,
     pending_change: Option<(Url, Instant, String)>,
     last_status: Option<String>,
     server_spawn_failures: HashMap<ServerKey, Instant>,
@@ -88,6 +90,8 @@ enum PendingRequest {
     Completion(Url),
     Hover(Url, Position),
     Definition(Url, Position),
+    Rename(Url, Position),
+    Formatting(Url),
 }
 
 impl Default for LspManager {
@@ -108,6 +112,8 @@ impl LspManager {
             completion_results: HashMap::new(),
             hover_results: HashMap::new(),
             definition_results: HashMap::new(),
+            rename_results: HashMap::new(),
+            formatting_results: HashMap::new(),
             pending_change: None,
             last_status: None,
             server_spawn_failures: HashMap::new(),
@@ -351,6 +357,8 @@ impl LspManager {
         self.completion_results.remove(uri);
         self.hover_results.remove(uri);
         self.definition_results.remove(uri);
+        self.rename_results.remove(uri);
+        self.formatting_results.remove(uri);
         if let Some(server) = self.servers.get(&doc.server_key) {
             server.client.notify(
                 "textDocument/didClose",
@@ -496,6 +504,122 @@ impl LspManager {
         }
     }
 
+    /// True if the server for `uri` advertises rename support.
+    pub fn supports_rename(&self, uri: &Url) -> bool {
+        let Some(doc) = self.docs.get(uri) else {
+            return false;
+        };
+        let Some(server) = self.servers.get(&doc.server_key) else {
+            return false;
+        };
+        let Some(caps) = &server.capabilities else {
+            return false;
+        };
+        caps.rename_provider.is_some()
+    }
+
+    /// Request a rename of the symbol at `position` to `new_name`. The
+    /// result lands asynchronously; poll [`Self::rename_result`].
+    pub fn request_rename(
+        &mut self,
+        uri: &Url,
+        position: Position,
+        new_name: &str,
+    ) -> Option<&WorkspaceEdit> {
+        let doc = self.docs.get(uri)?;
+        let server = self.servers.get(&doc.server_key)?;
+        if self
+            .pending
+            .values()
+            .any(|p| matches!(p, PendingRequest::Rename(u, pos) if u == uri && *pos == position))
+        {
+            return self.rename_result(uri, position);
+        }
+        let id = server.client.request(
+            "textDocument/rename",
+            serde_json::to_value(RenameParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position,
+                },
+                new_name: new_name.to_string(),
+                work_done_progress_params: Default::default(),
+            })
+            .unwrap_or_default(),
+        );
+        self.pending
+            .insert(id, PendingRequest::Rename(uri.clone(), position));
+        self.rename_result(uri, position)
+    }
+
+    /// Peek at the most recently received rename edit for a URI + position.
+    pub fn rename_result(&self, uri: &Url, position: Position) -> Option<&WorkspaceEdit> {
+        self.rename_results
+            .get(uri)
+            .and_then(|(edit, pos)| if *pos == position { Some(edit) } else { None })
+    }
+
+    /// Consume the rename result for `uri` so it isn't applied twice.
+    pub fn take_rename_result(&mut self, uri: &Url) -> Option<WorkspaceEdit> {
+        self.rename_results.remove(uri).map(|(edit, _)| edit)
+    }
+
+    /// True if the server for `uri` advertises document formatting support.
+    pub fn supports_formatting(&self, uri: &Url) -> bool {
+        let Some(doc) = self.docs.get(uri) else {
+            return false;
+        };
+        let Some(server) = self.servers.get(&doc.server_key) else {
+            return false;
+        };
+        let Some(caps) = &server.capabilities else {
+            return false;
+        };
+        caps.document_formatting_provider.is_some()
+    }
+
+    /// Request full-document formatting. The result lands asynchronously.
+    pub fn request_formatting(&mut self, uri: &Url) {
+        let Some(doc) = self.docs.get(uri) else {
+            return;
+        };
+        let Some(server) = self.servers.get(&doc.server_key) else {
+            return;
+        };
+        // Don't stack multiple formatting requests for the same doc.
+        if self
+            .pending
+            .values()
+            .any(|p| matches!(p, PendingRequest::Formatting(u) if u == uri))
+        {
+            return;
+        }
+        let id = server.client.request(
+            "textDocument/formatting",
+            serde_json::to_value(lsp_types::DocumentFormattingParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                options: lsp_types::FormattingOptions {
+                    tab_size: 4,
+                    insert_spaces: true,
+                    ..Default::default()
+                },
+                work_done_progress_params: Default::default(),
+            })
+            .unwrap_or_default(),
+        );
+        self.pending.insert(id, PendingRequest::Formatting(uri.clone()));
+    }
+
+    /// Peek at formatting edits if they've arrived.
+    pub fn formatting_result(&self, uri: &Url) -> Option<&Vec<lsp_types::TextEdit>> {
+        self.formatting_results.get(uri)
+    }
+
+    /// Consume the formatting result for `uri`.
+    pub fn take_formatting_result(&mut self, uri: &Url) -> Option<Vec<lsp_types::TextEdit>> {
+        self.formatting_results.remove(uri)
+    }
+
     /// Drain incoming messages and apply debounced changes. Frontends
     /// should call this once per frame.
     pub fn poll(&mut self) {
@@ -605,6 +729,20 @@ impl LspManager {
                                 {
                                     self.definition_results.insert(uri, (def, position));
                                 }
+                            }
+                        }
+                        PendingRequest::Rename(uri, position) => {
+                            if let Some(result) = resp.result {
+                                if let Ok(edit) = serde_json::from_value::<WorkspaceEdit>(result) {
+                                    self.rename_results.insert(uri, (edit, position));
+                                }
+                            }
+                        }
+                        PendingRequest::Formatting(uri) => {
+                            if let Some(result) = resp.result {
+                                let edits: Vec<lsp_types::TextEdit> =
+                                    serde_json::from_value(result).unwrap_or_default();
+                                self.formatting_results.insert(uri, edits);
                             }
                         }
                     }
