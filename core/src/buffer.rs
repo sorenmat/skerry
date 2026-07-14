@@ -109,23 +109,43 @@ pub trait Buffer {
     /// Returns `None` if `line` is out of range or `col` exceeds the line length.
     fn linecol_to_pos(&self, line: usize, col: usize) -> Option<BytePos>;
 
-    // === Cursor (single, primary) ===
+    // === Selections (primary + multi-cursor) ===
 
-    /// Current cursor byte offset.
-    fn cursor(&self) -> BytePos;
+    /// All active selections/cursors. Always non-empty; element [0] is
+    /// the "primary" used for status-bar display, LSP, and scroll.
+    fn selections(&self) -> &[Selection];
 
-    /// Set the cursor byte offset. The buffer does not validate that
-    /// `byte_pos` is within bounds; callers should validate via
-    /// `pos_to_linecol` first.
-    fn set_cursor(&mut self, byte_pos: BytePos);
+    /// Replace the selection list. Must be non-empty; if empty, the
+    /// implementation should keep a single collapsed selection at 0.
+    fn set_selections(&mut self, selections: Vec<Selection>);
 
-    // === Selection (single, primary) ===
+    /// Set just the primary selection (index 0), keeping any additional
+    /// cursors intact. If the list is empty (shouldn't happen), sets it.
+    fn set_primary_selection(&mut self, sel: Selection);
 
-    /// Current selection.
-    fn selection(&self) -> Selection;
+    /// Convenience: the primary (first) selection's head — the caret
+    /// position. Equivalent to `self.selections()[0].head`.
+    fn cursor(&self) -> BytePos {
+        self.selections()[0].head
+    }
 
-    /// Set the selection.
-    fn set_selection(&mut self, sel: Selection);
+    /// Convenience: set the primary selection to a collapsed cursor,
+    /// dropping any additional cursors. Equivalent to
+    /// `set_selections(vec![Selection::collapsed(pos)])`.
+    fn set_cursor(&mut self, pos: BytePos) {
+        self.set_selections(vec![Selection::collapsed(pos)]);
+    }
+
+    /// Convenience: the primary (first) selection.
+    fn selection(&self) -> Selection {
+        self.selections()[0]
+    }
+
+    /// Convenience: set just the primary selection (index 0), dropping
+    /// any additional cursors.
+    fn set_selection(&mut self, sel: Selection) {
+        self.set_selections(vec![sel]);
+    }
 
     // === Edits ===
 

@@ -1,19 +1,20 @@
-//! Linear undo with text + cursor tracking.
+//! Linear undo with text + selection tracking.
 //!
 //! See ADR 0004. Each undo entry stores the **forward** action (what the
-//! edit did) plus the cursor position before and after. To undo, we
+//! edit did) plus the full selection list before and after. To undo, we
 //! apply the **inverse** of the forward action:
 //!
 //! - `InsertText` → inverse is `DeleteRange`
 //! - `DeleteRange` → inverse is `InsertText` (with the saved bytes)
 //!
-//! Selection state is not tracked in v0.1 — the frontend owns selection;
-//! undo only restores the cursor.
+//! The full selection list (all cursors) is snapshotted so multi-cursor
+//! state survives undo/redo.
 //!
 //! Edit groups (begin/end_edit_group) cause consecutive inserts at
 //! adjacent positions to merge into a single undo entry. This is how
 //! "paste a 100-char string" becomes a single undo instead of 100.
 
+use crate::buffer::Selection;
 use crate::BytePos;
 
 /// One operation that was performed on the buffer.
@@ -25,12 +26,12 @@ pub(crate) enum UndoAction {
     DeleteRange { pos: BytePos, deleted: Vec<u8> },
 }
 
-/// One undoable edit group. Stores the cursor positions before and after
+/// One undoable edit group. Stores the selection list before and after
 /// the edit, plus the action that was performed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UndoEntry {
-    pub cursor_before: BytePos,
-    pub cursor_after: BytePos,
+    pub selections_before: Vec<Selection>,
+    pub selections_after: Vec<Selection>,
     pub action: UndoAction,
 }
 
@@ -141,8 +142,8 @@ fn try_merge(a: &UndoEntry, b: &UndoEntry) -> Option<UndoEntry> {
             let mut merged_text = text_a.clone();
             merged_text.extend_from_slice(text_b);
             Some(UndoEntry {
-                cursor_before: a.cursor_before,
-                cursor_after: b.cursor_after,
+                selections_before: a.selections_before.clone(),
+                selections_after: b.selections_after.clone(),
                 action: UndoAction::InsertText {
                     pos: *pos_a,
                     text: merged_text,
@@ -159,8 +160,8 @@ mod tests {
 
     fn insert_entry(pos: BytePos, text: &str) -> UndoEntry {
         UndoEntry {
-            cursor_before: pos,
-            cursor_after: pos + text.len(),
+            selections_before: vec![Selection::collapsed(pos)],
+            selections_after: vec![Selection::collapsed(pos + text.len())],
             action: UndoAction::InsertText {
                 pos,
                 text: text.as_bytes().to_vec(),
