@@ -2162,10 +2162,19 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // Clicking or dragging in the editor gives the editor focus.
             app.project_tree_focused = false;
             if let Some(pos) = response.interact_pointer_pos() {
+                // Alt/Opt+click adds a cursor (multi-cursor) instead of
+                // replacing the selection list.
+                let alt_click = response.clicked() && ui.input(|i| i.modifiers.alt);
                 // macOS Command+click on a linkable token triggers
                 // go-to-definition instead of moving the cursor.
                 let cmd_click = response.clicked() && ui.input(|i| i.modifiers.command);
-                if cmd_click {
+                if alt_click {
+                    if let Some(byte_pos) = pixel_to_byte_pos(
+                        app, pos, rect, text_x, char_width, line_height, prefix_chars, gutter_width,
+                    ) {
+                        app.handle_event(EditorEvent::AddCursor { pos: byte_pos });
+                    }
+                } else if cmd_click {
                     if let Some(byte_pos) = pixel_to_byte_pos(
                         app,
                         pos,

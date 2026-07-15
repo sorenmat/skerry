@@ -120,6 +120,12 @@ pub enum EditorEvent {
     /// Extend the selection to an absolute byte position, leaving the
     /// anchor where it was. Used by mouse drag.
     SelectExtendTo { pos: BytePos },
+    /// Add a cursor at an absolute byte position (multi-cursor). Used by
+    /// Cmd/Ctrl+click. Does not remove existing cursors.
+    AddCursor { pos: BytePos },
+    /// Select the next occurrence of the current word/selection (multi-
+    /// cursor). Adds a cursor at the next match.
+    SelectNextOccurrence,
     /// Insert `text` at the cursor position. If the selection is
     /// non-empty, the selection is replaced by `text`. Used for paste;
     /// the frontend reads the OS clipboard and produces this event.
@@ -383,6 +389,8 @@ mod tests {
         let _ = EditorEvent::RenameSymbol;
         let _ = EditorEvent::RenameApply { new_name: String::new() };
         let _ = EditorEvent::FormatDocument;
+        let _ = EditorEvent::AddCursor { pos: 0 };
+        let _ = EditorEvent::SelectNextOccurrence;
         let _ = EditorEvent::ToggleGitGutter;
         let _ = EditorEvent::RefreshGitGutter;
         let _ = EditorEvent::NextHunk;

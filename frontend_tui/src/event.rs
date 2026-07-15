@@ -250,7 +250,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('r') => Some(EditorEvent::ReplaceOpen),
             KeyCode::Char('i') => Some(EditorEvent::CycleIndentMode),
             KeyCode::Char('k') => Some(EditorEvent::DeleteLine),
-            KeyCode::Char('d') => Some(EditorEvent::DuplicateLine),
+            KeyCode::Char('d') => Some(EditorEvent::SelectNextOccurrence),
             KeyCode::Char('t') => Some(EditorEvent::NewDoc),
             KeyCode::Char('w') => Some(EditorEvent::CloseDoc),
             KeyCode::Char('o') => Some(EditorEvent::OpenFile(None)),
@@ -281,6 +281,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('R') => Some(EditorEvent::ReloadFile),
             KeyCode::Up => Some(EditorEvent::PrevHunk),
             KeyCode::Down => Some(EditorEvent::NextHunk),
+            KeyCode::Char('D') => Some(EditorEvent::DuplicateLine),
             _ => None,
         };
     }

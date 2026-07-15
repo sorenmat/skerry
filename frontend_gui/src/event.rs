@@ -83,7 +83,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::R => Some(EditorEvent::ReplaceOpen),
             Key::I => Some(EditorEvent::CycleIndentMode),
             Key::K => Some(EditorEvent::DeleteLine),
-            Key::D => Some(EditorEvent::DuplicateLine),
+            Key::D => Some(EditorEvent::SelectNextOccurrence),
             Key::T => Some(EditorEvent::NewDoc),
             Key::O => Some(EditorEvent::OpenFile(None)),
             Key::G => Some(EditorEvent::GoToLine(None)),
@@ -121,6 +121,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::R => Some(EditorEvent::ReloadFile),
             Key::ArrowUp => Some(EditorEvent::PrevHunk),
             Key::ArrowDown => Some(EditorEvent::NextHunk),
+            Key::D => Some(EditorEvent::DuplicateLine),
             _ => None,
         };
     }

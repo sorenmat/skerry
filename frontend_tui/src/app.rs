@@ -482,6 +482,64 @@ impl App {
         Some(start_byte..end_byte)
     }
 
+    /// Select the next occurrence of the word under the primary cursor
+    /// (or the selected text). Adds a new selection at the next match.
+    fn select_next_occurrence(&mut self) {
+        let buf = self.active_buffer();
+        let primary = buf.selection();
+        let needle = if primary.is_collapsed() {
+            self.word_at_cursor()
+        } else {
+            buf.slice(primary.range())
+        };
+        let Some(needle) = needle else {
+            self.status_message = Some("No word to search.".to_string());
+            return;
+        };
+        if needle.is_empty() {
+            return;
+        }
+        let needle_bytes = needle.as_bytes();
+        let total = buf.len();
+        let last_head = buf.selections().last().map(|s| s.head).unwrap_or(0);
+        let search_start = last_head + needle.len();
+        let existing: Vec<std::ops::Range<usize>> =
+            buf.selections().iter().map(|s| s.range()).collect();
+        let content = String::from_utf8_lossy(&buf.to_bytes()).to_string();
+        let search = |from: usize| -> Option<usize> {
+            if from >= content.len() {
+                return None;
+            }
+            content[from..].find(&needle).map(|p| p + from)
+        };
+        let mut found = search(search_start);
+        if found.is_none() && search_start > 0 {
+            found = search(0);
+        }
+        while let Some(pos) = found {
+            let candidate = pos..(pos + needle_bytes.len());
+            let overlaps = existing.iter().any(|r| {
+                candidate.start < r.end && candidate.end > r.start
+            });
+            if !overlaps && pos != last_head {
+                let mut sels: Vec<Selection> =
+                    self.active_buffer().selections().to_vec();
+                sels.push(Selection {
+                    anchor: candidate.start,
+                    head: candidate.end,
+                });
+                sels.sort_by_key(|s| s.head);
+                self.active_buffer_mut().set_selections(sels);
+                return;
+            }
+            found = search(pos + needle_bytes.len());
+            if pos + needle_bytes.len() >= total {
+                break;
+            }
+        }
+        self.status_message = Some("No more occurrences.".to_string());
+    }
+
     pub fn format_active_document(&mut self) {
         let Some(uri) = self.active_doc().uri() else {
             return;
@@ -1194,6 +1252,19 @@ impl App {
                     anchor,
                     head: clamped,
                 });
+            }
+            EditorEvent::AddCursor { pos } => {
+                let clamped = pos.min(self.active_buffer().len());
+                let mut sels: Vec<Selection> =
+                    self.active_buffer().selections().to_vec();
+                if !sels.iter().any(|s| s.head == clamped && s.is_collapsed()) {
+                    sels.push(Selection::collapsed(clamped));
+                    sels.sort_by_key(|s| s.head);
+                    self.active_buffer_mut().set_selections(sels);
+                }
+            }
+            EditorEvent::SelectNextOccurrence => {
+                self.select_next_occurrence();
             }
             EditorEvent::Paste(text) => {
                 // Selection-aware paste: replace the selection if any,

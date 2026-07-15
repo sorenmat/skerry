@@ -1163,6 +1163,21 @@ impl EditorApp {
                 // line instead of sliding it across the viewport.
                 self.snap_caret_animation();
             }
+            EditorEvent::AddCursor { pos } => {
+                // Multi-cursor: add a cursor without removing existing ones.
+                let clamped = pos.min(self.active_buffer().len());
+                let mut sels: Vec<Selection> =
+                    self.active_buffer().selections().to_vec();
+                // Don't add if the position is already a cursor.
+                if !sels.iter().any(|s| s.head == clamped && s.is_collapsed()) {
+                    sels.push(Selection::collapsed(clamped));
+                    sels.sort_by_key(|s| s.head);
+                    self.active_buffer_mut().set_selections(sels);
+                }
+            }
+            EditorEvent::SelectNextOccurrence => {
+                self.select_next_occurrence();
+            }
             EditorEvent::Paste(text) => {
                 // Selection-aware paste: replace the selection if any,
                 // otherwise insert at cursor. Goes through the shared
@@ -1596,6 +1611,76 @@ impl EditorApp {
     /// where a sliding caret feels wrong.
     pub fn snap_caret_animation(&mut self) {
         self.caret_anim_y = f32::NAN;
+    }
+
+    /// Select the next occurrence of the word under the primary cursor
+    /// (or the selected text). Adds a new selection at the next match,
+    /// wrapping around the buffer if needed.
+    fn select_next_occurrence(&mut self) {
+        let buf = self.active_buffer();
+        // Determine the search needle.
+        let primary = buf.selection();
+        let needle = if primary.is_collapsed() {
+            self.word_at_cursor()
+        } else {
+            buf.slice(primary.range())
+        };
+        let Some(needle) = needle else {
+            self.status_message = Some("No word to search.".to_string());
+            return;
+        };
+        if needle.is_empty() {
+            return;
+        }
+        let needle_bytes = needle.as_bytes();
+        let total = buf.len();
+        // Search from after the last selection's head, wrapping around.
+        let last_head = buf.selections().last().map(|s| s.head).unwrap_or(0);
+        let search_start = last_head + needle.len();
+        // Collect ranges already covered by selections to skip them.
+        let existing: Vec<std::ops::Range<usize>> =
+            buf.selections().iter().map(|s| s.range()).collect();
+
+        // Search the buffer content using memchr on to_bytes.
+        let content = String::from_utf8_lossy(&buf.to_bytes()).to_string();
+        let search = |from: usize| -> Option<usize> {
+            if from >= content.len() {
+                return None;
+            }
+            content[from..].find(&needle).map(|p| p + from)
+        };
+
+        // Try from search_start, then wrap from 0.
+        let mut found = search(search_start);
+        if found.is_none() && search_start > 0 {
+            found = search(0);
+        }
+        // Skip occurrences that overlap an existing selection.
+        while let Some(pos) = found {
+            let candidate = pos..(pos + needle_bytes.len());
+            let overlaps = existing.iter().any(|r| {
+                candidate.start < r.end && candidate.end > r.start
+            });
+            if !overlaps && pos != last_head {
+                let mut sels: Vec<Selection> =
+                    self.active_buffer().selections().to_vec();
+                sels.push(Selection {
+                    anchor: candidate.start,
+                    head: candidate.end,
+                });
+                sels.sort_by_key(|s| s.head);
+                self.active_buffer_mut().set_selections(sels);
+                self.snap_caret_animation();
+                return;
+            }
+            // Skip past this occurrence and keep searching.
+            found = search(pos + needle_bytes.len());
+            // Don't wrap twice.
+            if pos + needle_bytes.len() >= total {
+                break;
+            }
+        }
+        self.status_message = Some("No more occurrences.".to_string());
     }
 
     /// If the selection is non-empty, delete it and collapse the cursor
