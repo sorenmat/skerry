@@ -132,7 +132,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: "toggle_project_tree",
         label: "Toggle project tree",
-        keybinding: "F2",
+        keybinding: "F8",
         event: EditorEvent::ToggleProjectTree,
     },
     Command {
@@ -152,6 +152,42 @@ pub const COMMANDS: &[Command] = &[
         label: "Cycle theme",
         keybinding: "F5",
         event: EditorEvent::CycleTheme,
+    },
+    Command {
+        id: "select_next_occurrence",
+        label: "Select next occurrence",
+        keybinding: "Ctrl+D",
+        event: EditorEvent::SelectNextOccurrence,
+    },
+    Command {
+        id: "rename_symbol",
+        label: "Rename symbol",
+        keybinding: "F2",
+        event: EditorEvent::RenameSymbol,
+    },
+    Command {
+        id: "format_document",
+        label: "Format document",
+        keybinding: "",
+        event: EditorEvent::FormatDocument,
+    },
+    Command {
+        id: "duplicate_line",
+        label: "Duplicate line",
+        keybinding: "Ctrl+Shift+D",
+        event: EditorEvent::DuplicateLine,
+    },
+    Command {
+        id: "go_to_definition",
+        label: "Go to definition",
+        keybinding: "F12",
+        event: EditorEvent::LspGoToDefinition,
+    },
+    Command {
+        id: "hover",
+        label: "Hover documentation",
+        keybinding: "Ctrl+K",
+        event: EditorEvent::LspHover,
     },
     Command {
         id: "quit",

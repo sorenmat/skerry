@@ -1147,6 +1147,23 @@ fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
                     rows.push(("↑ / ↓ / ← / →".to_string(), "Move cursor"));
                     rows.push(("Shift + arrows".to_string(), "Select text"));
                     rows.push(("PageUp / PageDown".to_string(), "Page up / down"));
+                    // Multi-cursor and editing entries.
+                    if is_mac {
+                        rows.push(("Cmd+D".to_string(), "Select next occurrence"));
+                        rows.push(("Opt+Click".to_string(), "Add cursor at click"));
+                        rows.push(("Shift+Cmd+D".to_string(), "Duplicate line"));
+                        rows.push(("Cmd+K".to_string(), "Hover documentation"));
+                    } else {
+                        rows.push(("Ctrl+D".to_string(), "Select next occurrence"));
+                        rows.push(("Alt+Click".to_string(), "Add cursor at click"));
+                        rows.push(("Shift+Ctrl+D".to_string(), "Duplicate line"));
+                        rows.push(("Ctrl+K".to_string(), "Hover documentation"));
+                    }
+                    rows.push(("F2".to_string(), "Rename symbol"));
+                    rows.push(("F12".to_string(), "Go to definition"));
+                    rows.push(("( ) [ ] { } \" '".to_string(), "Auto-pair brackets/quotes"));
+                    rows.push(("Enter after {".to_string(), "Auto-indent"));
+                    rows.push(("Home".to_string(), "Smart Home (toggle col 0 / first non-WS)"));
 
                     // Command palette entries. Their stored keybinding
                     // strings are Windows/Linux style, so swap Ctrl for
