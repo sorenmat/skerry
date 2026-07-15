@@ -106,6 +106,12 @@ pub const COMMANDS: &[Command] = &[
         event: EditorEvent::ToggleGitGutter,
     },
     Command {
+        id: "toggle_git_blame",
+        label: "Toggle git blame",
+        keybinding: "",
+        event: EditorEvent::ToggleGitBlame,
+    },
+    Command {
         id: "refresh_git_gutter",
         label: "Refresh git gutter",
         keybinding: "",

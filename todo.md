@@ -36,7 +36,7 @@ Prioritized plan based on the current feature set and the biggest gaps next to m
 - [ ] Drag-and-drop tab reorder / drag to split
 - [ ] Minimap
 - [ ] Indent guides
-- [ ] Inline git blame
+- [x] Inline git blame
 - [ ] Git diff / merge-conflict view
 - [ ] Configurable keybindings and settings file
 - [ ] Load custom `.tmTheme` and UI theme files

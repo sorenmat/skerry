@@ -9,8 +9,6 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::Buffer;
-
 /// Maximum file size for which we run `git blame`. Blame walks history
 /// per line and is expensive on large files; above this limit the blame
 /// column stays empty.
@@ -44,7 +42,9 @@ impl GitBlame {
     }
 
     /// Recompute blame for `path` against `HEAD`.
-    pub fn refresh(&mut self, path: Option<&Path>, buffer: &dyn Buffer) {
+    /// `buffer_len` and `line_count` are passed directly to avoid a
+    /// `&dyn Buffer` borrow conflict in the frontend's debounced refresh.
+    pub fn refresh(&mut self, path: Option<&Path>, buffer_len: usize, line_count: usize) {
         self.clear();
         let Some(path) = path else {
             return;
@@ -64,14 +64,13 @@ impl GitBlame {
         };
 
         // Guard: skip very large files (blame is expensive).
-        if buffer.len() > MAX_BLAME_BYTES {
+        if buffer_len > MAX_BLAME_BYTES {
             return;
         }
 
         let Some(output) = blame_output(&repo_root, rel_path) else {
             return;
         };
-        let line_count = buffer.line_count();
         self.entries = parse_porcelain(&output, line_count);
         self.enabled = true;
         self.dirty = false;

@@ -91,6 +91,12 @@ the_editor/
   `Ctrl+Shift+Up`) jump the cursor between changed regions. Toggle
   per-document from the command palette; disabled when the file is not
   in a git repo.
+- **Inline git blame** — per-line commit metadata (short hash, author,
+  relative time) shown in a dedicated gutter column. Shells out to
+  `git blame --line-porcelain HEAD`; debounced refresh (~500 ms after
+  idle). Toggle via the command palette (off by default to keep the
+  gutter uncluttered). Disabled for files over 5 MB and for untracked /
+  non-repo files.
 
 ## Editing
 

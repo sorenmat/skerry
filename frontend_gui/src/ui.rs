@@ -29,6 +29,9 @@ const CARET_WIDTH: f32 = 2.0;
 /// the line numbers. Kept separate from the line-number gutter so the
 /// green/yellow change marker never overlaps the number.
 const GIT_GUTTER_WIDTH: f32 = 14.0;
+/// Width of the optional git-blame column (in pixels) drawn left of the
+/// git gutter when blame is enabled. Wide enough for "abc1234 Alice 2d".
+const BLAME_WIDTH: f32 = 200.0;
 /// Exponential-decay speed for caret animation (1/seconds). Higher =
 /// snappier. At 25, the time constant is 40 ms — the caret reaches
 /// ~70 % of the way in 3 frames (50 ms at 60 fps), which feels
@@ -1373,6 +1376,16 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     let prefix_text = format!("{:>width$} \u{2502} ", 1, width = gutter_width);
     let prefix_chars = prefix_text.chars().count();
 
+    // When git blame is active, the gutter origin shifts right by
+    // BLAME_WIDTH to make room for the blame column.
+    let blame_on = app.active_doc().view.git_blame_enabled
+        && app.active_doc().git_blame.enabled();
+    let gw = if blame_on {
+        GIT_GUTTER_WIDTH + BLAME_WIDTH
+    } else {
+        GIT_GUTTER_WIDTH
+    };
+
     // Compute the desired scroll offset BEFORE the ScrollArea so we
     // can pass it via `.vertical_scroll_offset()`. egui bakes the
     // offset into the inner UI's coordinate space at `begin` time
@@ -1475,7 +1488,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             } else if let Some(pos) = response.hover_pos() {
                 let gutter_right =
-                    rect.left() + GIT_GUTTER_WIDTH + gutter_width as f32 * char_width + char_width;
+                    rect.left() + gw + gutter_width as f32 * char_width + char_width;
                 if pos.x >= gutter_right {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                 } else {
@@ -1517,7 +1530,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 if line_offset >= total_lines {
                     return None;
                 }
-                let text_x_relative = GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
+                let text_x_relative = gw + prefix_chars as f32 * char_width
                     - app.active_doc().view.scroll_x_cols as f32 * char_width;
                 let char_col = if rel_x < text_x_relative {
                     0usize
@@ -1670,6 +1683,26 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             }
 
             // Gutter (line number + separator).
+            // When blame is active, draw the blame text in the blame
+            // column before the line number.
+            if blame_on {
+                if let Some(entry) = app.active_doc().git_blame.entry(line_idx) {
+                    let blame_text = format!(
+                        "{} {} {}",
+                        entry.short_hash, entry.author, entry.relative_time
+                    );
+                    painter.text(
+                        egui::pos2(
+                            (rect.left() + BLAME_WIDTH - 4.0).round(),
+                            y,
+                        ),
+                        egui::Align2::RIGHT_TOP,
+                        blame_text,
+                        egui::FontId::monospace(FONT_SIZE - 1.0),
+                        theme.dim_text,
+                    );
+                }
+            }
             let gutter = format!("{:>width$} \u{2502} ", line_idx + 1, width = gutter_width);
             let gutter_color = if line_idx == cursor_line {
                 theme.line_number_active
@@ -1677,14 +1710,14 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 theme.gutter_text
             };
             painter.text(
-                egui::pos2((rect.left() + GIT_GUTTER_WIDTH).round(), y),
+                egui::pos2((rect.left() + gw).round(), y),
                 egui::Align2::LEFT_TOP,
                 gutter,
                 font_id.clone(),
                 gutter_color,
             );
 
-            let text_x = (rect.left() + GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
+            let text_x = (rect.left() + gw + prefix_chars as f32 * char_width
                 - app.active_doc().view.scroll_x_cols as f32 * char_width)
                 .round();
 
@@ -2132,7 +2165,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         // Carets — painted after the line loop so they sit on top of all
         // text. Draw one caret per collapsed selection (multi-cursor).
         // Non-collapsed selections are already marked by their rectangles.
-        let text_x_caret = (rect.left() + GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
+        let text_x_caret = (rect.left() + gw + prefix_chars as f32 * char_width
             - app.active_doc().view.scroll_x_cols as f32 * char_width)
             .round();
         for sel in app.active_buffer().selections() {
@@ -2173,7 +2206,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         // text_x is the SCREEN position of the text origin (gutter
         // right-edge minus horizontal scroll). pixel_to_byte_pos
         // uses it to map pointer.x → char_col.
-        let text_x = rect.left() + GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
+        let text_x = rect.left() + gw + prefix_chars as f32 * char_width
             - app.active_doc().view.scroll_x_cols as f32 * char_width;
         if response.clicked() || response.dragged() {
             // Clicking or dragging in the editor gives the editor focus.

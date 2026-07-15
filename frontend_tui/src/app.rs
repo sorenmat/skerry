@@ -766,6 +766,7 @@ impl App {
             // timeout keeps this check running ~10 times a second.
             self.auto_save();
             self.maybe_refresh_git_gutter();
+            self.maybe_refresh_git_blame();
 
             // Check for files that changed externally.
             self.handle_external_changes();
@@ -1581,6 +1582,7 @@ impl App {
                 self.active_doc_mut().apply_ts_edit(delta);
             }
             self.active_doc_mut().git_gutter.mark_dirty();
+            self.active_doc_mut().git_blame.mark_dirty();
             self.last_edit_time = Instant::now();
         }
     }
@@ -2799,6 +2801,26 @@ impl App {
             return;
         }
         self.active_doc_mut().refresh_git_gutter();
+    }
+
+    /// Debounced git blame refresh.
+    pub fn maybe_refresh_git_blame(&mut self) {
+        if !self.active_doc().view.git_blame_enabled {
+            return;
+        }
+        if !self.active_doc().git_blame.dirty() {
+            return;
+        }
+        const DELAY: Duration = Duration::from_millis(500);
+        if self.last_edit_time.elapsed() < DELAY {
+            return;
+        }
+        let path = self.active_doc().path_buf();
+        let line_count = self.active_buffer().line_count();
+        let buf_len = self.active_buffer().len();
+        self.active_doc_mut()
+            .git_blame
+            .refresh(path.as_deref(), buf_len, line_count);
     }
 
     /// Jump the cursor to the next or previous git hunk. `delta` should

@@ -1504,6 +1504,7 @@ impl EditorApp {
                 self.active_doc_mut().apply_ts_edit(delta);
             }
             self.active_doc_mut().git_gutter.mark_dirty();
+            self.active_doc_mut().git_blame.mark_dirty();
             self.last_edit_time = Instant::now();
         }
     }
@@ -2939,6 +2940,27 @@ impl EditorApp {
         self.active_doc_mut().refresh_git_gutter();
     }
 
+    /// Debounced git blame refresh — same idle-delay pattern as the
+    /// gutter. Only fires when blame is enabled and dirty.
+    pub fn maybe_refresh_git_blame(&mut self) {
+        if !self.active_doc().view.git_blame_enabled {
+            return;
+        }
+        if !self.active_doc().git_blame.dirty() {
+            return;
+        }
+        const DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        if self.last_edit_time.elapsed() < DELAY {
+            return;
+        }
+        let path = self.active_doc().path_buf();
+        let line_count = self.active_buffer().line_count();
+        let buf_len = self.active_buffer().len();
+        self.active_doc_mut()
+            .git_blame
+            .refresh(path.as_deref(), buf_len, line_count);
+    }
+
     /// Jump the cursor to the start of the given 1-based line.
     /// Out-of-range values are clamped to the document bounds.
     pub fn go_to_line(&mut self, line: usize) {
@@ -3069,6 +3091,7 @@ impl App for EditorApp {
 
         // 5. Refresh the git gutter after the user has been idle briefly.
         self.maybe_refresh_git_gutter();
+        self.maybe_refresh_git_blame();
 
         // 6. Poll the LSP manager and apply any responses.
         self.lsp_manager.poll();

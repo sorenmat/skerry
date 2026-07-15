@@ -990,7 +990,18 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         };
 
         let number_prefix = format!("{:>width$} │ ", line_idx + 1, width = gutter_width);
-        let prefix_chars = 2 + number_prefix.chars().count();
+        let blame_on = app.active_doc().view.git_blame_enabled
+            && app.active_doc().git_blame.enabled();
+        let blame_span = if blame_on {
+            if let Some(entry) = app.active_doc().git_blame.entry(line_idx) {
+                format!("{:<8}", &entry.short_hash)
+            } else {
+                "        ".to_string()
+            }
+        } else {
+            String::new()
+        };
+        let prefix_chars = 2 + blame_span.chars().count() + number_prefix.chars().count();
         let avail = (viewport_width as usize).saturating_sub(prefix_chars);
 
         // Compute the selected sub-range within this line, if any.
@@ -1044,8 +1055,11 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         let mut spans: Vec<Span<'static>> = vec![
             Span::styled(marker.to_string(), marker_style),
             Span::styled(diag_marker.to_string(), diag_style),
-            Span::styled(number_prefix, gutter_style),
         ];
+        if blame_on {
+            spans.push(Span::styled(blame_span, Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled(number_prefix, gutter_style));
 
         // Get syntax segments for this line. Cache lookup first; on a
         // miss, highlight via tree-sitter (immutable doc borrow) then
