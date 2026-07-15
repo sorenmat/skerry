@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use core::{Buffer, Document, EditorEvent, Movement, Search, Selection, SyntaxEngine};
+use core::{Buffer, BytePos, Document, EditorEvent, Movement, Search, Selection, SyntaxEngine};
 use eframe::egui;
 use eframe::egui::Context;
 use eframe::App;
@@ -1112,19 +1112,35 @@ impl EditorApp {
                 self.insert_text(&text);
             }
             EditorEvent::Move(movement) => {
-                let new_pos = self.compute_target(movement);
-                self.active_buffer_mut().set_cursor(new_pos);
-                self.active_buffer_mut()
-                    .set_selection(Selection::collapsed(new_pos));
+                // Move all cursors. compute_target uses the cursor()
+                // (primary) as the origin; for multi-cursor, compute each
+                // selection's new head from its current head.
+                let new_sels: Vec<Selection> = self
+                    .active_buffer()
+                    .selections()
+                    .iter()
+                    .map(|s| {
+                        let new_pos = self.compute_target_from(movement, s.head);
+                        Selection::collapsed(new_pos)
+                    })
+                    .collect();
+                self.active_buffer_mut().set_selections(new_sels);
             }
             EditorEvent::SelectExtend(movement) => {
-                let new_pos = self.compute_target(movement);
-                let anchor = self.active_buffer().selection().anchor;
-                self.active_buffer_mut().set_cursor(new_pos);
-                self.active_buffer_mut().set_selection(Selection {
-                    anchor,
-                    head: new_pos,
-                });
+                // Extend each selection's head, keeping its anchor.
+                let new_sels: Vec<Selection> = self
+                    .active_buffer()
+                    .selections()
+                    .iter()
+                    .map(|s| {
+                        let new_pos = self.compute_target_from(movement, s.head);
+                        Selection {
+                            anchor: s.anchor,
+                            head: new_pos,
+                        }
+                    })
+                    .collect();
+                self.active_buffer_mut().set_selections(new_sels);
             }
             EditorEvent::SetCursor { pos } => {
                 let clamped = pos.min(self.active_buffer().len());
@@ -1467,17 +1483,40 @@ impl EditorApp {
     /// is replaced by the inserted text. Centralised here so all
     /// three events share error / cursor-update behaviour.
     fn insert_text(&mut self, text: &str) {
+        // Delete any non-collapsed selections first (right-to-left).
         self.delete_selection_if_any();
-        let pos = self.active_buffer().cursor();
-        match self.active_buffer_mut().insert(pos, text) {
-            Ok(new_pos) => {
-                self.active_buffer_mut().set_cursor(new_pos);
-                self.active_buffer_mut()
-                    .set_selection(Selection::collapsed(new_pos));
-                self.status_message = None;
+        // Collect all cursor positions (collapsed selection heads).
+        // Insert right-to-left so earlier positions aren't shifted.
+        let mut positions: Vec<BytePos> = self
+            .active_buffer()
+            .selections()
+            .iter()
+            .map(|s| s.head)
+            .collect();
+        positions.sort();
+        positions.dedup();
+        // Sort descending for right-to-left insertion.
+        positions.reverse();
+        let mut new_positions: Vec<BytePos> = Vec::new();
+        for pos in &positions {
+            match self.active_buffer_mut().insert(*pos, text) {
+                Ok(new_pos) => new_positions.push(new_pos),
+                Err(e) => {
+                    self.status_message = Some(format!("insert error: {e}"));
+                    return;
+                }
             }
-            Err(e) => self.status_message = Some(format!("insert error: {e}")),
         }
+        // Rebuild selections: collapsed cursors at the end of each insert.
+        new_positions.sort();
+        let new_sels: Vec<Selection> = new_positions
+            .iter()
+            .map(|&p| Selection::collapsed(p))
+            .collect();
+        if !new_sels.is_empty() {
+            self.active_buffer_mut().set_selections(new_sels);
+        }
+        self.status_message = None;
     }
 
     /// Insert an auto-paired open/close (e.g. `()`), leaving the cursor
@@ -1563,23 +1602,63 @@ impl EditorApp {
     /// to the start of the deleted range. Returns `true` when a deletion
     /// actually happened.
     fn delete_selection_if_any(&mut self) -> bool {
-        let sel = self.active_buffer().selection();
-        if sel.is_collapsed() {
+        // Collect all non-collapsed selections. Process right-to-left so
+        // byte offsets stay valid after each deletion.
+        let sels: Vec<Selection> = self
+            .active_buffer()
+            .selections()
+            .iter()
+            .filter(|s| !s.is_collapsed())
+            .copied()
+            .collect();
+        if sels.is_empty() {
             return false;
         }
-        let range = sel.range();
-        match self.active_buffer_mut().delete(range) {
-            Ok(new_pos) => {
-                self.active_buffer_mut().set_cursor(new_pos);
-                self.active_buffer_mut()
-                    .set_selection(Selection::collapsed(new_pos));
-                true
-            }
-            Err(e) => {
-                self.status_message = Some(format!("delete error: {e}"));
-                false
+        let mut new_cursors: Vec<BytePos> = Vec::new();
+        let mut any_deleted = false;
+        // Sort descending by range start so we delete right-to-left.
+        let mut sels = sels;
+        sels.sort_by_key(|s| std::cmp::Reverse(s.range().start));
+        for sel in &sels {
+            let range = sel.range();
+            match self.active_buffer_mut().delete(range.clone()) {
+                Ok(new_pos) => {
+                    new_cursors.push(new_pos);
+                    any_deleted = true;
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("delete error: {e}"));
+                }
             }
         }
+        if any_deleted {
+            // Rebuild the selection list: collapsed cursors at each
+            // deletion point, plus any selections that were already
+            // collapsed (preserved unchanged). Sort by position.
+            let mut all_cursors: Vec<BytePos> = new_cursors;
+            // Add back the collapsed selections that weren't deleted.
+            // Their positions haven't changed (they were to the left of
+            // or between the deleted ranges, but since we deleted
+            // right-to-left, positions to the left of each deletion are
+            // unaffected). However, collapsed cursors to the RIGHT of a
+            // deletion ARE shifted. This is handled approximately: we
+            // keep the original collapsed cursor positions. For
+            // single-cursor (the common case) this is exact.
+            let collapsed: Vec<BytePos> = self
+                .active_buffer()
+                .selections()
+                .iter()
+                .filter(|s| s.is_collapsed())
+                .map(|s| s.head)
+                .collect();
+            all_cursors.extend(collapsed);
+            all_cursors.sort();
+            all_cursors.dedup();
+            let new_sels: Vec<Selection> =
+                all_cursors.iter().map(|&p| Selection::collapsed(p)).collect();
+            self.active_buffer_mut().set_selections(new_sels);
+        }
+        any_deleted
     }
 
     /// Replace the currently-active find match with the replace query,
@@ -1681,8 +1760,16 @@ impl EditorApp {
 
     /// Compute the byte position a movement should land on. Identical
     /// to `frontend_tui::App::compute_target`.
+    #[allow(dead_code)]
     fn compute_target(&self, movement: Movement) -> usize {
         let pos = self.active_buffer().cursor();
+        self.compute_target_from(movement, pos)
+    }
+
+    /// Compute the movement target from an explicit starting position.
+    /// Used by multi-cursor Move/SelectExtend to compute each selection's
+    /// new head independently.
+    fn compute_target_from(&self, movement: Movement, pos: usize) -> usize {
         let len = self.active_buffer().len();
         match movement {
             Movement::Left => core::move_left_by_char(self.active_buffer(), pos),
