@@ -246,6 +246,8 @@ pub enum EditorEvent {
     RenameApply { new_name: String },
     /// Format the active document via the LSP server.
     FormatDocument,
+    /// Toggle inline git blame on the active document.
+    ToggleGitBlame,
     /// Toggle the git gutter on the active document.
     ToggleGitGutter,
     /// Refresh the git gutter for the active document.
@@ -392,6 +394,7 @@ mod tests {
         let _ = EditorEvent::AddCursor { pos: 0 };
         let _ = EditorEvent::SelectNextOccurrence;
         let _ = EditorEvent::ToggleGitGutter;
+        let _ = EditorEvent::ToggleGitBlame;
         let _ = EditorEvent::RefreshGitGutter;
         let _ = EditorEvent::NextHunk;
         let _ = EditorEvent::PrevHunk;

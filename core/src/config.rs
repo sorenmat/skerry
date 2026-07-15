@@ -60,6 +60,11 @@ pub struct Config {
     /// Whether the git gutter is enabled by default for new documents.
     #[serde(default = "default_git_gutter")]
     pub git_gutter: bool,
+    /// Whether inline git blame is enabled by default for new documents.
+    /// Off by default — blame shells out to git on every refresh and
+    /// clutters narrow windows.
+    #[serde(default)]
+    pub git_blame: bool,
     /// Whether the GUI caret slides between lines instead of snapping.
     #[serde(default)]
     pub caret_animation: bool,
@@ -98,6 +103,7 @@ impl Default for Config {
             soft_wrap: None,
             scroll_margin_lines: None,
             git_gutter: default_git_gutter(),
+            git_blame: false,
             caret_animation: false,
         }
     }
@@ -168,6 +174,7 @@ impl Config {
             view.scroll_margin_lines = scroll_margin_lines;
         }
         view.git_gutter_enabled = self.git_gutter;
+        view.git_blame_enabled = self.git_blame;
     }
 
     /// Capture the active document's view settings as defaults for future
@@ -178,6 +185,7 @@ impl Config {
         self.soft_wrap = Some(view.soft_wrap);
         self.scroll_margin_lines = Some(view.scroll_margin_lines);
         self.git_gutter = view.git_gutter_enabled;
+        self.git_blame = view.git_blame_enabled;
     }
 }
 

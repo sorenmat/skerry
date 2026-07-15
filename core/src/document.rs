@@ -86,6 +86,8 @@ pub struct ViewState {
     pub soft_wrap: bool,
     /// Whether the git gutter is rendered for this document.
     pub git_gutter_enabled: bool,
+    /// Whether inline git blame is rendered for this document.
+    pub git_blame_enabled: bool,
 }
 
 impl Default for ViewState {
@@ -99,6 +101,7 @@ impl Default for ViewState {
             tab_width: 4,
             soft_wrap: false,
             git_gutter_enabled: true,
+            git_blame_enabled: false,
         }
     }
 }
@@ -141,6 +144,8 @@ pub struct Document {
     pub external_change: bool,
     /// Per-line git change state relative to `HEAD`.
     pub git_gutter: crate::GitGutter,
+    /// Per-line git blame metadata relative to `HEAD`.
+    pub git_blame: crate::GitBlame,
 }
 
 impl Document {
@@ -165,6 +170,7 @@ impl Document {
             project,
             external_change: false,
             git_gutter: crate::GitGutter::new(),
+            git_blame: crate::GitBlame::new(),
         };
         doc.init_ts_tree();
         if doc.path().is_some() {

@@ -289,7 +289,7 @@ impl GitGutter {
 }
 
 /// Run `git rev-parse --show-toplevel` from `path`'s directory.
-fn repo_root_for(path: &Path) -> Option<PathBuf> {
+pub(crate) fn repo_root_for(path: &Path) -> Option<PathBuf> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let output = Command::new("git")
         .arg("rev-parse")

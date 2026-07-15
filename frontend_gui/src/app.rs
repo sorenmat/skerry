@@ -1359,6 +1359,21 @@ impl EditorApp {
                     self.active_doc_mut().refresh_git_gutter();
                 }
             }
+            EditorEvent::ToggleGitBlame => {
+                let enabled = !self.active_doc().view.git_blame_enabled;
+                self.active_doc_mut().view.git_blame_enabled = enabled;
+                self.sync_config();
+                self.status_message = Some(format!(
+                    "Git blame {}.",
+                    if enabled { "enabled" } else { "disabled" }
+                ));
+                if enabled {
+                    // Mark dirty so the debounced refresh (same pattern as
+                    // git_gutter) picks it up on the next idle frame,
+                    // avoiding a borrow conflict here.
+                    self.active_doc_mut().git_blame.mark_dirty();
+                }
+            }
             EditorEvent::LspCompletion => {
                 let Some(uri) = self.active_doc().uri() else {
                     self.status_message = Some("LSP: no file URI.".to_string());
