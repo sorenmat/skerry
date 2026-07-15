@@ -848,12 +848,12 @@ impl EditorApp {
         };
         match event {
             EditorEvent::Insert(ch) => {
-                // Auto-pairing: if the selection is collapsed and the
-                // typed char is an opener, insert the pair and leave the
-                // cursor between them. If the typed char is a closer and
-                // the char after the cursor is the same closer, skip over
-                // it instead of doubling.
-                if self.active_buffer().selection().is_collapsed() {
+                // Auto-pairing: only for single-cursor (the primary is
+                // collapsed AND there are no other cursors). With multi-
+                // cursor, skip auto-pairing and insert plainly at each.
+                let single_cursor = self.active_buffer().selections().len() == 1
+                    && self.active_buffer().selection().is_collapsed();
+                if single_cursor {
                     let pos = self.active_buffer().cursor();
                     // Skip-over: typing ')' when ')' is already next.
                     if let Some(open) = core::matching_open(ch) {
@@ -875,7 +875,7 @@ impl EditorApp {
                 // Auto-indent: pressing Enter copies the current line's
                 // leading whitespace to the new line, adding one indent
                 // level if the line ends with {, (, [, or =>.
-                if ch == '\n' && self.active_buffer().selection().is_collapsed() {
+                if ch == '\n' && single_cursor {
                     let pos = self.active_buffer().cursor();
                     let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                     let v = &self.active_doc().view;
@@ -1521,6 +1521,14 @@ impl EditorApp {
                     return;
                 }
             }
+        }
+        // new_positions are in right-to-left insertion order (positions
+        // was reversed). Each leftward insertion shifts rightward
+        // positions by text.len(). Un-reverse and add the cumulative shift.
+        let text_len = text.len();
+        new_positions.reverse();
+        for (i, p) in new_positions.iter_mut().enumerate() {
+            *p += i * text_len;
         }
         // Rebuild selections: collapsed cursors at the end of each insert.
         new_positions.sort();
@@ -3423,6 +3431,46 @@ mod tests {
         assert_eq!(app.active_buffer().to_bytes(), b"hello !".to_vec());
         assert_eq!(app.active_buffer().cursor(), 7);
         assert!(app.active_buffer().selection().is_collapsed());
+    }
+
+    #[test]
+    fn multi_cursor_insert_types_at_all_cursors() {
+        // Two cursors in "a\nb": pos 1 (after 'a') and pos 3 (after 'b').
+        // Typing 'x' should produce "ax\nbx" with both cursors advancing.
+        let mut app = app_with("a\nb");
+        app.active_buffer_mut()
+            .set_selections(vec![
+                Selection::collapsed(1),
+                Selection::collapsed(3),
+            ]);
+        app.handle_event(EditorEvent::Insert('x'));
+        assert_eq!(app.active_buffer().to_bytes(), b"ax\nbx".to_vec());
+        assert_eq!(app.active_buffer().selections().len(), 2);
+        assert_eq!(app.active_buffer().selections()[0].head, 2);
+        assert_eq!(app.active_buffer().selections()[1].head, 5);
+    }
+
+    #[test]
+    fn multi_cursor_move_moves_all_cursors() {
+        let mut app = app_with("hello\nworld");
+        app.active_buffer_mut()
+            .set_selections(vec![
+                Selection::collapsed(2),  // on line 0
+                Selection::collapsed(8),  // on line 1
+            ]);
+        app.handle_event(EditorEvent::Move(Movement::Right));
+        assert_eq!(app.active_buffer().selections()[0].head, 3);
+        assert_eq!(app.active_buffer().selections()[1].head, 9);
+    }
+
+    #[test]
+    fn select_next_occurrence_adds_cursor() {
+        // "foo bar foo" — cursor on first "foo", Cmd+D finds second.
+        let mut app = app_with("foo bar foo");
+        app.active_buffer_mut().set_cursor(0);
+        app.handle_event(EditorEvent::SelectNextOccurrence);
+        // Should have 2 selections now.
+        assert_eq!(app.active_buffer().selections().len(), 2);
     }
 
     #[test]

@@ -952,12 +952,11 @@ impl App {
         };
         match event {
             EditorEvent::Insert(ch) => {
-                // Auto-pairing: if the selection is collapsed and the
-                // typed char is an opener, insert the pair and leave the
-                // cursor between them. If the typed char is a closer and
-                // the char after the cursor is the same closer, skip over
-                // it instead of doubling.
-                if self.active_buffer().selection().is_collapsed() {
+                // Auto-pairing: only for single-cursor. With multi-cursor,
+                // skip auto-pairing and insert plainly at each.
+                let single_cursor = self.active_buffer().selections().len() == 1
+                    && self.active_buffer().selection().is_collapsed();
+                if single_cursor {
                     let pos = self.active_buffer().cursor();
                     if let Some(_open) = core::matching_open(ch) {
                         if core::char_after(self.active_buffer(), pos) == Some(ch) {
@@ -976,7 +975,7 @@ impl App {
                 // Auto-indent: pressing Enter copies the current line's
                 // leading whitespace to the new line, adding one indent
                 // level if the line ends with {, (, [, or =>.
-                if ch == '\n' && self.active_buffer().selection().is_collapsed() {
+                if ch == '\n' && single_cursor {
                     let pos = self.active_buffer().cursor();
                     let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                     let v = &self.active_doc().view;
@@ -1598,6 +1597,12 @@ impl App {
                     return;
                 }
             }
+        }
+        // Adjust positions for the cumulative shift of right-to-left insertion.
+        let text_len = text.len();
+        new_positions.reverse();
+        for (i, p) in new_positions.iter_mut().enumerate() {
+            *p += i * text_len;
         }
         new_positions.sort();
         let new_sels: Vec<Selection> = new_positions

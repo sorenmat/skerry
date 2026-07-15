@@ -4,8 +4,8 @@ Prioritized plan based on the current feature set and the biggest gaps next to m
 
 ## Phase 1 — Editing power (biggest daily impact)
 
-- [ ] Multi-cursor / multiple selections
-- [ ] Auto-pairing brackets and quotes
+- [x] Multi-cursor / multiple selections
+- [x] Auto-pairing brackets and quotes
 - [ ] Auto-indent on `{`, `}`, `Enter`
 - [ ] Smart Home (toggle column 0 ↔ first non-whitespace)
 - [ ] Block / column selection (Alt+drag or middle-click)
