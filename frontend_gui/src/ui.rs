@@ -1323,7 +1323,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
 
     // Cursor + selection state.
     let cursor_pos = app.active_buffer().cursor();
-    let (cursor_line, cursor_byte_col) = app
+    let (cursor_line, _cursor_byte_col) = app
         .active_buffer()
         .pos_to_linecol(cursor_pos)
         .unwrap_or((0, 0));
@@ -1332,12 +1332,18 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     // if Command is held and the pointer is over an identifier.
     app.cmd_link.range = None;
 
-    let selection = app.active_buffer().selection();
-    let sel_range: Option<std::ops::Range<usize>> = if selection.is_collapsed() {
-        None
-    } else {
-        Some(selection.range())
-    };
+    // All non-collapsed selections (for rendering selection rects).
+    // Collapsed selections are carets (drawn separately below).
+    let sel_ranges: Vec<std::ops::Range<usize>> = app
+        .active_buffer()
+        .selections()
+        .iter()
+        .filter(|s| !s.is_collapsed())
+        .map(|s| s.range())
+        .collect();
+    // For backward compatibility with the match-highlight suppression
+    // logic: if ANY selection is active on this line, skip match highlights.
+    let _has_selection = !sel_ranges.is_empty();
 
     // Find-match highlight colors come from the active theme. Two
     // intensities mirror VSCode / Sublime: bright for the current
@@ -1689,33 +1695,30 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 }
             }
 
-            let sel_in_line: Option<(usize, usize)> = sel_range.as_ref().and_then(|sr| {
-                let intersect = selection_in_line(line_byte_range.clone(), sr.clone())?;
-                let start = line_byte_range.start;
-                let total_chars = line_text.chars().count();
-                let take_lo =
-                    byte_to_char_col(&line_text, intersect.start - start).min(total_chars);
-                let take_hi = byte_to_char_col(&line_text, intersect.end - start).min(total_chars);
-                if take_hi > take_lo {
-                    Some((take_lo, take_hi))
-                } else {
-                    None
-                }
-            });
+            // Compute all selection intersections with this line. Can be
+            // multiple with multi-cursor. Each is a char-col range.
+            let sel_in_line: Vec<(usize, usize)> = sel_ranges
+                .iter()
+                .filter_map(|sr| {
+                    let intersect = selection_in_line(line_byte_range.clone(), sr.clone())?;
+                    let start = line_byte_range.start;
+                    let total_chars = line_text.chars().count();
+                    let take_lo =
+                        byte_to_char_col(&line_text, intersect.start - start).min(total_chars);
+                    let take_hi = byte_to_char_col(&line_text, intersect.end - start).min(total_chars);
+                    if take_hi > take_lo {
+                        Some((take_lo, take_hi))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
-            // Compute match highlights for this line. One entry per match that
-            // overlaps this line, each tagged with the colour
-            // (bright for current, dim for the rest). Same shape
-            // as `sel_in_line` (a char-col range) but it's a Vec
-            // because there can be many matches on a line. Skipped
-            // when a selection is present so the user can see
-            // their selection without matches painting over it.
-            //
-            // Matches are clipped to the line's byte range so
-            // multi-line regex matches still show their visible
-            // portion.
+            // Compute match highlights for this line. Skipped when any
+            // selection is active on this line so the user can see their
+            // selection without matches painting over it.
             let mut match_highlights: Vec<(usize, usize, egui::Color32)> = Vec::new();
-            if sel_in_line.is_none() && query_nonempty {
+            if sel_in_line.is_empty() && query_nonempty {
                 let mut idx = app
                     .search
                     .matches
@@ -1752,53 +1755,99 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 }
             }
 
-            if let Some((take_lo, take_hi)) = sel_in_line {
-                // Selection rendering: three segments
-                // (before / selected / after). Each is drawn
-                // exactly once at an integer-rounded x to avoid
-                // sub-pixel ghosting on the selection rectangle.
-                let before: String = line_text.chars().take(take_lo).collect();
-                let selected: String = line_text
-                    .chars()
-                    .skip(take_lo)
-                    .take(take_hi - take_lo)
-                    .collect();
-                let after: String = line_text.chars().skip(take_hi).collect();
-
-                let sel_x = (text_x + width_of(&before)).round();
-                let sel_w = width_of(&selected).round();
-
-                if !before.is_empty() {
+            if !sel_in_line.is_empty() {
+                // Selection rendering: draw each selection rectangle
+                // first, then the full line text on top. This handles
+                // multiple selections per line (multi-cursor) cleanly
+                // without complex segment splitting.
+                for &(take_lo, take_hi) in &sel_in_line {
+                    let before: String = line_text.chars().take(take_lo).collect();
+                    let selected: String = line_text
+                        .chars()
+                        .skip(take_lo)
+                        .take(take_hi - take_lo)
+                        .collect();
+                    let sel_x = (text_x + width_of(&before)).round();
+                    let sel_w = width_of(&selected).round();
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(sel_x, y),
+                            egui::vec2(sel_w, line_height),
+                        ),
+                        0.0,
+                        theme.selection_bg,
+                    );
+                }
+                // Draw the full line text on top of the selection rects.
+                // For syntax-less lines; syntax-highlighted lines with
+                // selection still show segments (rare with multi-cursor).
+                let doc = &mut app.documents[app.active];
+                let syntax_theme = app.syntax.ts_theme();
+                let cached = if !doc.syntax.dirty {
+                    doc.syntax.lines.get(&line_idx).cloned()
+                } else {
+                    None
+                };
+                let segments: Vec<core::ColorSegment> = match cached {
+                    Some(s) => s,
+                    None => {
+                        let per_line = doc.highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
+                        let segs = per_line.into_iter().next().unwrap_or_default();
+                        if doc.syntax.dirty {
+                            doc.syntax.lines.clear();
+                            doc.syntax.dirty = false;
+                        }
+                        doc.syntax.lines.insert(line_idx, segs.clone());
+                        segs
+                    }
+                };
+                if segments.is_empty() {
                     painter.text(
                         egui::pos2(text_x, y),
                         egui::Align2::LEFT_TOP,
-                        before,
+                        &line_text,
                         font_id.clone(),
                         theme.text,
                     );
-                }
-
-                painter.rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(sel_x, y), egui::vec2(sel_w, line_height)),
-                    0.0,
-                    theme.selection_bg,
-                );
-                painter.text(
-                    egui::pos2(sel_x, y),
-                    egui::Align2::LEFT_TOP,
-                    selected,
-                    font_id.clone(),
-                    theme.text,
-                );
-
-                if !after.is_empty() {
-                    painter.text(
-                        egui::pos2((sel_x + sel_w).round(), y),
-                        egui::Align2::LEFT_TOP,
-                        after,
-                        font_id.clone(),
-                        theme.text,
-                    );
+                } else {
+                    // Walk segments, drawing each in its color.
+                    let mut char_cursor = 0usize;
+                    for seg in &segments {
+                        let seg_lo = byte_to_char_col(&line_text, seg.range.start);
+                        let seg_hi = byte_to_char_col(&line_text, seg.range.end);
+                        if seg_lo > char_cursor {
+                            let gap: String = line_text
+                                .chars()
+                                .skip(char_cursor)
+                                .take(seg_lo - char_cursor)
+                                .collect();
+                            if !gap.is_empty() {
+                                painter.text(
+                                    egui::pos2(text_x, y),
+                                    egui::Align2::LEFT_TOP,
+                                    gap,
+                                    font_id.clone(),
+                                    theme.text,
+                                );
+                            }
+                        }
+                        let text: String = line_text
+                            .chars()
+                            .skip(seg_lo)
+                            .take(seg_hi - seg_lo)
+                            .collect();
+                        if !text.is_empty() {
+                            let c = seg.color;
+                            painter.text(
+                                egui::pos2(text_x, y),
+                                egui::Align2::LEFT_TOP,
+                                text,
+                                font_id.clone(),
+                                egui::Color32::from_rgb(c.r, c.g, c.b),
+                            );
+                        }
+                        char_cursor = seg_hi;
+                    }
                 }
             } else if match_highlights.is_empty() {
                 // Plain line — check for syntax highlighting.
@@ -2063,22 +2112,35 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // (Caret painting moved outside the loop — see below.)
         }
 
-        // Character cursor caret — painted after the line loop so
-        // it sits on top of all text, at the animated y position.
-        // Only draw when the selection is collapsed; a non-empty
-        // selection rectangle already marks the head position.
-        if sel_range.is_none() && cursor_line < total_lines {
+        // Carets — painted after the line loop so they sit on top of all
+        // text. Draw one caret per collapsed selection (multi-cursor).
+        // Non-collapsed selections are already marked by their rectangles.
+        let text_x_caret = (rect.left() + GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
+            - app.active_doc().view.scroll_x_cols as f32 * char_width)
+            .round();
+        for sel in app.active_buffer().selections() {
+            if !sel.is_collapsed() {
+                continue;
+            }
+            let pos = sel.head;
+            let (cl, bc) = app.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+            if cl >= total_lines {
+                continue;
+            }
             let caret_line_text = app
                 .active_buffer()
-                .line_text(cursor_line)
+                .line_text(cl)
                 .map(|c| c.into_owned())
                 .unwrap_or_default();
-            let char_col = byte_to_char_col(&caret_line_text, cursor_byte_col);
-            let text_x = (rect.left() + GIT_GUTTER_WIDTH + prefix_chars as f32 * char_width
-                - app.active_doc().view.scroll_x_cols as f32 * char_width)
-                .round();
-            let caret_x = (text_x + char_col as f32 * char_width).round();
-            let caret_y = (rect.top() + app.caret_anim_y).round();
+            let char_col = byte_to_char_col(&caret_line_text, bc);
+            let caret_x = (text_x_caret + char_col as f32 * char_width).round();
+            // The primary caret uses the animated y; additional carets
+            // snap to their line (animation across N carets is a follow-up).
+            let caret_y = if cl == cursor_line {
+                (rect.top() + app.caret_anim_y).round()
+            } else {
+                (rect.top() + cl as f32 * line_height).round()
+            };
             painter.rect_filled(
                 egui::Rect::from_min_size(
                     egui::pos2(caret_x, caret_y),

@@ -902,12 +902,14 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         .fg(Color::White);
     let gutter_style = Style::default().fg(Color::DarkGray);
 
-    let selection = app.active_buffer().selection();
-    let sel_range: Option<std::ops::Range<usize>> = if selection.is_collapsed() {
-        None
-    } else {
-        Some(selection.range())
-    };
+    // All non-collapsed selections for rendering selection styles.
+    let sel_ranges: Vec<std::ops::Range<usize>> = app
+        .active_buffer()
+        .selections()
+        .iter()
+        .filter(|s| !s.is_collapsed())
+        .map(|s| s.range())
+        .collect();
 
     // Snapshot the search state once per frame so the per-line loop
     // doesn't have to look it up. `current_match_start` is the byte
@@ -996,20 +998,14 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             .active_buffer()
             .line_byte_range(line_idx)
             .unwrap_or(0..0);
-        let selected_in_line = sel_range
-            .as_ref()
-            .and_then(|sr| selection_in_line(line_byte_range.clone(), sr.clone()));
-        // Compute the match highlights for this line. Only when there's
-        // no active selection — selection takes priority visually so the
-        // user can see their drag without matches painting over it.
-        //
-        // For each match that overlaps this line, emit a (byte_range,
-        // style) tuple. Style is `current_match_style` for the match the
-        // cursor is on, `other_match_style` for the rest. Matches are
-        // clipped to the line's byte range so multi-line regex matches
-        // still show their visible portion.
+        // Check all selections for intersection with this line.
+        let selected_in_line: Vec<std::ops::Range<usize>> = sel_ranges
+            .iter()
+            .filter_map(|sr| selection_in_line(line_byte_range.clone(), sr.clone()))
+            .collect();
+        let has_sel = !selected_in_line.is_empty();
         let mut match_highlights: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
-        if sel_range.is_none() && query_nonempty {
+        if !has_sel && query_nonempty {
             let mut idx = app
                 .search
                 .matches
@@ -1082,7 +1078,7 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             &truncated,
             line_byte_range,
             &line_text,
-            selected_in_line,
+            &selected_in_line,
             selection_style,
             &match_highlights,
             scroll_bytes,
@@ -1120,7 +1116,7 @@ fn push_line_spans(
     truncated: &str,
     line_byte_range: std::ops::Range<usize>,
     full_line_text: &str,
-    selected_in_line: Option<std::ops::Range<usize>>,
+    selected_in_line: &[std::ops::Range<usize>],
     selection_style: Style,
     match_highlights: &[(std::ops::Range<usize>, Style)],
     scroll_bytes: usize,
@@ -1128,18 +1124,21 @@ fn push_line_spans(
 ) {
     let line_byte_start = line_byte_range.start;
 
-    // Selection path: matches are hidden behind the selection. Keeps
-    // the visual simple — one highlight style at a time.
-    if let Some(sel) = selected_in_line {
-        push_selection_spans(
-            spans,
-            truncated,
-            line_byte_start,
-            sel,
-            selection_style,
-            scroll_bytes,
-            full_line_text,
-        );
+    // Selection path: matches are hidden behind selections. For
+    // multi-cursor, apply each selection range. Single selection is the
+    // common case (one entry in the slice).
+    if !selected_in_line.is_empty() {
+        for sel in selected_in_line {
+            push_selection_spans(
+                spans,
+                truncated,
+                line_byte_start,
+                sel.clone(),
+                selection_style,
+                scroll_bytes,
+                full_line_text,
+            );
+        }
         return;
     }
 
