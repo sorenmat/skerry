@@ -489,9 +489,20 @@ impl EditorApp {
             self.status_message = Some("Formatter failed or no changes.".to_string());
             return false;
         };
-        // Apply directly: replace the whole buffer with the formatted text.
+        // Save the cursor position as line+col so it survives the replace
+        // (byte offsets shift during formatting). Restore after.
+        let (cursor_line, cursor_col) = self
+            .active_buffer()
+            .pos_to_linecol(self.active_buffer().cursor())
+            .unwrap_or((0, 0));
         let len = self.active_buffer().len();
         let _ = self.active_buffer_mut().replace(0..len, &formatted);
+        // Restore the cursor to the same line/column in the formatted text.
+        let new_pos = self
+            .active_buffer()
+            .linecol_to_pos(cursor_line, cursor_col)
+            .unwrap_or_else(|| self.active_buffer().len());
+        self.active_buffer_mut().set_cursor(new_pos);
         self.active_doc_mut().syntax.invalidate();
         self.status_message = Some("Formatted.".to_string());
         true
