@@ -620,6 +620,13 @@ impl LspManager {
         self.formatting_results.remove(uri)
     }
 
+    /// Store formatting edits from an external (non-LSP) formatter so
+    /// the frontend's `apply_pending_format` picks them up through the
+    /// same pipeline as LSP formatting results.
+    pub fn store_formatting_result(&mut self, uri: &Url, edits: Vec<lsp_types::TextEdit>) {
+        self.formatting_results.insert(uri.clone(), edits);
+    }
+
     /// Drain incoming messages and apply debounced changes. Frontends
     /// should call this once per frame.
     pub fn poll(&mut self) {

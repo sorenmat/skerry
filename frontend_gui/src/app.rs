@@ -463,8 +463,38 @@ impl EditorApp {
             self.lsp_manager.request_formatting(&uri);
             self.status_message = Some("Formatting...".to_string());
         } else {
-            self.status_message = Some("LSP: formatting not supported.".to_string());
+            // Fallback: try an external formatter (gofmt, rustfmt, etc.).
+            self.try_external_format();
         }
+    }
+
+    /// Run the configured external formatter for the active document's
+    /// language. Applies the result synchronously to the buffer. Does
+    /// nothing if no formatter is configured or the formatter fails.
+    fn try_external_format(&mut self) -> bool {
+        let Some(lang) = self.active_doc().language_id() else {
+            self.status_message = Some("Formatting not available.".to_string());
+            return false;
+        };
+        let cmd = match core::formatter_for_language(&self.config, lang) {
+            Some(c) => c,
+            None => {
+                self.status_message =
+                    Some(format!("No formatter configured for {lang}."));
+                return false;
+            }
+        };
+        let input = String::from_utf8_lossy(&self.active_buffer().to_bytes()).to_string();
+        let Some(formatted) = core::run_external_formatter(cmd, &input) else {
+            self.status_message = Some("Formatter failed or no changes.".to_string());
+            return false;
+        };
+        // Apply directly: replace the whole buffer with the formatted text.
+        let len = self.active_buffer().len();
+        let _ = self.active_buffer_mut().replace(0..len, &formatted);
+        self.active_doc_mut().syntax.invalidate();
+        self.status_message = Some("Formatted.".to_string());
+        true
     }
 
     /// If a formatting result has landed for the active doc, apply it.
@@ -1196,13 +1226,20 @@ impl EditorApp {
                     self.active_doc_mut().refresh_git_gutter();
                     self.lsp_save_active();
                     self.sync_config();
-                    // Format on save: request formatting; the result
-                    // lands on a future frame and is applied by
-                    // apply_pending_format (which also re-saves).
+                    // Format on save: LSP-first, then external fallback.
                     if let Some(uri) = self.active_doc().uri() {
                         if self.lsp_manager.supports_formatting(&uri) {
                             self.lsp_manager.request_formatting(&uri);
                             self.pending_format_save = true;
+                        } else if self.try_external_format() {
+                            // External formatter applied directly; re-save
+                            // the formatted content.
+                            if self.active_buffer_mut().save().is_ok() {
+                                self.active_doc_mut().refresh_git_gutter();
+                                self.lsp_save_active();
+                                self.status_message =
+                                    Some("Saved + formatted.".to_string());
+                            }
                         }
                     }
                 }

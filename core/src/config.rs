@@ -4,6 +4,7 @@
 //! platform equivalent) and stores settings and the list of recently
 //! open files for session restore.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -68,6 +69,12 @@ pub struct Config {
     /// Whether the GUI caret slides between lines instead of snapping.
     #[serde(default)]
     pub caret_animation: bool,
+    /// External formatter commands per language ID (e.g. "rust" →
+    /// "rustfmt --emit stdout", "go" → "gofmt"). Used as a fallback when
+    /// the LSP server doesn't support formatting. The command reads the
+    /// file content from stdin and writes the formatted output to stdout.
+    #[serde(default = "default_formatters")]
+    pub formatters: HashMap<String, String>,
 }
 
 fn default_git_gutter() -> bool {
@@ -84,6 +91,16 @@ fn default_auto_save_delay_ms() -> u64 {
 
 fn default_auto_save_on_focus_change() -> bool {
     true
+}
+
+/// Built-in external formatter commands per language. Users can override
+/// these or add new entries in config.json.
+fn default_formatters() -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    m.insert("rust".to_string(), "rustfmt --emit stdout".to_string());
+    m.insert("go".to_string(), "gofmt".to_string());
+    m.insert("python".to_string(), "ruff format -".to_string());
+    m
 }
 
 impl Default for Config {
@@ -105,6 +122,7 @@ impl Default for Config {
             git_gutter: default_git_gutter(),
             git_blame: false,
             caret_animation: false,
+            formatters: default_formatters(),
         }
     }
 }
