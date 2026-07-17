@@ -166,6 +166,12 @@ pub const COMMANDS: &[Command] = &[
         event: EditorEvent::SelectNextOccurrence,
     },
     Command {
+        id: "select_all",
+        label: "Select all",
+        keybinding: "Ctrl+A",
+        event: EditorEvent::SelectAll,
+    },
+    Command {
         id: "rename_symbol",
         label: "Rename symbol",
         keybinding: "F2",

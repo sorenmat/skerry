@@ -126,6 +126,11 @@ pub enum EditorEvent {
     /// Select the next occurrence of the current word/selection (multi-
     /// cursor). Adds a cursor at the next match.
     SelectNextOccurrence,
+    /// Select all text in the document.
+    SelectAll,
+    /// Collapse multi-cursor to a single primary cursor. If only one
+    /// cursor is active, the frontend may interpret this as quit/close.
+    CollapseCursors,
     /// Insert `text` at the cursor position. If the selection is
     /// non-empty, the selection is replaced by `text`. Used for paste;
     /// the frontend reads the OS clipboard and produces this event.
@@ -393,6 +398,8 @@ mod tests {
         let _ = EditorEvent::FormatDocument;
         let _ = EditorEvent::AddCursor { pos: 0 };
         let _ = EditorEvent::SelectNextOccurrence;
+        let _ = EditorEvent::SelectAll;
+        let _ = EditorEvent::CollapseCursors;
         let _ = EditorEvent::ToggleGitGutter;
         let _ = EditorEvent::ToggleGitBlame;
         let _ = EditorEvent::RefreshGitGutter;

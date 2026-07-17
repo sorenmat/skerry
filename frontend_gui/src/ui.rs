@@ -1153,11 +1153,13 @@ fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
                     // Multi-cursor and editing entries.
                     if is_mac {
                         rows.push(("Cmd+D".to_string(), "Select next occurrence"));
+                        rows.push(("Cmd+A".to_string(), "Select all"));
                         rows.push(("Opt+Click".to_string(), "Add cursor at click"));
                         rows.push(("Shift+Cmd+D".to_string(), "Duplicate line"));
                         rows.push(("Cmd+K".to_string(), "Hover documentation"));
                     } else {
                         rows.push(("Ctrl+D".to_string(), "Select next occurrence"));
+                        rows.push(("Ctrl+A".to_string(), "Select all"));
                         rows.push(("Alt+Click".to_string(), "Add cursor at click"));
                         rows.push(("Shift+Ctrl+D".to_string(), "Duplicate line"));
                         rows.push(("Ctrl+K".to_string(), "Hover documentation"));

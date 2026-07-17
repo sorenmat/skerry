@@ -1219,6 +1219,22 @@ impl EditorApp {
             EditorEvent::SelectNextOccurrence => {
                 self.select_next_occurrence();
             }
+            EditorEvent::SelectAll => {
+                let len = self.active_buffer().len();
+                self.active_buffer_mut()
+                    .set_selections(vec![Selection { anchor: 0, head: len }]);
+            }
+            EditorEvent::CollapseCursors => {
+                // If multi-cursor is active, collapse to one. Otherwise quit.
+                if self.active_buffer().selections().len() > 1 {
+                    let primary = self.active_buffer().selections()[0];
+                    self.active_buffer_mut()
+                        .set_selections(vec![primary]);
+                } else {
+                    self.sync_config();
+                    self.should_quit = true;
+                }
+            }
             EditorEvent::Paste(text) => {
                 // Selection-aware paste: replace the selection if any,
                 // otherwise insert at cursor. Goes through the shared

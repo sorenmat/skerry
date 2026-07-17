@@ -79,6 +79,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::Z => Some(EditorEvent::Undo),
             Key::Y => Some(EditorEvent::Redo),
             Key::Q => Some(EditorEvent::Quit),
+            Key::A => Some(EditorEvent::SelectAll),
             Key::F => Some(EditorEvent::FindOpen),
             Key::R => Some(EditorEvent::ReplaceOpen),
             Key::I => Some(EditorEvent::CycleIndentMode),
@@ -148,7 +149,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         Key::Delete => Some(EditorEvent::DeleteRight),
         Key::Enter => Some(EditorEvent::Insert('\n')),
         Key::Tab => Some(EditorEvent::InsertTab),
-        Key::Escape => Some(EditorEvent::Quit),
+        Key::Escape => Some(EditorEvent::CollapseCursors),
         Key::F2 => Some(EditorEvent::RenameSymbol),
         Key::F5 => Some(EditorEvent::CycleTheme),
         Key::F8 => Some(EditorEvent::ToggleProjectTree),
@@ -554,10 +555,12 @@ mod tests {
     }
 
     #[test]
-    fn escape_quits() {
+    fn escape_collapses_or_quits() {
+        // Escape now dispatches CollapseCursors; the handler decides
+        // whether to collapse multi-cursor or quit.
         assert_eq!(
             translate_event(&key_event(Key::Escape, true, no_mods())),
-            Some(EditorEvent::Quit)
+            Some(EditorEvent::CollapseCursors)
         );
     }
 

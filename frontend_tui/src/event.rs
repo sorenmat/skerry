@@ -246,6 +246,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('z') => Some(EditorEvent::Undo),
             KeyCode::Char('y') => Some(EditorEvent::Redo),
             KeyCode::Char('q') => Some(EditorEvent::Quit),
+            KeyCode::Char('a') => Some(EditorEvent::SelectAll),
             KeyCode::Char('f') => Some(EditorEvent::FindOpen),
             KeyCode::Char('r') => Some(EditorEvent::ReplaceOpen),
             KeyCode::Char('i') => Some(EditorEvent::CycleIndentMode),
@@ -306,7 +307,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
         KeyCode::Delete => Some(EditorEvent::DeleteRight),
         KeyCode::Enter => Some(EditorEvent::Insert('\n')),
         KeyCode::Tab => Some(EditorEvent::InsertTab),
-        KeyCode::Esc => Some(EditorEvent::CloseDoc),
+        KeyCode::Esc => Some(EditorEvent::CollapseCursors),
         KeyCode::F(2) => Some(EditorEvent::RenameSymbol),
         KeyCode::F(5) => Some(EditorEvent::CycleTheme),
         KeyCode::F(8) => Some(EditorEvent::ToggleProjectTree),
@@ -526,10 +527,12 @@ mod tests {
     }
 
     #[test]
-    fn esc_closes_doc() {
+    fn esc_collapses_or_closes_doc() {
+        // Escape now dispatches CollapseCursors; the handler decides
+        // whether to collapse multi-cursor or close the doc.
         assert_eq!(
             translate_key(key(KeyCode::Esc), None),
-            Some(EditorEvent::CloseDoc)
+            Some(EditorEvent::CollapseCursors)
         );
     }
 
