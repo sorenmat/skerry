@@ -357,7 +357,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                 egui::Frame::none()
                     .fill(theme.panel_bg)
                     .inner_margin(6.0)
-                    .stroke(egui::Stroke::new(1.0, theme.border)),
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -492,7 +492,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                 egui::Frame::none()
                     .fill(theme.panel_bg)
                     .inner_margin(6.0)
-                    .stroke(egui::Stroke::new(1.0, theme.border)),
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -523,7 +523,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                 egui::Frame::none()
                     .fill(theme.panel_bg)
                     .inner_margin(6.0)
-                    .stroke(egui::Stroke::new(1.0, theme.border)),
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -2156,7 +2156,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     let y_under = y + line_height - 3.0;
                     painter.line_segment(
                         [egui::pos2(x1, y_under), egui::pos2(x2, y_under)],
-                        egui::Stroke::new(1.5, theme.accent),
+                        egui::Stroke::new(1.5_f32, theme.accent),
                     );
                 }
             }

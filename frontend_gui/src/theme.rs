@@ -81,7 +81,7 @@ impl GuiTheme {
         // Panels and floating windows.
         visuals.panel_fill = self.panel_bg;
         visuals.window_fill = self.popup_bg;
-        visuals.window_stroke = Stroke::new(1.0, self.popup_border);
+        visuals.window_stroke = Stroke::new(1.0_f32, self.popup_border);
         visuals.window_rounding = egui::Rounding::same(8.0);
         visuals.menu_rounding = egui::Rounding::same(6.0);
         visuals.window_shadow = Shadow {

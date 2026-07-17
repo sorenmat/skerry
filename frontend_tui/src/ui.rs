@@ -994,7 +994,7 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             && app.active_doc().git_blame.enabled();
         let blame_span = if blame_on {
             if let Some(entry) = app.active_doc().git_blame.entry(line_idx) {
-                format!("{:<8}", &entry.short_hash)
+                format!("{:<8}", entry.short_hash)
             } else {
                 "        ".to_string()
             }
