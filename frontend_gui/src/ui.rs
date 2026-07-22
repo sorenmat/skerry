@@ -412,6 +412,16 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                     if regex_btn.clicked() {
                         app.handle_event(EditorEvent::ToggleFindRegex);
                     }
+                    let case_btn = ui.selectable_label(app.search.case_sensitive, "Aa");
+                    hand_cursor(&case_btn, ui.ctx());
+                    if case_btn.clicked() {
+                        app.handle_event(EditorEvent::ToggleFindCaseSensitive);
+                    }
+                    let word_btn = ui.selectable_label(app.search.whole_word, "W");
+                    hand_cursor(&word_btn, ui.ctx());
+                    if word_btn.clicked() {
+                        app.handle_event(EditorEvent::ToggleFindWholeWord);
+                    }
                     let next_btn = ui.button("Next");
                     hand_cursor(&next_btn, ui.ctx());
                     if next_btn.clicked() {

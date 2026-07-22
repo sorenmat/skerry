@@ -17,6 +17,16 @@
 
 use crate::BytePos;
 
+/// Check whether the match at `[start, end)` in `haystack` is a whole
+/// word — i.e. the character before `start` and after `end-1` are both
+/// non-word characters (or at the string boundary).
+fn is_whole_word(haystack: &[u8], start: usize, end: usize) -> bool {
+    let is_word_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let before_ok = start == 0 || !is_word_char(haystack[start - 1]);
+    let after_ok = end >= haystack.len() || !is_word_char(haystack[end]);
+    before_ok && after_ok
+}
+
 /// Maximum number of match positions we keep in memory at once.
 /// Beyond this we drop the oldest entries — matches beyond the
 /// cursor are usually what the user wants to navigate to next.
@@ -50,6 +60,12 @@ pub struct Search {
     /// When true, `refresh` interprets `query` as a regex instead of
     /// a literal substring.
     pub regex_mode: bool,
+    /// When true, literal search is case-sensitive (uppercase and
+    /// lowercase are distinct). Default false (case-insensitive).
+    pub case_sensitive: bool,
+    /// When true, matches must be whole words (surrounded by non-word
+    /// characters or string boundaries). Default false.
+    pub whole_word: bool,
     /// If the last regex compile failed, the error message to show
     /// in the find bar. `None` when regex mode is off or the pattern
     /// is valid.
@@ -87,21 +103,69 @@ impl Search {
     }
 
     fn refresh_literal(&mut self, haystack: &[u8]) {
-        let needle = self.query.as_bytes();
-        if needle.is_empty() {
+        if self.query.is_empty() {
             return;
         }
-        let query_len = needle.len();
-        for start in memchr::memmem::find_iter(haystack, needle) {
-            if self.matches.len() >= MAX_STORED_MATCHES {
-                break;
+        let query_len = self.query.len();
+        if self.case_sensitive {
+            // Case-sensitive: direct byte search.
+            let needle = self.query.as_bytes();
+            for start in memchr::memmem::find_iter(haystack, needle) {
+                if self.matches.len() >= MAX_STORED_MATCHES {
+                    break;
+                }
+                if self.whole_word && !is_whole_word(haystack, start, start + query_len) {
+                    continue;
+                }
+                self.matches.push((start, start + query_len));
             }
-            self.matches.push((start, start + query_len));
+        } else {
+            // Case-insensitive: search on the str representation.
+            let text = match std::str::from_utf8(haystack) {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            let needle_lower = self.query.to_lowercase();
+            let needle_bytes = needle_lower.as_bytes();
+            // Use memchr on the lowercased haystack. We can't lowercase
+            // the whole haystack (expensive for large files), so do a
+            // case-insensitive str search via windows.
+            for (byte_pos, _ch) in text.char_indices() {
+                if self.matches.len() >= MAX_STORED_MATCHES {
+                    break;
+                }
+                let remaining = &haystack[byte_pos..];
+                if remaining.len() < needle_bytes.len() {
+                    break;
+                }
+                // Compare case-insensitively.
+                let candidate = &remaining[..needle_bytes.len()];
+                if candidate.eq_ignore_ascii_case(needle_bytes) {
+                    if self.whole_word
+                        && !is_whole_word(haystack, byte_pos, byte_pos + query_len)
+                    {
+                        continue;
+                    }
+                    self.matches.push((byte_pos, byte_pos + query_len));
+                }
+            }
         }
     }
 
     fn refresh_regex(&mut self, haystack: &[u8]) {
-        let re = match regex::Regex::new(&self.query) {
+        // Build the regex pattern, wrapping with flags as needed.
+        let mut pattern = String::new();
+        if !self.case_sensitive {
+            pattern.push_str("(?i)");
+        }
+        if self.whole_word {
+            pattern.push_str(r"\b");
+        }
+        pattern.push_str(&self.query);
+        if self.whole_word {
+            pattern.push_str(r"\b");
+        }
+        let re = match regex::Regex::new(&pattern) {
             Ok(re) => re,
             Err(e) => {
                 self.regex_error = Some(e.to_string());

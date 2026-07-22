@@ -69,6 +69,10 @@ pub enum EditorEvent {
     /// interpreted as a Rust `regex` pattern; when off, it is a literal
     /// substring. Default binding: Alt+R while the find bar is open.
     ToggleFindRegex,
+    /// Toggle case-sensitive search.
+    ToggleFindCaseSensitive,
+    /// Toggle whole-word search.
+    ToggleFindWholeWord,
     /// Open the replace bar (text input for the replacement string).
     /// No-op if it's already open. Closing the find bar also closes
     /// the replace bar — they're a coupled pair. Default binding:
@@ -367,6 +371,8 @@ mod tests {
         let _ = EditorEvent::FindNext;
         let _ = EditorEvent::FindPrev;
         let _ = EditorEvent::ToggleFindRegex;
+        let _ = EditorEvent::ToggleFindCaseSensitive;
+        let _ = EditorEvent::ToggleFindWholeWord;
         let _ = EditorEvent::InsertTab;
         let _ = EditorEvent::ReplaceOpen;
         let _ = EditorEvent::ReplaceClose;

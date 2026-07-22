@@ -1094,6 +1094,24 @@ impl EditorApp {
                         .set_selection(Selection::collapsed(pos));
                 }
             }
+            EditorEvent::ToggleFindCaseSensitive => {
+                self.search.case_sensitive = !self.search.case_sensitive;
+                self.search.refresh(&self.active_buffer().to_bytes());
+                if let Some(pos) = self.search.current_match() {
+                    self.active_buffer_mut().set_cursor(pos);
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(pos));
+                }
+            }
+            EditorEvent::ToggleFindWholeWord => {
+                self.search.whole_word = !self.search.whole_word;
+                self.search.refresh(&self.active_buffer().to_bytes());
+                if let Some(pos) = self.search.current_match() {
+                    self.active_buffer_mut().set_cursor(pos);
+                    self.active_buffer_mut()
+                        .set_selection(Selection::collapsed(pos));
+                }
+            }
             EditorEvent::ReplaceOpen => {
                 // Require the find bar to be open — no point editing the
                 // replacement without an active search visible.
