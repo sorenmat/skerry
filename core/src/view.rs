@@ -152,6 +152,99 @@ pub fn matching_close(ch: char) -> Option<char> {
     }
 }
 
+/// Given a cursor position, find the matching bracket if the cursor is
+/// adjacent to a bracket character. Checks the character at `pos` first,
+/// then the character before `pos` (the common "cursor after bracket"
+/// case). Returns `(bracket_pos, match_pos)` — the positions of both
+/// brackets. Handles nesting (counts open/close depth).
+///
+/// Only matches `()[]{}` (not quotes — those are ambiguous).
+pub fn matching_bracket(buffer: &dyn Buffer, pos: BytePos) -> Option<(BytePos, BytePos)> {
+    // Try the char at `pos`, then the char before `pos`.
+    let ch_after = char_at(buffer, pos);
+    let ch_before = if pos > 0 {
+        char_at(buffer, pos.saturating_sub(1))
+    } else {
+        None
+    };
+    // Prefer the char before the cursor (cursor sits after the bracket).
+    if let Some(ch) = ch_before {
+        if let Some(pair) = find_match(buffer, pos.saturating_sub(1), ch) {
+            return Some(pair);
+        }
+    }
+    if let Some(ch) = ch_after {
+        if let Some(pair) = find_match(buffer, pos, ch) {
+            return Some(pair);
+        }
+    }
+    None
+}
+
+/// Read a single character at a byte position in the buffer.
+fn char_at(buffer: &dyn Buffer, pos: BytePos) -> Option<char> {
+    if pos >= buffer.len() {
+        return None;
+    }
+    let end = move_right_by_char(buffer, pos);
+    if end <= pos {
+        return None;
+    }
+    buffer.slice(pos..end).and_then(|s| s.chars().next())
+}
+
+/// Find the matching bracket for `ch` at `start` position, scanning
+/// forward for openers and backward for closers. Handles nesting.
+fn find_match(
+    buffer: &dyn Buffer,
+    start: BytePos,
+    ch: char,
+) -> Option<(BytePos, BytePos)> {
+    match ch {
+        '(' | '[' | '{' => {
+            let close = matching_close(ch)?;
+            // Scan forward, counting depth.
+            let mut depth = 0i32;
+            let mut p = start;
+            let len = buffer.len();
+            while p < len {
+                let c = char_at(buffer, p)?;
+                let step = move_right_by_char(buffer, p);
+                if c == ch {
+                    depth += 1;
+                } else if c == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((start, p));
+                    }
+                }
+                p = step;
+            }
+            None
+        }
+        ')' | ']' | '}' => {
+            let open = matching_open(ch)?;
+            // Scan backward, counting depth.
+            let mut depth = 0i32;
+            let mut p = start;
+            while p > 0 {
+                p = move_left_by_char(buffer, p);
+                let c = char_at(buffer, p)?;
+                if c == ch {
+                    depth += 1;
+                } else if c == open {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((start, p));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// If `ch` is a closer bracket or quote, return its matching opener.
 /// Otherwise return `None`. Used by the backspace-deletes-pair check.
 pub fn matching_open(ch: char) -> Option<char> {

@@ -43,7 +43,7 @@ pub use syntax::{ColorSegment, HighlightColor, SyntaxCache, SyntaxEngine};
 pub use view::{
     auto_indent, byte_to_char_col, char_after, char_before, char_col_to_byte_col,
     clamped_line_charcol_to_pos, compute_comment_toggles, cursor_char_linecol,
-    format_position, line_comment_prefix, matching_close, matching_open,
-    move_left_by_char, move_right_by_char, selection_in_line, visual_col_to_byte_col,
-    visual_line_width,
+    format_position, line_comment_prefix, matching_bracket, matching_close,
+    matching_open, move_left_by_char, move_right_by_char, selection_in_line,
+    visual_col_to_byte_col, visual_line_width,
 };

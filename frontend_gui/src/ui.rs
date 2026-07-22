@@ -2179,12 +2179,46 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // (Caret painting moved outside the loop — see below.)
         }
 
-        // Carets — painted after the line loop so they sit on top of all
-        // text. Draw one caret per collapsed selection (multi-cursor).
-        // Non-collapsed selections are already marked by their rectangles.
+        // Caret x-position (shared by bracket highlight and carets).
         let text_x_caret = (rect.left() + gw + prefix_chars as f32 * char_width
             - app.active_doc().view.scroll_x_cols as f32 * char_width)
             .round();
+
+        // Bracket match highlight: if the cursor is next to a bracket,
+        // highlight both brackets with a subtle background rect.
+        let cursor_pos = app.active_buffer().cursor();
+        if app.active_buffer().selection().is_collapsed()
+            && app.active_buffer().selections().len() == 1
+        {
+            if let Some((bracket_pos, match_pos)) = core::matching_bracket(app.active_buffer(), cursor_pos) {
+                for pos in [bracket_pos, match_pos] {
+                    let (bl, bc) = app.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
+                    if bl < start_line || bl >= end_line {
+                        continue; // only draw if visible
+                    }
+                    let line_text = app
+                        .active_buffer()
+                        .line_text(bl)
+                        .map(|c| c.into_owned())
+                        .unwrap_or_default();
+                    let char_col = byte_to_char_col(&line_text, bc);
+                    let bx = (text_x_caret + char_col as f32 * char_width).round();
+                    let by = (rect.top() + bl as f32 * line_height).round();
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(bx, by),
+                            egui::vec2(char_width, line_height),
+                        ),
+                        0.0,
+                        theme.selection_bg,
+                    );
+                }
+            }
+        }
+
+        // Carets — painted after the line loop so they sit on top of all
+        // text. Draw one caret per collapsed selection (multi-cursor).
+        // Non-collapsed selections are already marked by their rectangles.
         for sel in app.active_buffer().selections() {
             if !sel.is_collapsed() {
                 continue;
