@@ -1224,6 +1224,43 @@ impl EditorApp {
                 self.active_buffer_mut()
                     .set_selections(vec![Selection { anchor: 0, head: len }]);
             }
+            EditorEvent::ToggleComment => {
+                let Some(lang) = self.active_doc().language_id() else {
+                    return;
+                };
+                let Some(prefix) = core::line_comment_prefix(lang) else {
+                    self.status_message = Some("No comment syntax for this language.".to_string());
+                    return;
+                };
+                // Determine the line range from the primary selection.
+                let cursor = self.active_buffer().cursor();
+                let sel = self.active_buffer().selection();
+                let (start_line, _) = self
+                    .active_buffer()
+                    .pos_to_linecol(sel.anchor.min(sel.head))
+                    .unwrap_or((0, 0));
+                let (end_line, _) = self
+                    .active_buffer()
+                    .pos_to_linecol(sel.anchor.max(sel.head))
+                    .unwrap_or((0, 0));
+                let total = self.active_buffer().line_count();
+                let end_line = (end_line + 1).min(total);
+                let edits = core::compute_comment_toggles(
+                    self.active_buffer(),
+                    start_line,
+                    end_line,
+                    prefix,
+                );
+                // Apply edits right-to-left so byte offsets stay valid.
+                let mut edits = edits;
+                edits.sort_by_key(|(pos, _, _)| std::cmp::Reverse(*pos));
+                for (pos, insert, del_range) in edits {
+                    let _ = self.active_buffer_mut().replace(del_range, &insert);
+                    let _ = pos; // pos was used for ordering only
+                }
+                self.active_doc_mut().syntax.invalidate();
+                let _ = cursor;
+            }
             EditorEvent::CollapseCursors => {
                 // If multi-cursor is active, collapse to one. Otherwise quit.
                 if self.active_buffer().selections().len() > 1 {

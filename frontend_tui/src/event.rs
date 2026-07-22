@@ -258,6 +258,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('g') => Some(EditorEvent::GoToLine(None)),
             KeyCode::Char('p') => Some(EditorEvent::FuzzyFinder(None)),
             KeyCode::Tab => Some(EditorEvent::NextDoc),
+            KeyCode::Char('/') => Some(EditorEvent::ToggleComment),
             KeyCode::Backspace => Some(EditorEvent::DeleteWordLeft),
             KeyCode::Delete => Some(EditorEvent::DeleteWordRight),
             KeyCode::Left => Some(movement(Movement::WordLeft, false)),

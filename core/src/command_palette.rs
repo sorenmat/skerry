@@ -172,6 +172,12 @@ pub const COMMANDS: &[Command] = &[
         event: EditorEvent::SelectAll,
     },
     Command {
+        id: "toggle_comment",
+        label: "Toggle comment",
+        keybinding: "Ctrl+/",
+        event: EditorEvent::ToggleComment,
+    },
+    Command {
         id: "rename_symbol",
         label: "Rename symbol",
         keybinding: "F2",

@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use crate::Buffer;
+use crate::{Buffer, BytePos};
 
 /// Compute the byte range of `selection` that falls within `line`
 /// (the line's own byte range). Returns `None` if they don't overlap.
@@ -273,6 +273,100 @@ pub fn move_right_by_char(buffer: &dyn Buffer, pos: usize) -> usize {
 pub fn format_position(line: usize, col: usize, total_lines: usize) -> String {
     let col_disp = col + 1; // 0-indexed col → 1-indexed display
     format!("L{}:{} / L{}", line + 1, col_disp, total_lines)
+}
+
+/// The line-comment prefix for a language ID, if known.
+/// Returns `None` for languages without a line comment syntax (JSON).
+pub fn line_comment_prefix(language_id: &str) -> Option<&'static str> {
+    match language_id {
+        "rust" | "c" | "cpp" => Some("// "),
+        "go" | "javascript" | "javascriptreact" | "typescript" | "typescriptreact" => {
+            Some("// ")
+        }
+        "python" | "toml" => Some("# "),
+        _ => None,
+    }
+}
+
+/// Compute the set of edits to toggle line comments on the given line
+/// range. Returns `Vec<(byte_pos, text_to_insert, range_to_delete)>`
+/// where each entry is: delete `range_to_delete` and insert `text_to_insert`
+/// at `byte_pos`.
+///
+/// If all lines in the range are already commented, the comments are
+/// removed. If any line is uncommented, comments are added to all.
+/// Blank lines are skipped when checking but are commented when adding.
+pub fn compute_comment_toggles(
+    buffer: &dyn Buffer,
+    start_line: usize,
+    end_line: usize,
+    prefix: &str,
+) -> Vec<(BytePos, String, Range<BytePos>)> {
+    let mut edits = Vec::new();
+
+    // First pass: are all non-empty lines already commented?
+    let mut all_commented = true;
+    for line in start_line..end_line {
+        let Some(text) = buffer.line_text(line) else {
+            continue;
+        };
+        let trimmed = text.trim_start();
+        if trimmed.is_empty() {
+            continue; // skip blank lines
+        }
+        if !trimmed.starts_with(prefix.trim_end()) {
+            all_commented = false;
+            break;
+        }
+    }
+
+    if all_commented {
+        // Remove comments from all lines that have them.
+        for line in start_line..end_line {
+            let Some(text) = buffer.line_text(line) else {
+                continue;
+            };
+            let Some(range) = buffer.line_byte_range(line) else {
+                continue;
+            };
+            let trimmed_start = text
+                .char_indices()
+                .take_while(|(_, c)| *c == ' ' || *c == '\t')
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let after_ws = &text[trimmed_start..];
+            if after_ws.starts_with(prefix.trim_end()) {
+                let remove_start = range.start + trimmed_start;
+                let remove_len = prefix.trim_end().len();
+                edits.push((remove_start, String::new(), remove_start..remove_start + remove_len));
+            }
+        }
+    } else {
+        // Add comments to all non-empty lines.
+        for line in start_line..end_line {
+            let Some(text) = buffer.line_text(line) else {
+                continue;
+            };
+            let Some(range) = buffer.line_byte_range(line) else {
+                continue;
+            };
+            if text.trim().is_empty() {
+                continue; // don't comment blank lines
+            }
+            // Insert at the first non-whitespace position.
+            let insert_pos = range.start
+                + text
+                    .char_indices()
+                    .take_while(|(_, c)| *c == ' ' || *c == '\t')
+                    .last()
+                    .map(|(i, _)| i + 1)
+                    .unwrap_or(0);
+            edits.push((insert_pos, prefix.to_string(), insert_pos..insert_pos));
+        }
+    }
+
+    edits
 }
 
 #[cfg(test)]

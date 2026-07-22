@@ -128,6 +128,8 @@ pub enum EditorEvent {
     SelectNextOccurrence,
     /// Select all text in the document.
     SelectAll,
+    /// Toggle line comments on the selected lines.
+    ToggleComment,
     /// Collapse multi-cursor to a single primary cursor. If only one
     /// cursor is active, the frontend may interpret this as quit/close.
     CollapseCursors,
@@ -399,6 +401,7 @@ mod tests {
         let _ = EditorEvent::AddCursor { pos: 0 };
         let _ = EditorEvent::SelectNextOccurrence;
         let _ = EditorEvent::SelectAll;
+        let _ = EditorEvent::ToggleComment;
         let _ = EditorEvent::CollapseCursors;
         let _ = EditorEvent::ToggleGitGutter;
         let _ = EditorEvent::ToggleGitBlame;

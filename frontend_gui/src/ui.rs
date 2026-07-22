@@ -1169,6 +1169,11 @@ fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
                     rows.push(("( ) [ ] { } \" '".to_string(), "Auto-pair brackets/quotes"));
                     rows.push(("Enter after {".to_string(), "Auto-indent"));
                     rows.push(("Home".to_string(), "Smart Home (toggle col 0 / first non-WS)"));
+                    if is_mac {
+                        rows.push(("Cmd+/".to_string(), "Toggle comment"));
+                    } else {
+                        rows.push(("Ctrl+/".to_string(), "Toggle comment"));
+                    }
 
                     // Command palette entries. Their stored keybinding
                     // strings are Windows/Linux style, so swap Ctrl for

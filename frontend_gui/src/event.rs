@@ -91,6 +91,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::P => Some(EditorEvent::FuzzyFinder(None)),
             Key::W => Some(EditorEvent::CloseDoc),
             Key::Tab => Some(EditorEvent::NextDoc),
+            Key::Slash => Some(EditorEvent::ToggleComment),
             _ => None,
         };
     }
