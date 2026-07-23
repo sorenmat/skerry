@@ -1624,6 +1624,29 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 max_visible_line_cols = line_cols;
             }
 
+            // Indent guides: thin vertical lines at each indent level
+            // covered by the line's leading whitespace.
+            let tab_width = app.active_doc().view.tab_width.max(1);
+            let leading_cols: usize = line_text
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .map(|c| if c == '\t' { tab_width } else { 1 })
+                .sum();
+            let indent_text_x = (rect.left() + gw + prefix_chars as f32 * char_width
+                - app.active_doc().view.scroll_x_cols as f32 * char_width)
+                .round();
+            for level in 1.. {
+                let guide_col = level * tab_width;
+                if guide_col >= leading_cols {
+                    break;
+                }
+                let gx = (indent_text_x + guide_col as f32 * char_width).round();
+                painter.line_segment(
+                    [egui::pos2(gx, y), egui::pos2(gx, y + line_height)],
+                    egui::Stroke::new(1.0_f32, theme.indent_guide),
+                );
+            }
+
             // Git gutter column (left of the line-number gutter).
             let git_enabled =
                 app.active_doc().view.git_gutter_enabled && app.active_doc().git_gutter.enabled();
