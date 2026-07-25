@@ -145,6 +145,10 @@ pub enum EditorEvent {
     /// Collapse multi-cursor to a single primary cursor. If only one
     /// cursor is active, the frontend may interpret this as quit/close.
     CollapseCursors,
+    /// Toggle the fold at the given line.
+    ToggleFold { line: usize },
+    /// Unfold all folds in the document.
+    UnfoldAll,
     /// Insert `text` at the cursor position. If the selection is
     /// non-empty, the selection is replaced by `text`. Used for paste;
     /// the frontend reads the OS clipboard and produces this event.
@@ -421,6 +425,8 @@ mod tests {
         let _ = EditorEvent::SelectAll;
         let _ = EditorEvent::ToggleComment;
         let _ = EditorEvent::CollapseCursors;
+        let _ = EditorEvent::ToggleFold { line: 0 };
+        let _ = EditorEvent::UnfoldAll;
         let _ = EditorEvent::ToggleGitGutter;
         let _ = EditorEvent::ToggleGitBlame;
         let _ = EditorEvent::RefreshGitGutter;

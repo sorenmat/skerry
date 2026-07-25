@@ -1624,6 +1624,26 @@ impl App {
                     self.active_doc_mut().git_blame.mark_dirty();
                 }
             }
+            EditorEvent::ToggleFold { line } => {
+                let doc = &self.documents[self.active];
+                let foldable = doc
+                    .ts_tree
+                    .as_ref()
+                    .and_then(|t| t.tree())
+                    .map(core::fold::foldable_ranges_pub)
+                    .unwrap_or_default();
+                let doc = &mut self.documents[self.active];
+                doc.folds.set_foldable(foldable);
+                doc.folds.toggle(line);
+                let total = doc.buffer.line_count();
+                doc.folds.rebuild(total);
+            }
+            EditorEvent::UnfoldAll => {
+                self.active_doc_mut().folds.unfold_all();
+                let total = self.active_buffer().line_count();
+                self.active_doc_mut().folds.rebuild(total);
+                self.status_message = Some("All folds unfolded.".to_string());
+            }
             EditorEvent::LspCompletion => {
                 let Some(uri) = self.active_doc().uri() else {
                     self.status_message = Some("LSP: no file URI.".to_string());

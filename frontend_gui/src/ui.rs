@@ -1712,6 +1712,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         // effect that comes from any subpixel positioning mismatch
         // between the two text draws.
         for line_idx in start_line..end_line {
+            // Skip folded (hidden) lines — they render as blank space.
+            if app.active_doc().folds.is_hidden(line_idx) {
+                continue;
+            }
             // Round y to integer pixels so glyphs align cleanly with
             // the selection rectangle.
             let y = (rect.top() + line_idx as f32 * line_height).round();
@@ -1855,6 +1859,27 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     );
                 }
             }
+            // Fold marker in the gutter: ▼ if folded, ▶ if foldable.
+            let fold_marker = if app.active_doc().folds.is_folded_at(line_idx) {
+                Some("▼")
+            } else if app.active_doc().folds.is_foldable(line_idx) {
+                Some("▶")
+            } else {
+                None
+            };
+            if let Some(marker) = fold_marker {
+                painter.text(
+                    egui::pos2(
+                        (rect.left() + gw + gutter_width as f32 * char_width + char_width).round(),
+                        y,
+                    ),
+                    egui::Align2::RIGHT_TOP,
+                    marker,
+                    egui::FontId::proportional(FONT_SIZE - 3.0),
+                    theme.dim_text,
+                );
+            }
+
             let gutter = format!("{:>width$} \u{2502} ", line_idx + 1, width = gutter_width);
             let gutter_color = if line_idx == cursor_line {
                 theme.line_number_active

@@ -184,6 +184,12 @@ pub const COMMANDS: &[Command] = &[
         event: EditorEvent::ToggleComment,
     },
     Command {
+        id: "unfold_all",
+        label: "Unfold all",
+        keybinding: "",
+        event: EditorEvent::UnfoldAll,
+    },
+    Command {
         id: "rename_symbol",
         label: "Rename symbol",
         keybinding: "F2",

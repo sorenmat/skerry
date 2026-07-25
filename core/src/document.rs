@@ -146,6 +146,8 @@ pub struct Document {
     pub git_gutter: crate::GitGutter,
     /// Per-line git blame metadata relative to `HEAD`.
     pub git_blame: crate::GitBlame,
+    /// Per-document code-fold state (which ranges are folded).
+    pub folds: crate::FoldState,
 }
 
 impl Document {
@@ -171,6 +173,7 @@ impl Document {
             external_change: false,
             git_gutter: crate::GitGutter::new(),
             git_blame: crate::GitBlame::new(),
+            folds: crate::FoldState::new(),
         };
         doc.init_ts_tree();
         if doc.path().is_some() {
