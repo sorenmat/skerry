@@ -189,6 +189,8 @@ pub enum EditorEvent {
     /// line numbers are clamped to the first or last line.
     /// Default binding: Cmd/Ctrl+G.
     GoToLine(Option<usize>),
+    /// Open the go-to-symbol picker (LSP documentSymbol outline).
+    GoToSymbol,
     /// Toggle the project file-tree sidebar. When the active document
     /// belongs to a project, the sidebar shows the project's files and
     /// lets the user open them. Default binding: F2.
@@ -390,6 +392,7 @@ mod tests {
         let _ = EditorEvent::OpenFile(Some(PathBuf::from("/tmp/example.rs")));
         let _ = EditorEvent::GoToLine(None);
         let _ = EditorEvent::GoToLine(Some(42));
+        let _ = EditorEvent::GoToSymbol;
         let _ = EditorEvent::ProjectSearchReplaceAllConfirm;
         let _ = EditorEvent::ProjectSearchReplaceAllCancel;
         let _ = EditorEvent::FuzzyFinder(None);

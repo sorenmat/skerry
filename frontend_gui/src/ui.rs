@@ -180,6 +180,16 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     app.apply_pending_rename();
     app.apply_pending_format();
 
+    // Poll for document symbol results.
+    if app.symbol_picker.open {
+        if let Some(uri) = app.active_doc().uri() {
+            if let Some(symbols) = app.lsp_manager.take_document_symbol_result(&uri) {
+                app.symbol_picker.items = symbols.clone();
+                app.symbol_picker.filtered = (0..symbols.len()).collect();
+            }
+        }
+    }
+
     let theme = *theme(app);
     let (status_message, status_pos) = {
         let msg = app.status_message.clone().unwrap_or_default();
@@ -612,6 +622,9 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     if app.fuzzy_finder.open {
         render_fuzzy_finder_window(ctx, app);
     }
+    if app.symbol_picker.open {
+        render_symbol_picker_window(ctx, app);
+    }
     if app.keybindings_help_open {
         render_keybindings_help_window(ctx, app);
     }
@@ -998,7 +1011,7 @@ fn render_command_palette_window(ctx: &egui::Context, app: &mut EditorApp) {
             ui.separator();
 
             let selected = app.command_palette.selected;
-            let item_count = app.command_palette.items.len();
+            let item_count = app.command_palette.filtered.len();
             egui::ScrollArea::vertical()
                 .id_salt("command_palette_items")
                 .auto_shrink([false; 2])
@@ -1008,7 +1021,7 @@ fn render_command_palette_window(ctx: &egui::Context, app: &mut EditorApp) {
                     item_count,
                     |ui, row_range| {
                         for i in row_range {
-                            let command = &app.command_palette.items[i];
+                            let command = &app.command_palette.filtered[i];
                             let label = if command.keybinding.is_empty() {
                                 command.label.to_string()
                             } else {
@@ -1119,6 +1132,105 @@ fn render_fuzzy_finder_window(ctx: &egui::Context, app: &mut EditorApp) {
 
     if !open {
         app.handle_event(EditorEvent::FuzzyFinderClose);
+    }
+}
+
+fn render_symbol_picker_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+
+    egui::Window::new("Go to Symbol")
+        .collapsible(false)
+        .resizable(false)
+        .default_size([500.0, 360.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let mut query = app.symbol_picker.query.clone();
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .hint_text("type a symbol name...")
+                    .desired_width(f32::INFINITY),
+            );
+            if response.changed() {
+                app.symbol_picker.query = query.clone();
+                let q = query.to_lowercase();
+                app.symbol_picker.filtered = app
+                    .symbol_picker
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, sym)| sym.name.to_lowercase().contains(&q))
+                    .map(|(i, _)| i)
+                    .collect();
+                app.symbol_picker.selected = 0;
+            }
+            if response.gained_focus()
+                || (app.symbol_picker.query.is_empty() && !response.has_focus())
+            {
+                response.request_focus();
+            }
+            ui.separator();
+
+            let selected = app.symbol_picker.selected;
+            let item_count = app.symbol_picker.filtered.len();
+            let items_clone: Vec<lsp_types::DocumentSymbol> = app.symbol_picker.items.clone();
+            let filtered_clone = app.symbol_picker.filtered.clone();
+
+            egui::ScrollArea::vertical()
+                .id_salt("symbol_picker_items")
+                .auto_shrink([false; 2])
+                .show_rows(
+                    ui,
+                    ui.text_style_height(&egui::TextStyle::Body),
+                    item_count,
+                    |ui, row_range| {
+                        for row in row_range {
+                            let Some(&idx) = filtered_clone.get(row) else {
+                                continue;
+                            };
+                            let Some(sym) = items_clone.get(idx) else {
+                                continue;
+                            };
+                            let is_selected = row == selected;
+                            let label = format!(
+                                "{}  L{}",
+                                sym.name,
+                                sym.selection_range.start.line + 1
+                            );
+                            let text = egui::RichText::new(label).monospace().size(14.0);
+                            let response = if is_selected {
+                                ui.selectable_label(true, text.strong())
+                            } else {
+                                ui.selectable_label(false, text)
+                            };
+                            hand_cursor(&response, ui.ctx());
+                            if response.clicked() {
+                                app.symbol_picker.selected = row;
+                                if let Some(sym) =
+                                    app.symbol_picker.items.get(idx).cloned()
+                                {
+                                    let line = sym.selection_range.start.line as usize;
+                                    app.go_to_line(line + 1);
+                                    app.symbol_picker.open = false;
+                                }
+                            }
+                        }
+                    },
+                );
+
+            ui.separator();
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} symbols · Enter to jump · Esc to close",
+                    item_count
+                ))
+                .small()
+                .weak(),
+            );
+        });
+
+    if !open {
+        app.symbol_picker.open = false;
     }
 }
 

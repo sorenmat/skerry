@@ -1475,6 +1475,14 @@ impl App {
                     })
                 }
             },
+            EditorEvent::GoToSymbol => {
+                // TUI: request symbols and show them in the status bar
+                // for now. A full interactive picker is a follow-up.
+                if let Some(uri) = self.active_doc().uri() {
+                    self.lsp_manager.request_document_symbols(&uri);
+                    self.status_message = Some("Requesting symbols...".to_string());
+                }
+            }
             EditorEvent::ToggleProjectTree => {
                 self.toggle_project_tree();
                 self.sync_config();

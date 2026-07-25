@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 use lsp_types::{
     ClientCapabilities, ClientInfo, CompletionList, CompletionParams, Diagnostic,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, GotoDefinitionResponse, Hover, HoverContents, InitializeParams,
-    MarkedString, Position, RenameParams, ServerCapabilities, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
-    VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceFolder,
+    DidSaveTextDocumentParams, DocumentSymbolParams, GotoDefinitionResponse, Hover,
+    HoverContents, InitializeParams, MarkedString, Position, RenameParams, ServerCapabilities,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceFolder,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -49,6 +49,7 @@ pub struct LspManager {
     definition_results: HashMap<Url, (GotoDefinitionResponse, Position)>,
     rename_results: HashMap<Url, (WorkspaceEdit, Position)>,
     formatting_results: HashMap<Url, Vec<lsp_types::TextEdit>>,
+    symbol_results: HashMap<Url, Vec<lsp_types::DocumentSymbol>>,
     pending_change: Option<(Url, Instant, String)>,
     last_status: Option<String>,
     server_spawn_failures: HashMap<ServerKey, Instant>,
@@ -92,6 +93,7 @@ enum PendingRequest {
     Definition(Url, Position),
     Rename(Url, Position),
     Formatting(Url),
+    DocumentSymbols(Url),
 }
 
 impl Default for LspManager {
@@ -114,6 +116,7 @@ impl LspManager {
             definition_results: HashMap::new(),
             rename_results: HashMap::new(),
             formatting_results: HashMap::new(),
+            symbol_results: HashMap::new(),
             pending_change: None,
             last_status: None,
             server_spawn_failures: HashMap::new(),
@@ -359,6 +362,7 @@ impl LspManager {
         self.definition_results.remove(uri);
         self.rename_results.remove(uri);
         self.formatting_results.remove(uri);
+        self.symbol_results.remove(uri);
         if let Some(server) = self.servers.get(&doc.server_key) {
             server.client.notify(
                 "textDocument/didClose",
@@ -627,6 +631,47 @@ impl LspManager {
         self.formatting_results.insert(uri.clone(), edits);
     }
 
+    /// Request document symbols (outline) for `uri`.
+    pub fn request_document_symbols(&mut self, uri: &Url) {
+        let Some(doc) = self.docs.get(uri) else {
+            return;
+        };
+        let Some(server) = self.servers.get(&doc.server_key) else {
+            return;
+        };
+        if self
+            .pending
+            .values()
+            .any(|p| matches!(p, PendingRequest::DocumentSymbols(u) if u == uri))
+        {
+            return;
+        }
+        let id = server.client.request(
+            "textDocument/documentSymbol",
+            serde_json::to_value(DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .unwrap_or_default(),
+        );
+        self.pending
+            .insert(id, PendingRequest::DocumentSymbols(uri.clone()));
+    }
+
+    /// Peek at document symbols if they've arrived.
+    pub fn document_symbol_result(&self, uri: &Url) -> Option<&Vec<lsp_types::DocumentSymbol>> {
+        self.symbol_results.get(uri)
+    }
+
+    /// Consume the document symbols for `uri`.
+    pub fn take_document_symbol_result(
+        &mut self,
+        uri: &Url,
+    ) -> Option<Vec<lsp_types::DocumentSymbol>> {
+        self.symbol_results.remove(uri)
+    }
+
     /// Drain incoming messages and apply debounced changes. Frontends
     /// should call this once per frame.
     pub fn poll(&mut self) {
@@ -750,6 +795,37 @@ impl LspManager {
                                 let edits: Vec<lsp_types::TextEdit> =
                                     serde_json::from_value(result).unwrap_or_default();
                                 self.formatting_results.insert(uri, edits);
+                            }
+                        }
+                        PendingRequest::DocumentSymbols(uri) => {
+                            if let Some(result) = resp.result {
+                                // The response can be DocumentSymbol[] or
+                                // SymbolInformation[]. We try DocumentSymbol
+                                // first (hierarchical), fall back to flat.
+                                let symbols: Vec<lsp_types::DocumentSymbol> =
+                                    serde_json::from_value::<Vec<lsp_types::DocumentSymbol>>(
+                                        result.clone(),
+                                    )
+                                    .or_else(|_| {
+                                        let flat: Vec<lsp_types::SymbolInformation> =
+                                            serde_json::from_value(result)?;
+                                        Ok::<_, serde_json::Error>(flat
+                                            .into_iter()
+                                            .map(|si| lsp_types::DocumentSymbol {
+                                                name: si.name,
+                                                detail: None,
+                                                kind: si.kind,
+                                                tags: si.tags,
+                                                #[allow(deprecated)]
+                                                deprecated: si.deprecated,
+                                                range: si.location.range,
+                                                selection_range: si.location.range,
+                                                children: None,
+                                            })
+                                            .collect())
+                                        })
+                                        .unwrap_or_default();
+                                self.symbol_results.insert(uri, symbols);
                             }
                         }
                     }

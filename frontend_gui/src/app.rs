@@ -70,6 +70,7 @@ pub struct EditorApp {
     pub fuzzy_finder: FuzzyFinder,
     /// Command palette state.
     pub command_palette: CommandPalette,
+    pub symbol_picker: SymbolPicker,
     /// LSP completion popup state.
     pub lsp_completion: LspCompletionState,
     /// LSP hover tooltip state.
@@ -146,13 +147,20 @@ pub struct FuzzyFinder {
 /// State for the command palette.
 #[derive(Debug, Clone, Default)]
 pub struct CommandPalette {
-    /// Whether the palette is open.
     pub open: bool,
-    /// Current filter query.
     pub query: String,
-    /// Filtered command list.
-    pub items: Vec<&'static core::Command>,
-    /// Index of the selected command.
+    pub items: Vec<core::Command>,
+    pub filtered: Vec<&'static core::Command>,
+    pub selected: usize,
+}
+
+/// State for the go-to-symbol picker.
+#[derive(Debug, Clone, Default)]
+pub struct SymbolPicker {
+    pub open: bool,
+    pub query: String,
+    pub items: Vec<lsp_types::DocumentSymbol>,
+    pub filtered: Vec<usize>,
     pub selected: usize,
 }
 
@@ -274,6 +282,7 @@ impl EditorApp {
             keybindings_help_open: false,
             fuzzy_finder: FuzzyFinder::default(),
             command_palette: CommandPalette::default(),
+            symbol_picker: SymbolPicker::default(),
             lsp_completion: LspCompletionState::default(),
             lsp_hover: LspHoverState::default(),
             lsp_definition: LspDefinitionState::default(),
@@ -1401,6 +1410,16 @@ impl EditorApp {
                     })
                 }
             },
+            EditorEvent::GoToSymbol => {
+                if let Some(uri) = self.active_doc().uri() {
+                    self.symbol_picker.open = true;
+                    self.symbol_picker.query.clear();
+                    self.symbol_picker.selected = 0;
+                    self.symbol_picker.items.clear();
+                    self.symbol_picker.filtered.clear();
+                    self.lsp_manager.request_document_symbols(&uri);
+                }
+            }
             EditorEvent::ToggleProjectTree => {
                 self.toggle_project_tree();
                 self.sync_config();
@@ -2774,11 +2793,11 @@ impl EditorApp {
 
     /// Re-filter the command palette list from the current query.
     pub fn refresh_command_palette(&mut self) {
-        self.command_palette.items = core::filter_commands(&self.command_palette.query);
+        self.command_palette.filtered = core::filter_commands(&self.command_palette.query);
         self.command_palette.selected = self
             .command_palette
             .selected
-            .min(self.command_palette.items.len().saturating_sub(1));
+            .min(self.command_palette.filtered.len().saturating_sub(1));
     }
 
     /// Move the command-palette selection by `delta` rows, wrapping at

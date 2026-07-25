@@ -124,6 +124,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::ArrowUp => Some(EditorEvent::PrevHunk),
             Key::ArrowDown => Some(EditorEvent::NextHunk),
             Key::D => Some(EditorEvent::DuplicateLine),
+            Key::O => Some(EditorEvent::GoToSymbol),
             _ => None,
         };
     }

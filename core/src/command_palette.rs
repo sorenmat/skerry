@@ -136,6 +136,12 @@ pub const COMMANDS: &[Command] = &[
         event: EditorEvent::GoToLine(None),
     },
     Command {
+        id: "go_to_symbol",
+        label: "Go to symbol...",
+        keybinding: "Ctrl+Shift+O",
+        event: EditorEvent::GoToSymbol,
+    },
+    Command {
         id: "toggle_project_tree",
         label: "Toggle project tree",
         keybinding: "F8",
