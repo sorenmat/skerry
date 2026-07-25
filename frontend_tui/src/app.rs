@@ -1358,6 +1358,18 @@ impl App {
                     self.active_buffer_mut().set_selections(sels);
                 }
             }
+            EditorEvent::ColumnSelect { from_line, from_col, to_line, to_col } => {
+                let sels = core::column_selections(
+                    self.active_buffer(),
+                    from_line,
+                    from_col,
+                    to_line,
+                    to_col,
+                );
+                if !sels.is_empty() {
+                    self.active_buffer_mut().set_selections(sels);
+                }
+            }
             EditorEvent::SelectNextOccurrence => {
                 self.select_next_occurrence();
             }

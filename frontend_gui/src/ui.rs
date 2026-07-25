@@ -2400,15 +2400,39 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             if let Some(pos) = response.interact_pointer_pos() {
                 // Alt/Opt+click adds a cursor (multi-cursor) instead of
                 // replacing the selection list.
-                let alt_click = response.clicked() && ui.input(|i| i.modifiers.alt);
-                // macOS Command+click on a linkable token triggers
-                // go-to-definition instead of moving the cursor.
+                let alt_held = ui.input(|i| i.modifiers.alt);
+                let alt_click = response.clicked() && alt_held;
+                let alt_drag = response.dragged() && alt_held;
                 let cmd_click = response.clicked() && ui.input(|i| i.modifiers.command);
                 if alt_click {
+                    // Start of a potential column-select drag. Record the
+                    // (line, col). If it turns into a drag, we'll fan out.
                     if let Some(byte_pos) = pixel_to_byte_pos(
                         app, pos, rect, text_x, char_width, line_height, prefix_chars, gutter_width,
                     ) {
+                        if let Some((line, col)) = app.active_buffer().pos_to_linecol(byte_pos) {
+                            app.column_select_start = Some((line, col));
+                        }
                         app.handle_event(EditorEvent::AddCursor { pos: byte_pos });
+                    }
+                } else if alt_drag {
+                    // Column selection: fan out from the start to the
+                    // current position, one selection per line.
+                    if let Some((from_line, from_col)) = app.column_select_start {
+                        if let Some(byte_pos) = pixel_to_byte_pos(
+                            app, pos, rect, text_x, char_width, line_height, prefix_chars, gutter_width,
+                        ) {
+                            if let Some((to_line, to_col)) =
+                                app.active_buffer().pos_to_linecol(byte_pos)
+                            {
+                                app.handle_event(EditorEvent::ColumnSelect {
+                                    from_line,
+                                    from_col,
+                                    to_line,
+                                    to_col,
+                                });
+                            }
+                        }
                     }
                 } else if cmd_click {
                     if let Some(byte_pos) = pixel_to_byte_pos(

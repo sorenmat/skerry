@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use crate::{Buffer, BytePos};
+use crate::{Buffer, BytePos, Selection};
 
 /// Compute the byte range of `selection` that falls within `line`
 /// (the line's own byte range). Returns `None` if they don't overlap.
@@ -366,6 +366,49 @@ pub fn move_right_by_char(buffer: &dyn Buffer, pos: usize) -> usize {
 pub fn format_position(line: usize, col: usize, total_lines: usize) -> String {
     let col_disp = col + 1; // 0-indexed col → 1-indexed display
     format!("L{}:{} / L{}", line + 1, col_disp, total_lines)
+}
+
+/// Build a per-line selection list for a rectangular (column) selection.
+/// Each line in `[from_line, to_line]` gets one `Selection` spanning
+/// `[col_lo, col_hi)` in character columns. Handles varying line lengths
+/// (columns past the end are clamped to the line's last char) and tabs
+/// (columns are character-based, not byte-based).
+pub fn column_selections(
+    buffer: &dyn Buffer,
+    from_line: usize,
+    from_col: usize,
+    to_line: usize,
+    to_col: usize,
+) -> Vec<Selection> {
+    let (lo_line, hi_line) = (from_line.min(to_line), from_line.max(to_line));
+    let (lo_col, hi_col) = (from_col.min(to_col), from_col.max(to_col));
+    let mut sels = Vec::new();
+    for line in lo_line..=hi_line {
+        let Some(text) = buffer.line_text(line) else {
+            continue;
+        };
+        let line_chars = text.chars().count();
+        if lo_col >= line_chars {
+            // Column is past this line's end — place a collapsed cursor.
+            if let Some(pos) = buffer.linecol_to_pos(line, line_chars) {
+                sels.push(Selection::collapsed(pos));
+            }
+            continue;
+        }
+        let actual_hi = hi_col.min(line_chars);
+        let start_byte = buffer
+            .linecol_to_pos(line, lo_col)
+            .unwrap_or_else(|| buffer.line_byte_range(line).map(|r| r.start).unwrap_or(0));
+        let end_byte = buffer
+            .linecol_to_pos(line, actual_hi)
+            .unwrap_or_else(|| buffer.line_byte_range(line).map(|r| r.end).unwrap_or(0));
+        sels.push(Selection {
+            anchor: start_byte,
+            head: end_byte,
+        });
+    }
+    sels.sort_by_key(|s| s.anchor);
+    sels
 }
 
 /// The line-comment prefix for a language ID, if known.

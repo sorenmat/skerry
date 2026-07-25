@@ -82,6 +82,9 @@ pub struct EditorApp {
     pub pending_format_save: bool,
     /// macOS Cmd-key link overlay state.
     pub cmd_link: CmdLinkState,
+    /// Start position (line, char_col) of an Alt+drag column selection.
+    /// Set on Alt+click, consumed on drag.
+    pub column_select_start: Option<(usize, usize)>,
     /// Persistent user configuration / session state.
     pub config: core::Config,
     /// Active GUI chrome theme. Applied to egui's global visuals each
@@ -288,6 +291,7 @@ impl EditorApp {
             lsp_definition: LspDefinitionState::default(),
             pending_format_save: false,
             cmd_link: CmdLinkState::default(),
+            column_select_start: None,
             config,
             theme,
             last_edit_time: Instant::now(),
@@ -1286,6 +1290,18 @@ impl EditorApp {
                 if !sels.iter().any(|s| s.head == clamped && s.is_collapsed()) {
                     sels.push(Selection::collapsed(clamped));
                     sels.sort_by_key(|s| s.head);
+                    self.active_buffer_mut().set_selections(sels);
+                }
+            }
+            EditorEvent::ColumnSelect { from_line, from_col, to_line, to_col } => {
+                let sels = core::column_selections(
+                    self.active_buffer(),
+                    from_line,
+                    from_col,
+                    to_line,
+                    to_col,
+                );
+                if !sels.is_empty() {
                     self.active_buffer_mut().set_selections(sels);
                 }
             }

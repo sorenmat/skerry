@@ -127,6 +127,14 @@ pub enum EditorEvent {
     /// Add a cursor at an absolute byte position (multi-cursor). Used by
     /// Cmd/Ctrl+click. Does not remove existing cursors.
     AddCursor { pos: BytePos },
+    /// Column (rectangular) selection from one line/col to another.
+    /// Produces one selection per covered line.
+    ColumnSelect {
+        from_line: usize,
+        from_col: usize,
+        to_line: usize,
+        to_col: usize,
+    },
     /// Select the next occurrence of the current word/selection (multi-
     /// cursor). Adds a cursor at the next match.
     SelectNextOccurrence,
@@ -408,6 +416,7 @@ mod tests {
         let _ = EditorEvent::RenameApply { new_name: String::new() };
         let _ = EditorEvent::FormatDocument;
         let _ = EditorEvent::AddCursor { pos: 0 };
+        let _ = EditorEvent::ColumnSelect { from_line: 0, from_col: 0, to_line: 0, to_col: 0 };
         let _ = EditorEvent::SelectNextOccurrence;
         let _ = EditorEvent::SelectAll;
         let _ = EditorEvent::ToggleComment;
