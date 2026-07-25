@@ -190,18 +190,24 @@ impl LspManager {
 
         if self.ensure_server(&key, command) {
             if let Some(server) = self.servers.get(&key) {
-                server.client.notify(
-                    "textDocument/didOpen",
-                    serde_json::to_value(DidOpenTextDocumentParams {
-                        text_document: TextDocumentItem {
-                            uri,
-                            language_id: key.language_id.clone(),
-                            version,
-                            text,
-                        },
-                    })
-                    .unwrap_or_default(),
-                );
+                // Only send didOpen if the server is fully initialized.
+                // rust-analyzer exits if it receives didOpen before
+                // the initialized notification. If not ready yet, the
+                // doc is stored and will be opened when initialized fires.
+                if server.initialized {
+                    server.client.notify(
+                        "textDocument/didOpen",
+                        serde_json::to_value(DidOpenTextDocumentParams {
+                            text_document: TextDocumentItem {
+                                uri,
+                                language_id: key.language_id.clone(),
+                                version,
+                                text,
+                            },
+                        })
+                        .unwrap_or_default(),
+                    );
+                }
             }
         }
     }
@@ -285,27 +291,33 @@ impl LspManager {
     /// Used after a server restart so the new process has the current
     /// buffers.
     fn reopen_documents_for_server(&mut self, key: &ServerKey) {
+        // Only send didOpen if the server is initialized. Otherwise the
+        // docs will be opened when the initialized notification fires.
+        let Some(server) = self.servers.get(key) else {
+            return;
+        };
+        if !server.initialized {
+            return;
+        }
         let docs_to_open: Vec<(Url, i32, String)> = self
             .docs
             .iter()
             .filter(|(_, doc)| doc.server_key == *key)
             .map(|(uri, doc)| (uri.clone(), doc.version, doc.text.clone()))
             .collect();
-        if let Some(server) = self.servers.get(key) {
-            for (uri, version, text) in docs_to_open {
-                server.client.notify(
-                    "textDocument/didOpen",
-                    serde_json::to_value(DidOpenTextDocumentParams {
-                        text_document: TextDocumentItem {
-                            uri,
-                            language_id: key.language_id.clone(),
-                            version,
-                            text,
-                        },
-                    })
-                    .unwrap_or_default(),
-                );
-            }
+        for (uri, version, text) in docs_to_open {
+            server.client.notify(
+                "textDocument/didOpen",
+                serde_json::to_value(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri,
+                        language_id: key.language_id.clone(),
+                        version,
+                        text,
+                    },
+                })
+                .unwrap_or_default(),
+            );
         }
     }
 
@@ -750,6 +762,10 @@ impl LspManager {
                                 serde_json::to_value(lsp_types::InitializedParams {})
                                     .unwrap_or_default(),
                             );
+                            // Now that the server is initialized, send
+                            // any pending didOpen notifications for
+                            // documents on this server.
+                            self.reopen_documents_for_server(key);
                         }
                     }
                 } else if let Some(pending) = self.pending.remove(&id_number(&resp.id)) {
