@@ -1028,11 +1028,34 @@ impl App {
                 self.insert_text(&ch.to_string());
             }
             EditorEvent::InsertTab => {
-                // Indent insertion respects the active doc's indent
-                // mode: spaces (count = tab_width) or a literal tab.
-                // Reuses the same selection-aware path as Insert so
-                // selecting some text and pressing Tab replaces it
-                // with the indent — matches Sublime / VSCode / IntelliJ.
+                // First try snippet expansion.
+                if self.active_buffer().selection().is_collapsed()
+                    && self.active_buffer().selections().len() == 1
+                {
+                    let pos = self.active_buffer().cursor();
+                    let (line, byte_col) = self
+                        .active_buffer()
+                        .pos_to_linecol(pos)
+                        .unwrap_or((0, 0));
+                    if let Some(line_text) = self.active_buffer().line_text(line) {
+                        let line_text = line_text.into_owned();
+                        if let Some((trigger, range)) = core::snippet_trigger_at_cursor(&line_text, byte_col) {
+                            if let Some(body) = self.config.snippets.get(&trigger) {
+                                let (expanded, cursor_offset) = core::expand_snippet(body);
+                                let line_start = self.active_buffer().line_byte_range(line).unwrap_or(0..0).start;
+                                let trigger_start = line_start + range.start;
+                                let trigger_end = line_start + range.end;
+                                if self.active_buffer_mut().replace(trigger_start..trigger_end, &expanded).is_ok() {
+                                    let new_cursor = trigger_start + cursor_offset;
+                                    self.active_buffer_mut().set_cursor(new_cursor);
+                                    self.active_doc_mut().syntax.invalidate();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Normal tab: insert indent.
                 let (use_spaces, tab_width) = {
                     let v = &self.active_doc().view;
                     (v.use_spaces, v.tab_width)

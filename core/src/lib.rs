@@ -18,6 +18,7 @@ pub mod lsp;
 mod piece_table;
 mod project;
 pub mod search;
+mod snippet;
 mod syntax;
 pub mod ts;
 mod undo;
@@ -39,6 +40,7 @@ pub use project::{
     FsNode, Project, ProjectSearchResult, ProjectTree, ReplaceError, ReplacePreview,
 };
 pub use search::Search;
+pub use snippet::{expand as expand_snippet, trigger_at_cursor as snippet_trigger_at_cursor};
 pub use syntax::{ColorSegment, HighlightColor, SyntaxCache, SyntaxEngine};
 pub use view::{
     auto_indent, byte_to_char_col, char_after, char_before, char_col_to_byte_col,

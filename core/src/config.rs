@@ -69,12 +69,15 @@ pub struct Config {
     /// Whether the GUI caret slides between lines instead of snapping.
     #[serde(default)]
     pub caret_animation: bool,
-    /// External formatter commands per language ID (e.g. "rust" →
-    /// "rustfmt --emit stdout", "go" → "gofmt"). Used as a fallback when
-    /// the LSP server doesn't support formatting. The command reads the
-    /// file content from stdin and writes the formatted output to stdout.
+    /// External formatter commands per language ID.
     #[serde(default = "default_formatters")]
     pub formatters: HashMap<String, String>,
+    /// Snippet templates keyed by trigger word. When the user types a
+    /// trigger and presses Tab, it's replaced by the template body.
+    /// `$0` marks the final cursor position. Lines use `\n` in JSON.
+    /// Example: {"for": "for ${1:item} in ${2:collection} {\n    $0\n}"}
+    #[serde(default)]
+    pub snippets: HashMap<String, String>,
 }
 
 fn default_git_gutter() -> bool {
@@ -123,6 +126,7 @@ impl Default for Config {
             git_blame: false,
             caret_animation: false,
             formatters: default_formatters(),
+            snippets: HashMap::new(),
         }
     }
 }
