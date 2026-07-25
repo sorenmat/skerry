@@ -66,6 +66,11 @@ pub struct Search {
     /// When true, matches must be whole words (surrounded by non-word
     /// characters or string boundaries). Default false.
     pub whole_word: bool,
+    /// When `Some`, search is limited to the byte range `(start, end)`.
+    /// Set by "find in selection" when the user has a multi-line
+    /// selection. Cleared when the selection collapses or the find bar
+    /// re-opens.
+    pub selection_range: Option<(BytePos, BytePos)>,
     /// If the last regex compile failed, the error message to show
     /// in the find bar. `None` when regex mode is off or the pattern
     /// is valid.
@@ -93,6 +98,11 @@ impl Search {
             self.refresh_regex(haystack);
         } else {
             self.refresh_literal(haystack);
+        }
+
+        // Filter matches to the selection range if set.
+        if let Some((sel_start, sel_end)) = self.selection_range {
+            self.matches.retain(|&(s, e)| s >= sel_start && e <= sel_end);
         }
 
         self.current = if self.matches.is_empty() {

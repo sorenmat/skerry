@@ -1166,10 +1166,28 @@ impl App {
             }
             EditorEvent::FindOpen => {
                 self.search.bar_open = true;
+                let sel = self.active_buffer().selection();
+                if !sel.is_collapsed() {
+                    let (start_line, _) = self
+                        .active_buffer()
+                        .pos_to_linecol(sel.anchor.min(sel.head))
+                        .unwrap_or((0, 0));
+                    let (end_line, _) = self
+                        .active_buffer()
+                        .pos_to_linecol(sel.anchor.max(sel.head))
+                        .unwrap_or((0, 0));
+                    if start_line != end_line {
+                        let r = sel.range(); self.search.selection_range = Some((r.start, r.end));
+                    } else {
+                        self.search.selection_range = None;
+                    }
+                } else {
+                    self.search.selection_range = None;
+                }
             }
             EditorEvent::FindClose => {
                 self.search.bar_open = false;
-                // Coupled with replace — closing find also closes replace.
+                self.search.selection_range = None;
                 self.search.replace_bar_open = false;
             }
             EditorEvent::FindQueryChanged(q) => {
