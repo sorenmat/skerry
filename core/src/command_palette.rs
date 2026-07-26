@@ -154,6 +154,12 @@ pub const COMMANDS: &[Command] = &[
         event: EditorEvent::ToggleSoftWrap,
     },
     Command {
+        id: "toggle_minimap",
+        label: "Toggle minimap",
+        keybinding: "",
+        event: EditorEvent::ToggleMinimap,
+    },
+    Command {
         id: "cycle_indent_mode",
         label: "Cycle indent mode",
         keybinding: "Ctrl+I",

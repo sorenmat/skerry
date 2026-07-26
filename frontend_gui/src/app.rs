@@ -56,6 +56,8 @@ pub struct EditorApp {
     pub syntax: SyntaxEngine,
     /// Whether the project file-tree sidebar is visible.
     pub project_tree_open: bool,
+    /// Whether the minimap (zoomed-out document overview) is visible.
+    pub minimap_open: bool,
     /// The active document's project tree, including expansion state.
     pub project_tree: Option<core::ProjectTree>,
     /// Index of the selected row in the visible (flattened) project tree.
@@ -278,6 +280,7 @@ impl EditorApp {
             prev_active: 0,
             syntax: SyntaxEngine::default_dark(),
             project_tree_open: config.project_tree_open.unwrap_or(true),
+            minimap_open: false,
             project_tree: None,
             project_tree_selected: 0,
             project_tree_focused: false,
@@ -1182,6 +1185,9 @@ impl EditorApp {
             EditorEvent::ToggleSoftWrap => {
                 self.toggle_soft_wrap();
                 self.sync_config();
+            }
+            EditorEvent::ToggleMinimap => {
+                self.minimap_open = !self.minimap_open;
             }
             EditorEvent::CycleTheme => {
                 self.cycle_theme();

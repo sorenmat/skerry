@@ -109,6 +109,8 @@ pub enum EditorEvent {
     /// No-op when no documents are open. Default binding:
     /// Cmd/Ctrl+Shift+W (W for "wrap" — Cmd+W is close).
     ToggleSoftWrap,
+    /// Toggle the minimap (zoomed-out document overview, GUI-only).
+    ToggleMinimap,
     /// Cycle to the next syntax-highlighting theme. Wraps around at
     /// the end of the bundled theme list. Invalidates the syntax cache
     /// for every open document so the new colors are visible
@@ -399,6 +401,7 @@ mod tests {
         };
         let _ = EditorEvent::CycleIndentMode;
         let _ = EditorEvent::ToggleSoftWrap;
+        let _ = EditorEvent::ToggleMinimap;
         let _ = EditorEvent::CycleTheme;
         let _ = EditorEvent::OpenFile(None);
         let _ = EditorEvent::OpenFile(Some(PathBuf::from("/tmp/example.rs")));

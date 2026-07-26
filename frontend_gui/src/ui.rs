@@ -594,9 +594,14 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
             });
     }
 
-    // Project-tree sidebar. Lives on the left, collapsible via F2.
+    // Project-tree sidebar. Lives on the left, collapsible via F8.
     if app.project_tree_open {
         render_project_tree_sidebar(ctx, app);
+    }
+
+    // Minimap sidebar. Lives on the right, toggleable.
+    if app.minimap_open {
+        render_minimap(ctx, app);
     }
 
     egui::CentralPanel::default()
@@ -728,6 +733,139 @@ fn render_project_tree_sidebar(ctx: &egui::Context, app: &mut EditorApp) {
                         }
                     },
                 );
+        });
+}
+
+/// Render the minimap — a zoomed-out document overview on the right
+/// side. Shows colored rects per syntax token, with a viewport
+/// highlight rect. Click/drag to scroll the editor.
+fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
+    let theme = *theme(app);
+    let total_lines = app.active_buffer().line_count();
+    let scroll_id = egui::Id::new(("editor_scroll", app.active));
+
+    egui::SidePanel::right("minimap")
+        .resizable(false)
+        .exact_width(80.0)
+        .frame(egui::Frame::none().fill(theme.editor_bg))
+        .show(ctx, |ui| {
+            let mini_line_height = 2.0_f32;
+            let mini_width = 72.0_f32;
+
+            // Read the editor's current scroll offset to position the
+            // viewport highlight.
+            let editor_offset_y: f32 = ctx
+                .data_mut(|d| {
+                    d.get_persisted::<egui::containers::scroll_area::State>(scroll_id)
+                        .map(|s| s.offset.y)
+                })
+                .unwrap_or(0.0);
+
+            // Measure the editor's line_height to compute the scale ratio.
+            let font_id = egui::FontId::monospace(FONT_SIZE);
+            let editor_line_height = ui.fonts(|f| f.row_height(&font_id));
+
+            let _total_height = total_lines as f32 * mini_line_height;
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(mini_width, ui.available_height()), egui::Sense::click_and_drag());
+            let painter = ui.painter_at(rect);
+
+            // Background.
+            painter.rect_filled(rect, 0.0, theme.editor_bg);
+
+            // Determine which minimap lines are visible (clip).
+            let clip_top = 0.0_f32;
+            let clip_bottom = rect.height();
+            let first_mini_line = ((clip_top) / mini_line_height).floor() as usize;
+            let last_mini_line = ((clip_bottom) / mini_line_height).ceil() as usize;
+            let last_mini_line = last_mini_line.min(total_lines);
+
+            // Draw colored rects for each visible line using the syntax cache.
+            let doc_idx = app.active;
+            let doc = &app.documents[doc_idx];
+            let _syntax_theme = app.syntax.ts_theme();
+            for line_idx in first_mini_line..last_mini_line {
+                let y = rect.top() + line_idx as f32 * mini_line_height;
+                // Try the cache first.
+                if let Some(segments) = doc.syntax.lines.get(&line_idx) {
+                    for seg in segments {
+                        // Scale byte positions to minimap pixel positions.
+                        // Approximate: 1 char ≈ 1 byte for most code.
+                        // Scale factor: mini_width / max_line_width_estimate.
+                        let scale = mini_width / 120.0; // assume ~120 char lines max
+                        let x = rect.left() + (seg.range.start as f32 * scale).min(mini_width - 2.0);
+                        let w = ((seg.range.end - seg.range.start) as f32 * scale).max(1.0);
+                        let w = (x + w).min(rect.right()) - x;
+                        if w > 0.0 {
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(x, y),
+                                    egui::vec2(w, mini_line_height),
+                                ),
+                                0.0,
+                                egui::Color32::from_rgb(seg.color.r, seg.color.g, seg.color.b),
+                            );
+                        }
+                    }
+                } else {
+                    // Uncached line — draw a dim line representing its length.
+                    if let Some(text) = doc.buffer.line_text(line_idx) {
+                        let char_count = text.chars().count();
+                        let scale = mini_width / 120.0;
+                        let w = (char_count as f32 * scale).min(mini_width - 2.0);
+                        if w > 0.0 {
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(rect.left(), y),
+                                    egui::vec2(w, mini_line_height),
+                                ),
+                                0.0,
+                                theme.dim_text,
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Viewport highlight rect.
+            let view_first_line = (editor_offset_y / editor_line_height).floor();
+            let view_lines = app.viewport_lines.max(1);
+            let view_top = rect.top() + view_first_line * mini_line_height;
+            let view_height = view_lines as f32 * mini_line_height;
+            let view_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.left(), view_top),
+                egui::vec2(rect.width(), view_height),
+            );
+            painter.rect_filled(
+                view_rect,
+                0.0,
+                theme.selection_bg,
+            );
+
+            // Click/drag to scroll.
+            if response.dragged() || response.clicked() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let click_y = pos.y - rect.top();
+                    // Target: center the viewport on the clicked line.
+                    let target_line =
+                        (click_y / mini_line_height).floor() - (view_lines as f32 / 2.0);
+                    let target_offset =
+                        (target_line.max(0.0) * editor_line_height).round();
+                    // Write the new scroll offset to the persisted state.
+                    ui.ctx().data_mut(|d| {
+                        if let Some(mut state) = d
+                            .get_persisted::<egui::containers::scroll_area::State>(scroll_id)
+                        {
+                            state.offset.y = target_offset;
+                            d.insert_persisted(scroll_id, state);
+                        }
+                    });
+                }
+            }
+            // Cursor feedback.
+            if response.hovered() || response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
         });
 }
 

@@ -1302,6 +1302,9 @@ impl App {
                 self.toggle_soft_wrap();
                 self.sync_config();
             }
+            EditorEvent::ToggleMinimap => {
+                // Minimap is GUI-only; TUI ignores it.
+            }
             EditorEvent::CycleTheme => {
                 self.cycle_theme();
                 self.sync_config();
