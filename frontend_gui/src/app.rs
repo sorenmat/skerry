@@ -3033,6 +3033,11 @@ impl EditorApp {
             .documents
             .iter()
             .filter_map(|d| d.path().map(|p| p.to_path_buf()))
+            .filter(|p| {
+                // Don't persist temp/test paths — they're created by
+                // integration tests and would pollute the config.
+                !p.starts_with(std::env::temp_dir())
+            })
             .collect();
         if let Some(doc) = self.documents.get(self.active) {
             self.config.capture_document_defaults(&doc.view);

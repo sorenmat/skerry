@@ -2939,6 +2939,9 @@ impl App {
             .documents
             .iter()
             .filter_map(|d| d.path().map(|p| p.to_path_buf()))
+            .filter(|p| {
+                !p.starts_with(std::env::temp_dir())
+            })
             .collect();
         if let Some(doc) = self.documents.get(self.active) {
             self.config.capture_document_defaults(&doc.view);
