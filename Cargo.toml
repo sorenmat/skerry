@@ -10,3 +10,9 @@ rust-version = "1.75"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

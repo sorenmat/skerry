@@ -744,6 +744,27 @@ fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
     let total_lines = app.active_buffer().line_count();
     let scroll_id = egui::Id::new(("editor_scroll", app.active));
 
+    // Skip minimap rendering for very large files — the per-line
+    // line_text() calls for uncached lines are too expensive.
+    const MINIMAP_MAX_LINES: usize = 5000;
+    if total_lines > MINIMAP_MAX_LINES {
+        egui::SidePanel::right("minimap")
+            .resizable(false)
+            .exact_width(80.0)
+            .frame(egui::Frame::none().fill(theme.editor_bg))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() / 2.0 - 10.0);
+                    ui.label(
+                        egui::RichText::new("File too large\nfor minimap")
+                            .small()
+                            .color(theme.dim_text),
+                    );
+                });
+            });
+        return;
+    }
+
     egui::SidePanel::right("minimap")
         .resizable(false)
         .exact_width(80.0)

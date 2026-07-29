@@ -62,6 +62,8 @@ pub struct App {
     /// Time of the most recent buffer-modifying edit. Used by auto-save
     /// to decide when the user has been idle long enough to save.
     pub last_edit_time: Instant,
+    /// Last (len, dirty) signature seen by lsp_change_active.
+    pub last_lsp_change_sig: (usize, bool),
     /// File-system watcher for externally changed files. `None` if the
     /// watcher could not be initialized on this platform.
     pub file_watcher: Option<core::FileWatcher>,
@@ -242,6 +244,7 @@ impl App {
             pending_format_save: false,
             config,
             last_edit_time: Instant::now(),
+            last_lsp_change_sig: (0, false),
             file_watcher: core::FileWatcher::new().ok(),
             lsp_manager: core::lsp::LspManager::new(),
         };
@@ -291,6 +294,12 @@ impl App {
         let Some(uri) = self.active_doc().uri() else {
             return;
         };
+        let buf = self.active_buffer();
+        let sig = (buf.len(), buf.is_dirty());
+        if sig == self.last_lsp_change_sig {
+            return;
+        }
+        self.last_lsp_change_sig = sig;
         let text = self.active_doc().text();
         self.lsp_manager.change_document(uri, text);
     }

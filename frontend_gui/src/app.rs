@@ -87,6 +87,9 @@ pub struct EditorApp {
     /// Start position (line, char_col) of an Alt+drag column selection.
     /// Set on Alt+click, consumed on drag.
     pub column_select_start: Option<(usize, usize)>,
+    /// Last (len, dirty) signature seen by lsp_change_active. Used to
+    /// skip the expensive text() call when nothing changed.
+    pub last_lsp_change_sig: (usize, bool),
     /// Persistent user configuration / session state.
     pub config: core::Config,
     /// Active GUI chrome theme. Applied to egui's global visuals each
@@ -295,6 +298,7 @@ impl EditorApp {
             pending_format_save: false,
             cmd_link: CmdLinkState::default(),
             column_select_start: None,
+            last_lsp_change_sig: (0, false),
             config,
             theme,
             last_edit_time: Instant::now(),
@@ -2557,6 +2561,16 @@ impl EditorApp {
         let Some(uri) = self.active_doc().uri() else {
             return;
         };
+        // Skip the expensive text() computation if the buffer hasn't
+        // changed since the last call. The LSP manager's debounce
+        // means it won't send anyway, but text() allocates the full
+        // document every frame — avoid that when nothing changed.
+        let buf = self.active_buffer();
+        let sig = (buf.len(), buf.is_dirty());
+        if sig == self.last_lsp_change_sig {
+            return;
+        }
+        self.last_lsp_change_sig = sig;
         let text = self.active_doc().text();
         self.lsp_manager.change_document(uri, text);
     }
