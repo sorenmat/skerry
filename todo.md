@@ -6,45 +6,49 @@ Prioritized plan based on the current feature set and the biggest gaps next to m
 
 - [x] Multi-cursor / multiple selections
 - [x] Auto-pairing brackets and quotes
-- [ ] Auto-indent on `{`, `}`, `Enter`
-- [ ] Smart Home (toggle column 0 ↔ first non-whitespace)
-- [ ] Block / column selection (Alt+drag or middle-click)
-- [ ] Bracket matching highlight
+- [x] Auto-indent on `{`, `}`, `Enter`
+- [x] Smart Home (toggle column 0 ↔ first non-whitespace)
+- [x] Block / column selection (Alt+drag or middle-click)
+- [x] Bracket matching highlight
 
 ## Phase 2 — Language smarts (the "world-class" leap)
 
-- [ ] LSP client integration
+- [x] LSP client integration
   - [x] Autocomplete
   - [x] Go to definition
   - [x] Hover documentation
   - [x] Diagnostics / error squiggles
-  - [ ] Rename symbol
-  - [ ] Format on save
+  - [x] Rename symbol
+  - [x] Format on save
 - [x] Tree-sitter parser for accurate highlighting and local-variable colors
-- [ ] Basic symbol outline / breadcrumbs
+- [x] Basic symbol outline / breadcrumbs
+- [x] External formatters (gofmt, rustfmt, prettier) as LSP fallback
 
 ## Phase 3 — Search & project workflow
 
-- [ ] Project-wide regex search
-- [ ] Find bar options: match case, whole word, regex
+- [x] Project-wide regex search
+- [x] Find bar options: match case, whole word, regex
 - [ ] Keep project-search window open while jumping results
 - [ ] Search result highlight navigation
+- [x] Find in selection
 
 ## Phase 4 — UI/UX polish
 
 - [ ] Split editor panes (side-by-side / stacked)
 - [ ] Drag-and-drop tab reorder / drag to split
-- [ ] Minimap
-- [ ] Indent guides
+- [x] Minimap
+- [x] Indent guides
 - [x] Inline git blame
 - [ ] Git diff / merge-conflict view
 - [ ] Configurable keybindings and settings file
 - [ ] Load custom `.tmTheme` and UI theme files
+- [x] Code folding
+- [x] Comment toggle (Cmd/Ctrl+/)
 
 ## Phase 5 — Conveniences
 
-- [ ] Snippets
-- [ ] Auto-save
+- [x] Snippets
+- [x] Auto-save
 - [ ] Integrated terminal panel
 - [ ] TUI soft-wrap rendering parity
 

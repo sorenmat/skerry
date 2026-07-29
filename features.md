@@ -105,6 +105,30 @@ the_editor/
 - **Selection-aware editing** — every insert, paste, and Tab replaces
   a non-collapsed selection instead of inserting at the cursor
   head. Standard 1995-era editor behaviour.
+- **Multi-cursor** — Cmd/Ctrl+D selects the next occurrence of the
+  current word; Alt/Opt+click adds a cursor; Alt+drag selects a
+  rectangular (column) region with a cursor per line. Typing, deleting,
+  and moving all operate on every cursor simultaneously. Escape
+  collapses to a single cursor.
+- **Auto-pairing** — typing `(`, `[`, `{`, `"`, `'` auto-inserts the
+  closing pair and leaves the cursor between them. Typing a closing
+  char when the cursor is before its match skips over instead of
+  doubling. Backspace between an empty pair deletes both.
+- **Auto-indent** — Enter copies the current line's leading whitespace
+  and adds one indent level if the line ends with `{`, `(`, `[`, or `=>`.
+- **Smart Home** — Home toggles between column 0 and the first
+  non-whitespace character.
+- **Comment toggle** — Cmd/Ctrl+/ toggles line comments on the selected
+  lines. Per-language syntax: `//` for Rust/C/Go/JS/TS, `#` for
+  Python/TOML.
+- **Code folding** — click ▶ in the gutter to fold a block; ▼ to
+  unfold. Foldable ranges discovered via tree-sitter parse tree.
+- **Snippets** — Tab-triggered text templates defined in config.json.
+  `$0` marks the final cursor position; `${1:default}` inserts
+  placeholder text.
+- **Bracket match highlight** — cursor next to a bracket highlights
+  both brackets. Handles nesting depth.
+- **Indent guides** — thin vertical lines at each indent level.
 - **Delete-left** (Backspace) and **delete-right** (Delete). Both
   selection-aware.
 - **Delete-word-left** (Ctrl+Backspace) and **delete-word-right**
@@ -112,12 +136,10 @@ the_editor/
   word chars (alphanumeric + `_`) and non-word chars.
 - **Delete-line** (Cmd/Ctrl+K) — removes the line including its
   trailing newline; the next line shifts up.
-- **Duplicate-line** (Cmd/Ctrl+D) — copies the current line below.
+- **Duplicate-line** (Shift+Cmd/Ctrl+D) — copies the current line below.
 - **Move-line up / down** (Alt+Up / Alt+Down) — swaps the current
   line with its neighbour. Single undo entry.
-- **Insert-silent / delete-silent** on the buffer — used internally
-  by line-level ops so they don't pile up extra undo entries on top
-  of the move / duplicate's own undo step.
+- **Select all** (Cmd/Ctrl+A).
 
 ## Clipboard
 
@@ -204,6 +226,14 @@ the_editor/
 - **Replace guards** — refuses to operate when the find query is
   empty, when the replacement is empty (refuses to silently
   delete), or when there's no current match. Reports via status bar.
+- **Regex mode** — the `.*` button toggles regex search. Capture-group
+  expansion (`$1`, `$2`) is supported in replace.
+- **Case-sensitive** — the `Aa` button toggles case-sensitive matching.
+  Default off (case-insensitive).
+- **Whole-word** — the `W` button restricts matches to whole words
+  (surrounded by non-word characters or boundaries).
+- **Find in selection** — opening the find bar with a multi-line
+  selection scopes the search to that selection's byte range.
 
 ## Project-wide find & replace
 
@@ -261,6 +291,32 @@ the_editor/
 - **LSP status indicator** — the status bar shows a filled circle
   (e.g. `● rust-analyzer`) when a language server is running and an empty
   circle (e.g. `○ rust-analyzer`) when the server failed to start.
+- **Rename symbol** (F2) — `textDocument/rename`. A prompt pre-filled
+  with the current word appears; Enter dispatches the rename and applies
+  the resulting `WorkspaceEdit` to the buffer.
+- **Format on save** — when saving, if the LSP server supports
+  `documentFormattingProvider`, the editor formats the document and
+  re-saves the formatted content.
+- **Go to symbol** (Shift+Cmd/Ctrl+O) — queries
+  `textDocument/documentSymbol` and shows a filterable symbol picker.
+  Click or Enter to jump. Handles both hierarchical and flat formats.
+
+## External formatting
+
+- **Configurable formatters** — when no LSP server supports formatting,
+  the editor falls back to configurable external tools (gofmt, rustfmt,
+  prettier, etc.). Configured per-language in `config.json` under
+  `formatters`. The formatter reads from stdin and writes to stdout.
+  Defaults: rust→`rustfmt --emit stdout`, go→`gofmt`, python→`ruff format -`.
+- **Format document** — the command palette's "Format document" runs
+  the LSP formatter or the external fallback on demand.
+
+## Minimap
+
+- **Zoomed-out document overview** — toggle via command palette. Shows
+  colored rects per syntax token at 2px per line. A viewport highlight
+  rect indicates the current scroll position. Click/drag to scroll.
+  Disabled for files over 5000 lines (performance guard).
 
 ## File I/O
 
