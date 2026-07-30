@@ -1,5 +1,5 @@
 #!/bin/bash
-# Set target/the_editor.app as the default handler for .rs, .go, and .json.
+# Set target/Nova.app as the default handler for .rs, .go, and .json.
 #
 # macOS will not let an app claim a default extension just by declaring it in
 # Info.plist. We register the bundle with Launch Services, launch it once so the
@@ -9,7 +9,7 @@
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR="$PROJECT_ROOT/target/the_editor.app"
+APP_DIR="$PROJECT_ROOT/target/Nova.app"
 BUNDLE_ID="com.smo.the-editor"
 EXTENSIONS="rs go json"
 

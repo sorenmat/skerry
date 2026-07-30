@@ -20,7 +20,7 @@
 //! scroll to settle.
 //!
 //! Run with:
-//!   cargo test -p frontend_gui --test auto_scroll -- --nocapture
+//!   cargo test -p nova --test auto_scroll -- --nocapture
 
 use core::{Buffer, PieceTableBuffer};
 use eframe::egui;
@@ -28,11 +28,11 @@ use eframe::egui;
 /// Build an editor with `lines` lines of content. Lines are made
 /// distinct so the paint output identifies which line the cursor was
 /// drawn at.
-fn app_with_lines(lines: usize) -> frontend_gui::app::EditorApp {
+fn app_with_lines(lines: usize) -> nova::app::EditorApp {
     let body: String = (1..=lines).map(|i| format!("line_{i:03}\n")).collect();
     let body = body.trim_end_matches('\n').to_string();
     let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes(body.into_bytes()));
-    frontend_gui::app::EditorApp::new(buf)
+    nova::app::EditorApp::new(buf)
 }
 
 /// Render one frame at the configured screen size and return the
@@ -42,7 +42,7 @@ fn app_with_lines(lines: usize) -> frontend_gui::app::EditorApp {
 /// tight test loop.
 fn render_frame(
     ctx: &egui::Context,
-    app: &mut frontend_gui::app::EditorApp,
+    app: &mut nova::app::EditorApp,
     screen_w: f32,
     screen_h: f32,
     time: f64,
@@ -57,7 +57,7 @@ fn render_frame(
         ..Default::default()
     };
     let output = ctx.run(raw_input, |ctx| {
-        frontend_gui::ui::render(ctx, app);
+        nova::ui::render(ctx, app);
     });
     output.shapes
 }
@@ -85,7 +85,7 @@ fn find_caret_rect(shapes: &[egui::epaint::ClippedShape]) -> Option<egui::Rect> 
 /// resilient if that style override regresses.
 fn settle_scroll(
     ctx: &egui::Context,
-    app: &mut frontend_gui::app::EditorApp,
+    app: &mut nova::app::EditorApp,
     screen_w: f32,
     screen_h: f32,
     start_time: f64,
@@ -382,7 +382,7 @@ fn scrollable_editor_top(_ctx: &egui::Context, _n: usize) -> f32 {
 /// Returns the painted caret rect for inspection.
 fn render_with_cursor_at(
     ctx: &egui::Context,
-    app: &mut frontend_gui::app::EditorApp,
+    app: &mut nova::app::EditorApp,
     screen_w: f32,
     screen_h: f32,
     cursor_line: usize,

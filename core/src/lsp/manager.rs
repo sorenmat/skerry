@@ -252,7 +252,7 @@ impl LspManager {
                 let init_params = serde_json::to_value(InitializeParams {
                     process_id: Some(std::process::id()),
                     client_info: Some(ClientInfo {
-                        name: "the_editor".to_string(),
+                        name: "Nova".to_string(),
                         version: Some(env!("CARGO_PKG_VERSION").to_string()),
                     }),
                     root_uri: None,

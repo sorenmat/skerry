@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR="$PROJECT_ROOT/target/the_editor.app"
+APP_DIR="$PROJECT_ROOT/target/Nova.app"
 BIN="$PROJECT_ROOT/target/release/frontend_gui"
-SCRIPT="$PROJECT_ROOT/scripts/the_editor.applescript"
+SCRIPT="$PROJECT_ROOT/scripts/Nova.applescript"
 
 cat > "$SCRIPT" <<APPLESCRIPT
 on open fileList
@@ -66,7 +66,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key>
     <string>droplet</string>
     <key>CFBundleIdentifier</key>
-    <string>com.smo.the-editor</string>
+    <string>com.smo.nova</string>
     <key>CFBundleIconFile</key>
     <string>droplet</string>
     <key>CFBundleIconName</key>
@@ -74,7 +74,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>the_editor</string>
+    <string>Nova</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>

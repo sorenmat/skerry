@@ -31,10 +31,10 @@ help:
 	@echo "  make register-app   Build bundle and set it as default app for .rs, .go, .json"
 
 run_tui:
-	cargo run -p frontend_tui -- $(ARGS)
+	cargo run -p nova-tui -- $(ARGS)
 
 run_gui:
-	cargo run -p frontend_gui -- $(ARGS)
+	cargo run -p nova -- $(ARGS)
 
 build:
 	cargo build --workspace

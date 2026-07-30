@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use core::{Buffer, Document, PieceTableBuffer};
 use eframe::egui;
 
-use frontend_gui::app::EditorApp;
+use nova::app::EditorApp;
 
 fn main() -> eframe::Result<()> {
     let config = core::Config::load();
@@ -32,12 +32,12 @@ fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(initial_size)
-            .with_title("the_editor"),
+            .with_title("Nova"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "the_editor",
+        "Nova",
         native_options,
         Box::new(|_cc| Ok(Box::new(EditorApp::new_with_documents(documents, config)))),
     )

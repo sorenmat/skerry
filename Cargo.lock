@@ -1329,31 +1329,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "frontend_gui"
-version = "0.1.0"
-dependencies = [
- "core",
- "eframe",
- "egui",
- "lsp-types",
- "rfd",
- "url",
-]
-
-[[package]]
-name = "frontend_tui"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "core",
- "crossterm",
- "lsp-types",
- "ratatui",
- "rfd",
- "url",
-]
-
-[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2273,6 +2248,31 @@ dependencies = [
  "mio 0.8.11",
  "walkdir",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "nova"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "eframe",
+ "egui",
+ "lsp-types",
+ "rfd",
+ "url",
+]
+
+[[package]]
+name = "nova-tui"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "core",
+ "crossterm",
+ "lsp-types",
+ "ratatui",
+ "rfd",
+ "url",
 ]
 
 [[package]]

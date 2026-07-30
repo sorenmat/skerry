@@ -1,6 +1,6 @@
 //! Offscreen reproduction of the selection-rendering bug.
 //!
-//! Run with: cargo test -p frontend_gui --test render_repro -- --nocapture
+//! Run with: cargo test -p nova --test render_repro -- --nocapture
 //!
 //! Loads the workspace Makefile, sets the same multi-line selection
 //! the user reported (anchor at line 21 col 15, head at line 27 col 14),
@@ -22,7 +22,7 @@ fn reproduce_selection_bug() {
     eprintln!("loading: {}", path.display());
 
     let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path).expect("load Makefile"));
-    let mut app = frontend_gui::app::EditorApp::new(buf);
+    let mut app = nova::app::EditorApp::new(buf);
 
     // Selection matching the user's reported scenario:
     //   anchor at line 21 col 15 (1-indexed)
@@ -63,7 +63,7 @@ fn reproduce_selection_bug() {
     };
 
     let output = ctx.run(raw_input, |ctx| {
-        frontend_gui::ui::render(ctx, &mut app);
+        nova::ui::render(ctx, &mut app);
     });
 
     eprintln!("\n=== PAINT SHAPES (first 80) ===");

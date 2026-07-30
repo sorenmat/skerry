@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ViewState;
 
-const APP_CONFIG_DIR: &str = "the_editor";
+const APP_CONFIG_DIR: &str = "nova";
 const CONFIG_FILE: &str = "config.json";
 const MAX_RECENT_FILES: usize = 20;
 
