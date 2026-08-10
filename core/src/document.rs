@@ -11,8 +11,11 @@
 //! day one; CONTEXT.md defines the term.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::Buffer;
+
+static NEXT_DOCUMENT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Per-document view state that both frontends share.
 ///
@@ -112,6 +115,8 @@ impl Default for ViewState {
 /// buffer (after save, if requested); switching the active document
 /// keeps all other documents alive.
 pub struct Document {
+    /// Process-local identity used by frontend caches and widget state.
+    id: u64,
     /// The text content and cursor/selection state. The piece-table
     /// implementation is the only concrete `Buffer` today; the
     /// indirection through `Box<dyn Buffer>` lets us swap
@@ -165,6 +170,7 @@ impl Document {
         let mut view = ViewState::default();
         config.apply_document_defaults(&mut view);
         let mut doc = Self {
+            id: NEXT_DOCUMENT_ID.fetch_add(1, Ordering::Relaxed),
             buffer,
             view,
             syntax: crate::SyntaxCache::default(),
@@ -180,6 +186,11 @@ impl Document {
             doc.refresh_git_gutter();
         }
         doc
+    }
+
+    /// Stable identity for this document instance.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// Recompute the git gutter from the current buffer and path.
@@ -249,22 +260,22 @@ impl Document {
         start_line: usize,
         end_line: usize,
         theme: &crate::ts::TsTheme,
-    ) -> Vec<Vec<crate::ColorSegment>> {
+    ) -> (Vec<Vec<crate::ColorSegment>>, bool) {
         let count = end_line.saturating_sub(start_line);
         let mut per_line = vec![Vec::new(); count];
 
-        let Some(tree) = self.ts_tree.as_ref().and_then(|t| t.tree()) else {
-            return per_line;
+        let Some(tree) = self.ts_tree.as_ref() else {
+            return (per_line, true);
         };
         let Some(grammar) = crate::ts::grammar_for_path(self.path()) else {
-            return per_line;
+            return (per_line, true);
         };
 
         // Byte range covering start_line..=end_line. We extend one line
         // past end_line (if it exists) so captures that straddle a line
         // boundary aren't clipped at the bottom edge.
         let Some(first_range) = self.buffer.line_byte_range(start_line) else {
-            return per_line;
+            return (per_line, true);
         };
         let last_end = self
             .buffer
@@ -272,8 +283,13 @@ impl Document {
             .map(|r| r.end)
             .unwrap_or_else(|| self.buffer.len());
         let source = self.buffer.to_bytes();
-        let doc_segs =
-            crate::ts::highlight_range(tree, &grammar, theme, first_range.start..last_end, &source);
+        let result = crate::ts::highlight_doc_range(
+            tree,
+            &grammar,
+            theme,
+            first_range.start..last_end,
+            &source,
+        );
 
         // Bucket document-absolute segments into their lines, translating
         // ranges to line-local byte offsets.
@@ -286,7 +302,7 @@ impl Document {
                 .unwrap_or(last_end);
             line_starts.push(start);
         }
-        for seg in doc_segs {
+        for seg in result.segments {
             // Find which line this segment starts on.
             let rel = seg
                 .range
@@ -315,7 +331,7 @@ impl Document {
             });
         }
 
-        per_line
+        (per_line, result.complete)
     }
 
     /// Create a fresh, empty, unsaved document.
@@ -413,7 +429,7 @@ fn language_id_from_extension(ext: &str) -> Option<&'static str> {
         "h" => Some("c"),
         "json" => Some("json"),
         "toml" => Some("toml"),
-        "md" => Some("markdown"),
+        "md" | "markdown" => Some("markdown"),
         _ => None,
     }
 }
@@ -432,9 +448,17 @@ mod tests {
     }
 
     #[test]
+    fn documents_have_distinct_stable_ids() {
+        let first = Document::empty();
+        let second = Document::empty();
+        assert_ne!(first.id(), second.id());
+        assert_eq!(first.id(), first.id());
+    }
+
+    #[test]
     fn path_proxies_to_buffer() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_doc_test_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_doc_test_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
             b"hello".to_vec(),
@@ -469,6 +493,8 @@ mod tests {
             ("main.py", Some("python")),
             ("main.cpp", Some("cpp")),
             ("main.c", Some("c")),
+            ("README.md", Some("markdown")),
+            ("notes.markdown", Some("markdown")),
             ("readme.txt", None),
         ];
         for (name, expected) in cases {

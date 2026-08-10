@@ -1,13 +1,13 @@
-# the_editor — Implemented Features
+# Nova — Implemented Features
 
-> Snapshot of every feature shipped in `the_editor` as of master
+> Snapshot of every feature shipped in Nova as of master
 > (`6085f19`, 2026-06-29). Every entry here is real, running code —
 > no roadmap items, no aspirational checkboxes. Anything that exists
 > only as a state field without visible behaviour is flagged.
 
 ## At a glance
 
-`the_editor` is a dual-frontend text editor in Rust: a **GUI** (egui +
+Nova is a dual-frontend text editor in Rust: a **GUI** (egui +
 eframe) and a **TUI** (ratatui + crossterm) sharing the same `core`
 engine. Both ship from day one with full feature parity (ADR 0005).
 The engine is built around a **Piece Table** buffer backed by an
@@ -17,10 +17,10 @@ multi-GB log files without a mode switch.
 Workspace layout:
 
 ```
-the_editor/
+Nova/
 ├── core/          # UI-agnostic text engine (Buffer, Document, search, undo)
-├── frontend_gui/  # egui + eframe GUI
-├── frontend_tui/  # ratatui + crossterm TUI
+├── nova/          # egui + eframe GUI
+├── nova-tui/      # ratatui + crossterm TUI
 └── docs/adr/      # architectural decision records
 ```
 
@@ -73,6 +73,9 @@ the_editor/
   Triggers the close-confirm dialog if the buffer is dirty.
 - **Next / previous document** (Cmd/Ctrl+Tab / Cmd/Ctrl+Shift+Tab) —
   wrap-around cycling through the open documents.
+- **Active-file reveal** — opening a file or switching documents expands its
+  ancestors in the project tree, selects it, and scrolls it into view in both
+  frontends.
 - **Go to line** (Cmd/Ctrl+G) — open a prompt, type a 1-based line
   number, and jump the cursor to the start of that line. Out-of-range
   numbers are clamped to the first or last line.
@@ -97,6 +100,30 @@ the_editor/
   idle). Toggle via the command palette (off by default to keep the
   gutter uncluttered). Disabled for files over 5 MB and for untracked /
   non-repo files.
+
+## Markdown
+
+- Markdown source files (`.md` and `.markdown`) receive shared Tree-sitter
+  syntax highlighting in both frontends, covering block structure and inline
+  constructs such as headings, lists, quotes, code, emphasis, and links.
+- Opening a `.md` or `.markdown` file exposes a **Markdown view** selector in
+  the status bar with **Source**, **Split**, and **Preview** modes.
+- Split and preview render directly from the active in-memory buffer, so
+  unsaved edits are reflected immediately. The split divider is resizable;
+  Preview is read-only, while Source and Split remain editable.
+- Parsed previews are cached by document identity and buffer revision, so an
+  unchanged document is neither reconstructed nor reparsed on every GUI frame.
+- Preview uses a centered, readable-width document column with increased line
+  height, stronger heading hierarchy, hanging list markers, and distinct code
+  and quotation surfaces.
+- CommonMark headings, paragraphs, emphasis, strikethrough, inline and fenced
+  code, ordered and unordered lists, task lists, block quotes, tables, rules,
+  footnotes, links, and image references receive native GUI formatting.
+- Preview is deliberately local and inert: embedded HTML is shown as text,
+  image references are shown as alt text plus their URL, and no remote content
+  is fetched or executed.
+- The command palette includes **Cycle Markdown preview**. In the TUI the same
+  command leaves the source view unchanged and reports that preview is GUI-only.
 
 ## Editing
 
@@ -320,8 +347,8 @@ the_editor/
 
 ## File I/O
 
-- **Open via CLI args** — `the_editor_gui path1 path2` and
-  `the_editor_tui path1 path2` open one document per PATH. With no
+- **Open via CLI args** — `nova path1 path2` and
+  `nova-tui path1 path2` open one document per PATH. With no
   paths, opens a single empty document.
 - **Open via dialog** (Cmd/Ctrl+O) — text-input dialog, Enter
   submits, Esc cancels. Ctrl/Alt-modified keys are filtered out so
@@ -408,16 +435,19 @@ is open.
   don't drift right. Fixes a real bug we hit — without it,
   selection-after-tab text overlapped the selection rectangle.
 
-## macOS file associations
+## macOS installation and file associations
 
-- **`make app-bundle`** builds `target/the_editor.app`, an AppleScript
-  wrapper around `target/debug/frontend_gui` that handles macOS
-  "open document" events.
+- **`make app-bundle`** builds the relocatable `target/Nova.app`. The
+  app contains the release `nova` executable and an AppleScript entry
+  point that handles macOS "open document" events.
+- **Homebrew** installs the app as **Nova** and links its bundled
+  executable as **`nv`**. See `INSTALL.md` for the tap and install
+  commands.
 - **`make register-app`** registers the bundle with Launch Services as
   the default editor for `.rs`, `.go`, and `.json` files.
 - Double-clicking one of those files in Finder opens it in the GUI
   frontend. The wrapper forwards the file path to the binary as a
-  command-line argument.
+  command-line argument. `nv PATH...` opens the same GUI from a shell.
 
 ## Per-document settings
 
@@ -453,10 +483,10 @@ use different conventions without re-configuring.
   frame, and not when tab-switching to a doc whose cursor happens
   to be at a position the renderer just rendered).
 
-## GUI-only (`frontend_gui`)
+## GUI-only (`nova`)
 
 - **Backend: egui 0.30 + eframe 0.30**, immediate-mode GUI.
-- **Default window**: 800 × 600, title "the_editor".
+- **Default window**: 800 × 600, title "Nova".
 - **Swappable renderer** — GUI behaviour is renderer-agnostic
   (ADR 0006). The concrete renderer is egui today; a future raw-wgpu
   slot is reserved.
@@ -469,7 +499,7 @@ use different conventions without re-configuring.
   (`output.shapes`) without a display server. Used to reproduce and
   fix the tab-advance selection bug.
 
-## TUI-only (`frontend_tui`)
+## TUI-only (`nova-tui`)
 
 - **Backend: ratatui 0.29 + crossterm 0.28**.
 - **Mouse capture enabled** at startup so crossterm delivers
@@ -487,8 +517,8 @@ use different conventions without re-configuring.
 
 ## Engineering / non-feature properties
 
-- **Three-crate Cargo workspace**: `core`, `frontend_tui`,
-  `frontend_gui`. Frontends depend on `core`; `core` depends on
+- **Three-crate Cargo workspace**: `core`, `nova-tui`,
+  `nova`. Frontends depend on `core`; `core` depends on
   neither.
 - **Rust 1.75**, edition 2021. `unsafe_code = "deny"` workspace-wide.
 - **7 ADRs** in `docs/adr/` document the architectural decisions
@@ -497,11 +527,11 @@ use different conventions without re-configuring.
   Buffer).
 - **Unit tests in every crate** — `cargo test --workspace`.
 - **Integration render tests**:
-  - `frontend_gui/tests/auto_scroll.rs` — offscreen egui render
+  - `nova/tests/auto_scroll.rs` — offscreen egui render
     tests for the auto-scroll path.
-  - `frontend_gui/tests/render_repro.rs` — reproduces the
+  - `nova/tests/render_repro.rs` — reproduces the
     tab-advance selection bug and asserts on paint commands.
-  - `frontend_tui/src/ui_tests.rs` — ratatui TestBackend smoke
+  - `nova-tui/src/ui_tests.rs` — ratatui TestBackend smoke
     tests covering header, dirty marker, status bar, tab strip, find
     match highlight, etc.
 

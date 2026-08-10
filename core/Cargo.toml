@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "UI-agnostic text manipulation engine for the_editor."
+description = "UI-agnostic text manipulation engine for Nova."
 
 [dependencies]
 dirs = "6"
@@ -31,7 +31,7 @@ tree-sitter-typescript = "0.23"
 tree-sitter-python = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-json = "0.24"
-tree-sitter-markdown = "0.7"
+tree-sitter-md = { version = "0.5.3", features = ["parser"] }
 
 [dev-dependencies]
 tempfile = "3"

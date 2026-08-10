@@ -62,6 +62,32 @@ mod tests {
     }
 
     #[test]
+    fn project_tree_scrolls_selected_file_into_view() {
+        let dir = std::env::temp_dir().join(format!("nova_tui_tree_scroll_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        for index in 0..20 {
+            std::fs::write(dir.join(format!("file_{index:02}.rs")), "").unwrap();
+        }
+        let target = dir.join("file_19.rs");
+        let buf: Box<dyn Buffer> =
+            Box::new(PieceTableBuffer::from_bytes_with_path(Vec::new(), target));
+        let mut app = App::new(buf);
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+
+        let out = terminal.backend().to_string();
+        assert!(
+            out.contains("file_19.rs"),
+            "selected tree row should be visible: {out:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn status_message_appears_in_bottom_line() {
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::new());
         let mut app = App::new(buf);
@@ -219,7 +245,7 @@ mod tests {
         // showing "has unsaved changes" and the three options.
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_render_close_{}.txt",
+            "nova_render_close_{}.txt",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);

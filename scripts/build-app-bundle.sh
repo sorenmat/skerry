@@ -1,25 +1,20 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$PROJECT_ROOT/target/Nova.app"
-BIN="$PROJECT_ROOT/target/release/frontend_gui"
+BIN="${NOVA_BINARY:-$PROJECT_ROOT/target/release/nova}"
 SCRIPT="$PROJECT_ROOT/scripts/Nova.applescript"
 
-cat > "$SCRIPT" <<APPLESCRIPT
-on open fileList
-	repeat with f in fileList
-		set posixPath to POSIX path of f
-		do shell script "$BIN " & quoted form of posixPath & " >/dev/null 2>&1 &"
-	end repeat
-end open
-
-on run
-	do shell script "$BIN >/dev/null 2>&1 &"
-end run
-APPLESCRIPT
+if [ ! -x "$BIN" ]; then
+    echo "error: Nova binary not found or not executable: $BIN" >&2
+    echo "       Run 'make build-release' first." >&2
+    exit 1
+fi
 
 rm -rf "$APP_DIR"
 osacompile -o "$APP_DIR" "$SCRIPT"
+install -m 755 "$BIN" "$APP_DIR/Contents/Resources/nova"
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -79,17 +74,16 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <string>APPL</string>
     <key>CFBundleSignature</key>
     <string>dplt</string>
-    <key>LSMinimumSystemVersionByArchitecture</key>
-    <dict>
-        <key>x86_64</key>
-        <string>10.6</string>
-    </dict>
-    <key>LSRequiresCarbon</key>
-    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
     <key>OSAAppletShowStartupScreen</key>
     <false/>
 </dict>
 </plist>
 PLIST
+
+codesign --force --sign - "$APP_DIR/Contents/Resources/nova"
+codesign --force --sign - "$APP_DIR"
+codesign --verify --deep --strict "$APP_DIR"
 
 echo "Created $APP_DIR"

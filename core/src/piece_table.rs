@@ -1,7 +1,7 @@
 //! Piece Table buffer implementation — production-ready.
 //!
 //! Implements [`Buffer`] for [`PieceTableBuffer`], the canonical text
-//! representation for the_editor. See:
+//! representation for Nova. See:
 //!
 //! - [`docs/adr/0001`](../../../docs/adr/0001-piece-table-as-primary-buffer.md)
 //!   — why Piece Table.
@@ -119,6 +119,8 @@ pub struct Piece {
 pub struct PieceTableBuffer {
     source_path: Option<PathBuf>,
     dirty: bool,
+    /// Incremented after every successful text mutation.
+    revision: u64,
     original: OriginalStorage,
     delta: Vec<u8>,
     pieces: Vec<Piece>,
@@ -143,6 +145,7 @@ impl PieceTableBuffer {
         Self {
             source_path: None,
             dirty: false,
+            revision: 0,
             original: OriginalStorage::Bytes(Vec::new()),
             delta: Vec::new(),
             pieces: Vec::new(),
@@ -499,6 +502,7 @@ impl PieceTableBuffer {
             self.rebuild_cumulative_offsets();
             self.update_newlines_for_insert(byte_pos, bytes);
             self.dirty = true;
+            self.revision = self.revision.wrapping_add(1);
             let new_cursor = byte_pos + bytes.len();
             return Ok(new_cursor);
         }
@@ -542,6 +546,7 @@ impl PieceTableBuffer {
         self.rebuild_cumulative_offsets();
         self.update_newlines_for_insert(byte_pos, bytes);
         self.dirty = true;
+        self.revision = self.revision.wrapping_add(1);
 
         let new_cursor = byte_pos + bytes.len();
 
@@ -664,6 +669,7 @@ impl PieceTableBuffer {
         }
 
         self.dirty = true;
+        self.revision = self.revision.wrapping_add(1);
 
         Ok(range.start)
     }
@@ -686,6 +692,10 @@ impl Buffer for PieceTableBuffer {
 
     fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision
     }
 
     fn len(&self) -> usize {
@@ -1082,6 +1092,24 @@ mod tests {
         assert_eq!(buf.cursor(), 0);
         assert!(buf.selection().is_collapsed());
         assert_eq!(reconstruct_str(&buf), "");
+    }
+
+    #[test]
+    fn revision_changes_only_when_text_changes() {
+        let mut buffer = PieceTableBuffer::new();
+        assert_eq!(buffer.revision(), 0);
+        buffer.set_cursor(0);
+        assert_eq!(buffer.revision(), 0);
+
+        buffer.insert(0, "hello").unwrap();
+        let after_insert = buffer.revision();
+        assert!(after_insert > 0);
+        buffer.delete(0..1).unwrap();
+        assert!(buffer.revision() > after_insert);
+
+        let before_undo = buffer.revision();
+        assert!(buffer.undo());
+        assert!(buffer.revision() > before_undo);
     }
 
     #[test]
@@ -1499,7 +1527,7 @@ mod tests {
     fn save_roundtrip_writes_to_disk() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_save_roundtrip_{}.txt",
+            "nova_save_roundtrip_{}.txt",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
@@ -1520,7 +1548,7 @@ mod tests {
     fn save_overwrites_existing_content() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_save_overwrite_{}.txt",
+            "nova_save_overwrite_{}.txt",
             std::process::id()
         ));
         std::fs::write(&path, b"original content\n").unwrap();
@@ -1604,7 +1632,7 @@ mod tests {
     #[test]
     fn from_path_reads_small_file() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_mmap_small_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_mmap_small_{}.txt", std::process::id()));
         let content = b"hello\nworld\nmemmap test".to_vec();
         std::fs::write(&path, &content).unwrap();
 
@@ -1620,7 +1648,7 @@ mod tests {
     #[test]
     fn from_path_handles_empty_file() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_mmap_empty_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_mmap_empty_{}.txt", std::process::id()));
         std::fs::write(&path, b"").unwrap();
 
         let buf = PieceTableBuffer::from_path(path.clone()).unwrap();
@@ -1635,7 +1663,7 @@ mod tests {
     fn from_path_errors_on_missing_file() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_mmap_nonexistent_{}.txt",
+            "nova_mmap_nonexistent_{}.txt",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path); // ensure it doesn't exist
@@ -1652,12 +1680,12 @@ mod tests {
         // source_path must now be absolute.
         let dir = std::env::temp_dir();
         let file = dir.join(format!(
-            "the_editor_abs_path_{}.rs",
+            "nova_abs_path_{}.rs",
             std::process::id()
         ));
         std::fs::write(&file, b"x").unwrap();
 
-        // Run from `dir` so the relative path "the_editor_abs_path_<pid>.rs"
+        // Run from `dir` so the relative path "nova_abs_path_<pid>.rs"
         // resolves. Save and restore the cwd so the test is isolated.
         let prev_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
@@ -1696,7 +1724,7 @@ mod tests {
         // we wanted to test "without mmap". Verifies that from_path
         // works for sizes that matter.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_mmap_large_{}.bin", std::process::id()));
+        let path = dir.join(format!("nova_mmap_large_{}.bin", std::process::id()));
 
         let mut content = Vec::with_capacity(10 * 1024 * 1024);
         for i in 0..(10 * 1024 * 1024) {
@@ -1718,7 +1746,7 @@ mod tests {
     #[test]
     fn mmap_buffer_edits_and_saves_correctly() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_mmap_save_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_mmap_save_{}.txt", std::process::id()));
         let original = b"line0\nline1\nline2\nline3".to_vec();
         std::fs::write(&path, &original).unwrap();
 
@@ -1742,7 +1770,7 @@ mod tests {
     #[test]
     fn mmap_buffer_undo_works() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_mmap_undo_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_mmap_undo_{}.txt", std::process::id()));
         std::fs::write(&path, b"original").unwrap();
 
         let mut buf = PieceTableBuffer::from_path(path.clone()).unwrap();
@@ -1758,7 +1786,7 @@ mod tests {
     fn save_atomic_writes_via_temp_file() {
         // Verify the .tmp file is cleaned up after a successful rename.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_atomic_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_atomic_{}.txt", std::process::id()));
         std::fs::write(&path, b"initial").unwrap();
 
         let mut buf = PieceTableBuffer::from_path(path.clone()).unwrap();
@@ -1925,7 +1953,7 @@ mod tests {
     #[test]
     fn undo_after_save_clears_dirty_on_undo() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_undo_save_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_undo_save_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let mut buf = PieceTableBuffer::from_bytes_with_path(b"hi".to_vec(), path.clone());

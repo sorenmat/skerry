@@ -1,10 +1,13 @@
 on open fileList
+	set novaBinary to POSIX path of (path to resource "nova")
+	set commandLine to quoted form of novaBinary
 	repeat with f in fileList
-		set posixPath to POSIX path of f
-		do shell script "/Users/smo/code/the_editor/target/release/frontend_gui " & quoted form of posixPath & " >/dev/null 2>&1 &"
+		set commandLine to commandLine & " " & quoted form of (POSIX path of f)
 	end repeat
+	do shell script commandLine & " >/dev/null 2>&1 &"
 end open
 
 on run
-	do shell script "/Users/smo/code/the_editor/target/release/frontend_gui >/dev/null 2>&1 &"
+	set novaBinary to POSIX path of (path to resource "nova")
+	do shell script quoted form of novaBinary & " >/dev/null 2>&1 &"
 end run

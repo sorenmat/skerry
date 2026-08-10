@@ -328,7 +328,7 @@ mod tests {
 
     fn temp_repo(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "the_editor_git_gutter_{}_{}",
+            "nova_git_gutter_{}_{}",
             std::process::id(),
             name
         ));
@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn non_repo_file_is_disabled() {
         let dir =
-            std::env::temp_dir().join(format!("the_editor_no_git_{}_{}", std::process::id(), "x"));
+            std::env::temp_dir().join(format!("nova_no_git_{}_{}", std::process::id(), "x"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("file.txt");

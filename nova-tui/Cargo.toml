@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Terminal frontend for the_editor (ratatui + crossterm)."
+description = "Terminal frontend for Nova (ratatui + crossterm)."
 
 [dependencies]
 core = { path = "../core" }

@@ -3,5 +3,6 @@
 
 pub mod app;
 pub mod event;
+mod markdown;
 pub mod theme;
 pub mod ui;

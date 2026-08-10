@@ -1,4 +1,4 @@
-//! the_editor `core` — UI-agnostic text manipulation engine.
+//! Nova `core` — UI-agnostic text manipulation engine.
 //!
 //! See `CONTEXT.md` at the workspace root for domain terms and
 //! `docs/adr/` for the architectural decisions that shaped this crate.

@@ -46,6 +46,12 @@ impl TsTheme {
                 "punctuation.bracket" | "punctuation.delimiter" | "punctuation.special" => {
                     self.get("punctuation")
                 }
+                "text.title" => self.get("function"),
+                "text.literal" => self.get("string"),
+                "text.uri" => self.get("string.special").or_else(|| self.get("string")),
+                "text.reference" => self.get("label"),
+                "text.emphasis" => self.get("attribute"),
+                "text.strong" => self.get("keyword"),
                 _ => None,
             })
     }
@@ -248,5 +254,19 @@ mod tests {
         // base16-ocean.dark was the syntect default; keep Ocean Dark first
         // so existing config.theme values have a sensible match target.
         assert_eq!(bundled_themes()[0].name, "Ocean Dark");
+    }
+
+    #[test]
+    fn markdown_text_captures_map_to_semantic_colors() {
+        for capture in [
+            "text.title",
+            "text.literal",
+            "text.uri",
+            "text.reference",
+            "text.emphasis",
+            "text.strong",
+        ] {
+            assert!(OCEAN_DARK.color_for(capture).is_some(), "{capture}");
+        }
     }
 }

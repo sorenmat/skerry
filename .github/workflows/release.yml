@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build macOS (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Build Nova
+        run: cargo build --workspace --release --locked
+
+      - name: Build application bundle
+        run: ./scripts/build-app-bundle.sh
+
+      - name: Sign application bundle
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+        run: |
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          keychain_path="$RUNNER_TEMP/nova-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+
+          test -n "$APPLE_CERTIFICATE_BASE64"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          test -n "$APPLE_DEVELOPER_ID"
+
+          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_DEVELOPER_ID" target/Nova.app/Contents/Resources/nova
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_DEVELOPER_ID" target/Nova.app
+          codesign --verify --deep --strict --verbose=2 target/Nova.app
+
+          rm -f "$certificate_path"
+
+      - name: Notarize application bundle
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_ID"
+          test -n "$APPLE_APP_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+
+          ditto -c -k --keepParent target/Nova.app "$RUNNER_TEMP/Nova-notarization.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/Nova-notarization.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple target/Nova.app
+          xcrun stapler validate target/Nova.app
+          spctl --assess --type execute --verbose=2 target/Nova.app
+
+      - name: Package application bundle
+        run: tar -czf "Nova-macos-${{ matrix.arch }}.tar.gz" -C target Nova.app
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Nova-macos-${{ matrix.arch }}
+          path: Nova-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/Nova-notarization.zip"
+          security delete-keychain "$RUNNER_TEMP/nova-signing.keychain-db" || true
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: Nova-macos-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.tar.gz --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.tar.gz --generate-notes --verify-tag
+          fi

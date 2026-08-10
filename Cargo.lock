@@ -746,12 +746,12 @@ dependencies = [
  "similar",
  "tempfile",
  "tokio",
- "tree-sitter 0.26.10",
+ "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-go",
  "tree-sitter-javascript",
  "tree-sitter-json",
- "tree-sitter-markdown",
+ "tree-sitter-md",
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
@@ -2258,6 +2258,7 @@ dependencies = [
  "eframe",
  "egui",
  "lsp-types",
+ "pulldown-cmark",
  "rfd",
  "url",
 ]
@@ -2792,6 +2793,17 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86ba2052aebccc42cbbb3ed234b8b13ce76f75c3551a303cb2bcffcff12bb14"
+dependencies = [
+ "bitflags 2.13.0",
+ "memchr",
+ "unicase",
+]
 
 [[package]]
 name = "pxfm"
@@ -3635,16 +3647,6 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
-version = "0.19.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad726ec26496bf4c083fff0f43d4eb3a2ad1bba305323af5ff91383c0b6ecac0"
-dependencies = [
- "cc",
- "regex",
-]
-
-[[package]]
-name = "tree-sitter"
 version = "0.26.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c343ed63e3f5c64d1acdecb5d2c13d4e169cb5fde0052106ebaa6c6f27f9e55"
@@ -3704,13 +3706,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
-name = "tree-sitter-markdown"
-version = "0.7.1"
+name = "tree-sitter-md"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c1cfe0396b0e500cc99067bcd2d48720eb08a077e2690194f0c3a3d105f9a0"
+checksum = "2efd398be546456c814598ee56c0f51769a77241511b4a58077815d120afa882"
 dependencies = [
  "cc",
- "tree-sitter 0.19.5",
+ "tree-sitter",
+ "tree-sitter-language",
 ]
 
 [[package]]
@@ -3774,6 +3777,12 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
 
 [[package]]
 name = "unicode-ident"

@@ -1,4 +1,4 @@
-//! Project/workspace support for the_editor.
+//! Project/workspace support for Nova.
 //!
 //! A *project* is a directory on disk that contains related files. The
 //! editor detects a project by walking up from the active document's
@@ -113,6 +113,37 @@ impl ProjectTree {
             self.expanded.remove(rel_path);
         } else {
             self.expanded.insert(rel_path.to_path_buf());
+        }
+    }
+
+    /// Expand the ancestors of `rel_path` and return its visible row index.
+    /// Returns `None` when the path is not present in this bounded tree.
+    pub fn reveal(&mut self, rel_path: &Path) -> Option<usize> {
+        let root = self.root.as_ref()?;
+        if !Self::contains_path(root, rel_path) {
+            return None;
+        }
+
+        let mut ancestor = rel_path.parent();
+        while let Some(path) = ancestor {
+            self.expanded.insert(path.to_path_buf());
+            ancestor = path.parent();
+        }
+
+        self.visible_rows()
+            .iter()
+            .position(|(_, node)| node.rel_path() == rel_path)
+    }
+
+    fn contains_path(node: &FsNode, rel_path: &Path) -> bool {
+        if node.rel_path() == rel_path {
+            return true;
+        }
+        match node {
+            FsNode::Dir { children, .. } => children
+                .iter()
+                .any(|child| Self::contains_path(child, rel_path)),
+            FsNode::File { .. } => false,
         }
     }
 
@@ -872,6 +903,39 @@ mod tests {
             .visible_rows()
             .iter()
             .any(|(_, n)| n.name() == "lib.rs"));
+    }
+
+    #[test]
+    fn project_tree_reveal_expands_ancestors_and_returns_row() {
+        let (dir, _) = temp_dir_with("");
+        let root = dir.path();
+        fs::write(root.join("Cargo.toml"), "[package]").unwrap();
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::write(root.join("src/nested/lib.rs"), "").unwrap();
+
+        let proj = Project::from_path(root).unwrap();
+        let mut tree = ProjectTree::new(proj.tree(100).unwrap());
+        tree.toggle(Path::new("src"));
+        assert!(tree.reveal(Path::new("src/nested/lib.rs")).is_some());
+        assert!(tree.expanded.contains(Path::new("src")));
+        assert!(tree.expanded.contains(Path::new("src/nested")));
+        let selected = tree.reveal(Path::new("src/nested/lib.rs")).unwrap();
+        assert_eq!(
+            tree.visible_rows()[selected].1.rel_path(),
+            Path::new("src/nested/lib.rs")
+        );
+    }
+
+    #[test]
+    fn project_tree_reveal_missing_path_preserves_expansion() {
+        let (dir, _) = temp_dir_with("");
+        let root = dir.path();
+        fs::write(root.join("Cargo.toml"), "[package]").unwrap();
+        let proj = Project::from_path(root).unwrap();
+        let mut tree = ProjectTree::new(proj.tree(100).unwrap());
+        let before = tree.expanded.clone();
+        assert_eq!(tree.reveal(Path::new("missing.rs")), None);
+        assert_eq!(tree.expanded, before);
     }
 
     #[test]

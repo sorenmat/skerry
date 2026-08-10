@@ -111,6 +111,10 @@ pub enum EditorEvent {
     ToggleSoftWrap,
     /// Toggle the minimap (zoomed-out document overview, GUI-only).
     ToggleMinimap,
+    /// Cycle the active Markdown document through source, split, and
+    /// rendered preview views. GUI-only; the TUI reports that preview is
+    /// unavailable.
+    CycleMarkdownPreview,
     /// Cycle to the next syntax-highlighting theme. Wraps around at
     /// the end of the bundled theme list. Invalidates the syntax cache
     /// for every open document so the new colors are visible
@@ -402,6 +406,7 @@ mod tests {
         let _ = EditorEvent::CycleIndentMode;
         let _ = EditorEvent::ToggleSoftWrap;
         let _ = EditorEvent::ToggleMinimap;
+        let _ = EditorEvent::CycleMarkdownPreview;
         let _ = EditorEvent::CycleTheme;
         let _ = EditorEvent::OpenFile(None);
         let _ = EditorEvent::OpenFile(Some(PathBuf::from("/tmp/example.rs")));

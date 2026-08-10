@@ -1,6 +1,6 @@
 //! TUI frontend entry point.
 //!
-//! Usage: `the_editor_tui [PATH...]` — opens one document per PATH
+//! Usage: `nova-tui [PATH...]` — opens one document per PATH
 //! argument. With no PATH, opens one unsaved buffer. Saves go back to
 //! the original PATH for each document (Ctrl+S); unsaved buffers with
 //! no path can't be saved (yet).
@@ -44,7 +44,7 @@ impl Drop for TerminalGuard {
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("the_editor_tui: {e}");
+        eprintln!("nova-tui: {e}");
         process::exit(1);
     }
 }

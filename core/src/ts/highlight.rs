@@ -23,7 +23,7 @@ use tree_sitter::{Query, QueryCursor, QueryCursorOptions, StreamingIterator, Tre
 use crate::{ColorSegment, HighlightColor};
 
 use super::theme::TsTheme;
-use super::Grammar;
+use super::{DocTree, Grammar};
 
 /// Maximum wall-clock time a single highlight pass may take before it is
 /// cancelled. The viewport is already byte-range-limited so this is a
@@ -43,7 +43,7 @@ const HIGHLIGHT_BUDGET: Duration = Duration::from_millis(15);
 /// tree-sitter queries express precedence (e.g. a `variable.parameter`
 /// capture inside a `function` capture wins).
 ///
-/// If the query exceeds [`HIGHLIGHT_BUGET`], it is cancelled and whatever
+/// If the query exceeds [`HIGHLIGHT_BUDGET`], it is cancelled and whatever
 /// captures were collected so far are returned (the caller caches partial
 /// results and re-runs the next frame when the viewport is revisited).
 pub fn highlight_range(
@@ -56,6 +56,103 @@ pub fn highlight_range(
     let Some(query) = compiled_query(grammar) else {
         return Vec::new();
     };
+    highlight_range_with_query(
+        tree,
+        query,
+        theme,
+        byte_range,
+        source,
+        Instant::now() + HIGHLIGHT_BUDGET,
+    )
+    .segments
+}
+
+/// Highlight a document tree, including Markdown's paired inline trees.
+pub(crate) fn highlight_doc_range(
+    doc_tree: &DocTree,
+    grammar: &Grammar,
+    theme: &TsTheme,
+    byte_range: Range<usize>,
+    source: &[u8],
+) -> HighlightResult {
+    let Some(tree) = doc_tree.tree() else {
+        return HighlightResult::complete(Vec::new());
+    };
+    let Some(block_query) = compiled_query(grammar) else {
+        return HighlightResult::complete(Vec::new());
+    };
+    let deadline = Instant::now() + HIGHLIGHT_BUDGET;
+    let mut result = highlight_range_with_query(
+        tree,
+        block_query,
+        theme,
+        byte_range.clone(),
+        source,
+        deadline,
+    );
+    let Some(markdown_tree) = doc_tree.markdown_tree() else {
+        return result;
+    };
+    let Some(inline_query) = compiled_markdown_inline_query(grammar) else {
+        return result;
+    };
+    if !result.complete {
+        return result;
+    }
+    let inline_trees = markdown_tree.inline_trees();
+    let first = inline_trees.partition_point(|tree| {
+        tree.root_node().byte_range().end <= byte_range.start
+    });
+    for inline_tree in &inline_trees[first..] {
+        let root_range = inline_tree.root_node().byte_range();
+        if root_range.start >= byte_range.end {
+            break;
+        }
+        let inline_result = highlight_range_with_query(
+            inline_tree,
+            inline_query,
+            theme,
+            byte_range.clone(),
+            source,
+            deadline,
+        );
+        result.segments.extend(inline_result.segments);
+        if !inline_result.complete {
+            result.complete = false;
+            break;
+        }
+    }
+    let captures = result
+        .segments
+        .into_iter()
+        .map(|segment| (segment.range, segment.color))
+        .collect::<Vec<_>>();
+    result.segments = merge_captures(&captures);
+    result
+}
+
+pub(crate) struct HighlightResult {
+    pub segments: Vec<ColorSegment>,
+    pub complete: bool,
+}
+
+impl HighlightResult {
+    fn complete(segments: Vec<ColorSegment>) -> Self {
+        Self {
+            segments,
+            complete: true,
+        }
+    }
+}
+
+fn highlight_range_with_query(
+    tree: &Tree,
+    query: &Query,
+    theme: &TsTheme,
+    byte_range: Range<usize>,
+    source: &[u8],
+    deadline: Instant,
+) -> HighlightResult {
     let capture_names = query.capture_names();
 
     let mut cursor = QueryCursor::new();
@@ -73,9 +170,10 @@ pub fn highlight_range(
     // The progress callback cancels the query if it exceeds the budget.
     // Partial results are fine — the caller caches them and re-queries the
     // next time the viewport is revisited.
-    let deadline = Instant::now() + HIGHLIGHT_BUDGET;
-    let mut callback = move |_state: &tree_sitter::QueryCursorState| {
+    let cancelled = std::cell::Cell::new(false);
+    let mut callback = |_state: &tree_sitter::QueryCursorState| {
         if Instant::now() > deadline {
+            cancelled.set(true);
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -100,10 +198,24 @@ pub fn highlight_range(
     drop(captures);
 
     if raw.is_empty() {
-        return Vec::new();
+        return HighlightResult {
+            segments: Vec::new(),
+            complete: !cancelled.get(),
+        };
     }
 
-    merge_captures(&raw)
+    HighlightResult {
+        segments: merge_captures(&raw),
+        complete: !cancelled.get(),
+    }
+}
+
+fn compiled_markdown_inline_query(grammar: &Grammar) -> Option<&'static Query> {
+    let inline = grammar.inline.as_ref()?;
+    static QUERY: OnceLock<Option<Query>> = OnceLock::new();
+    QUERY
+        .get_or_init(|| Query::new(&inline.language, inline.highlights_query).ok())
+        .as_ref()
 }
 
 /// Compile (and cache) the highlight query for a grammar. Returns `None`
@@ -135,8 +247,18 @@ fn compiled_query(grammar: &Grammar) -> Option<&'static Query> {
 /// Mirrors the constructors in `grammar.rs`; kept here so the highlight
 /// module owns its query compilation without grammar.rs depending on it.
 fn all_grammars() -> Vec<Grammar> {
-    use super::grammar::{c, go, javascript, json, python, rust, tsx, typescript};
-    vec![rust(), go(), javascript(), typescript(), tsx(), python(), c(), json()]
+    use super::grammar::{c, go, javascript, json, markdown, python, rust, tsx, typescript};
+    vec![
+        rust(),
+        go(),
+        javascript(),
+        typescript(),
+        tsx(),
+        python(),
+        c(),
+        json(),
+        markdown(),
+    ]
 }
 
 /// Merge possibly-overlapping capture ranges into a flat list of
@@ -305,7 +427,83 @@ mod tests {
         assert!(q1.is_some() && q2.is_some());
         assert!(std::ptr::eq(q1.unwrap(), q2.unwrap()));
     }
+
+    #[test]
+    fn markdown_highlights_block_and_inline_syntax() {
+        let src = "# Title\n\nA **strong** word and `code`.\n";
+        let grammar = grammar_for_extension("md").unwrap();
+        let mut tree = DocTree::new(grammar.clone()).unwrap();
+        tree.parse(src.as_bytes());
+        let segments = highlight_doc_range(
+            &tree,
+            &grammar,
+            &OCEAN_DARK,
+            0..src.len(),
+            src.as_bytes(),
+        )
+        .segments;
+        let title = src.find("Title").unwrap();
+        let strong = src.find("strong").unwrap();
+        let code = src.find("code").unwrap();
+        for byte in [title, strong, code] {
+            assert!(
+                segments.iter().any(|segment| segment.range.contains(&byte)),
+                "Markdown byte {byte} should be highlighted: {segments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_highlighting_respects_viewport_range() {
+        let src = "First **outside** paragraph.\n\nSecond `inside` paragraph.\n";
+        let grammar = grammar_for_extension("markdown").unwrap();
+        let mut tree = DocTree::new(grammar.clone()).unwrap();
+        tree.parse(src.as_bytes());
+        let start = src.find("Second").unwrap();
+        let segments = highlight_doc_range(
+            &tree,
+            &grammar,
+            &OCEAN_DARK,
+            start..src.len(),
+            src.as_bytes(),
+        )
+        .segments;
+        let outside = src.find("outside").unwrap();
+        let inside = src.find("inside").unwrap();
+        assert!(!segments
+            .iter()
+            .any(|segment| segment.range.contains(&outside)));
+        assert!(segments
+            .iter()
+            .any(|segment| segment.range.contains(&inside)));
+    }
+
+    #[test]
+    fn markdown_inline_highlights_stay_aligned_after_incremental_edit() {
+        let original = "Text **strong** and `code`.\n";
+        let edited = "Text new **strong** and `code`.\n";
+        let grammar = grammar_for_extension("md").unwrap();
+        let mut tree = DocTree::new(grammar.clone()).unwrap();
+        tree.parse(original.as_bytes());
+        tree.apply_edit(
+            crate::ts::EditDelta::single_line(0, 5, 5, 4),
+            edited.as_bytes(),
+        );
+
+        let result = highlight_doc_range(
+            &tree,
+            &grammar,
+            &OCEAN_DARK,
+            0..edited.len(),
+            edited.as_bytes(),
+        );
+        assert!(result.complete);
+        for token in ["strong", "code"] {
+            let byte = edited.find(token).unwrap();
+            assert!(result
+                .segments
+                .iter()
+                .any(|segment| segment.range.contains(&byte)));
+        }
+    }
 }
-
-
-

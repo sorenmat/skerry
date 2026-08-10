@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "frontend_tui", "frontend_gui"]
+members = ["core", "nova-tui", "nova"]
 resolver = "2"
 
 [workspace.package]

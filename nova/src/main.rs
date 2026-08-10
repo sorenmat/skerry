@@ -1,8 +1,8 @@
 //! GUI frontend entry point.
 //!
-//! Usage: `frontend_gui [PATH...]` — opens one document per PATH
+//! Usage: `nova [PATH...]` — opens one document per PATH
 //! argument. With no PATH, opens one unsaved buffer. Same feature
-//! set as `frontend_tui` (ADR 0005).
+//! set as `nova-tui` (ADR 0005).
 
 use std::env;
 use std::path::{Path, PathBuf};

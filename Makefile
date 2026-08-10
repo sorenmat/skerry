@@ -1,4 +1,4 @@
-# the_editor Makefile
+# Nova Makefile
 #
 # Thin convenience layer over Cargo. Run `make help` for the full list.
 #
@@ -9,10 +9,10 @@
 .PHONY: help run_tui run_gui build build-release test check clippy fmt clean app-bundle register-app
 
 help:
-	@echo "the_editor — convenience make targets"
+	@echo "Nova — convenience make targets"
 	@echo ""
-	@echo "  make run_tui        Run the TUI frontend (frontend_tui crate)"
-	@echo "  make run_gui        Run the GUI frontend (frontend_gui crate)"
+	@echo "  make run_tui        Run the TUI frontend (nova-tui crate)"
+	@echo "  make run_gui        Run the GUI frontend (nova crate)"
 	@echo ""
 	@echo "  Pass extra args to the binary via ARGS:"
 	@echo "      make run_tui ARGS=\"Cargo.toml\""
@@ -27,7 +27,7 @@ help:
 	@echo "  make clean          cargo clean"
 	@echo ""
 	@echo "macOS app bundle:"
-	@echo "  make app-bundle     Build target/the_editor.app from debug binary"
+	@echo "  make app-bundle     Build target/Nova.app from the release binary"
 	@echo "  make register-app   Build bundle and set it as default app for .rs, .go, .json"
 
 run_tui:
@@ -62,4 +62,4 @@ app-bundle: build-release
 
 register-app: app-bundle
 	@./scripts/register-app.sh
-	@echo "Set target/the_editor.app as default for .rs, .go, and .json"
+	@echo "Set target/Nova.app as default for .rs, .go, and .json"

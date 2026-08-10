@@ -160,6 +160,12 @@ pub const COMMANDS: &[Command] = &[
         event: EditorEvent::ToggleMinimap,
     },
     Command {
+        id: "cycle_markdown_preview",
+        label: "Cycle Markdown preview",
+        keybinding: "",
+        event: EditorEvent::CycleMarkdownPreview,
+    },
+    Command {
         id: "cycle_indent_mode",
         label: "Cycle indent mode",
         keybinding: "Ctrl+I",
@@ -271,6 +277,15 @@ mod tests {
     fn filter_finds_by_id() {
         let results = filter_commands("project_search");
         assert_eq!(results.first().map(|c| c.id), Some("project_search"));
+    }
+
+    #[test]
+    fn markdown_preview_is_discoverable() {
+        let results = filter_commands("markdown preview");
+        assert_eq!(
+            results.first().map(|command| command.id),
+            Some("cycle_markdown_preview")
+        );
     }
 
     #[test]

@@ -12,10 +12,8 @@
 //! dual-language typescript crate), converted to `tree_sitter::Language` via
 //! `.into()`. The highlight query const is named `HIGHLIGHTS_QUERY` for most
 //! crates but `HIGHLIGHT_QUERY` (singular) for a few — the wrappers below
-//! normalise that. The markdown grammar (`tree-sitter-markdown 0.7`) is
-//! intentionally omitted: it targets tree-sitter 0.19 (ABI-incompatible with
-//! our 0.26 core) and does not bundle a highlight query. Markdown falls back
-//! to plain text for now; wiring it in is a follow-up.
+//! normalise that. Markdown uses a paired block/inline grammar; `Grammar`
+//! carries both languages and queries so `DocTree` can parse them together.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -33,6 +31,14 @@ pub struct Grammar {
     pub name: &'static str,
     pub language: Language,
     pub highlights_query: &'static str,
+    /// Optional second grammar used for Markdown inline content.
+    pub(crate) inline: Option<InlineGrammar>,
+}
+
+#[derive(Clone)]
+pub(crate) struct InlineGrammar {
+    pub language: Language,
+    pub highlights_query: &'static str,
 }
 
 // Each helper builds the Grammar lazily. Grammar construction is cheap
@@ -46,6 +52,7 @@ pub(crate) fn rust() -> Grammar {
         name: "rust",
         language: tree_sitter_rust::LANGUAGE.into(),
         highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
+        inline: None,
     }
 }
 
@@ -54,6 +61,7 @@ pub(crate) fn go() -> Grammar {
         name: "go",
         language: tree_sitter_go::LANGUAGE.into(),
         highlights_query: tree_sitter_go::HIGHLIGHTS_QUERY,
+        inline: None,
     }
 }
 
@@ -62,6 +70,7 @@ pub(crate) fn javascript() -> Grammar {
         name: "javascript",
         language: tree_sitter_javascript::LANGUAGE.into(),
         highlights_query: tree_sitter_javascript::HIGHLIGHT_QUERY,
+        inline: None,
     }
 }
 
@@ -70,6 +79,7 @@ pub(crate) fn typescript() -> Grammar {
         name: "typescript",
         language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         highlights_query: tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        inline: None,
     }
 }
 
@@ -80,6 +90,7 @@ pub(crate) fn tsx() -> Grammar {
         // TSX shares the TypeScript highlight query; the grammar's own
         // captures distinguish JSX contexts.
         highlights_query: tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        inline: None,
     }
 }
 
@@ -88,6 +99,7 @@ pub(crate) fn python() -> Grammar {
         name: "python",
         language: tree_sitter_python::LANGUAGE.into(),
         highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
+        inline: None,
     }
 }
 
@@ -96,6 +108,7 @@ pub(crate) fn c() -> Grammar {
         name: "c",
         language: tree_sitter_c::LANGUAGE.into(),
         highlights_query: tree_sitter_c::HIGHLIGHT_QUERY,
+        inline: None,
     }
 }
 
@@ -104,6 +117,19 @@ pub(crate) fn json() -> Grammar {
         name: "json",
         language: tree_sitter_json::LANGUAGE.into(),
         highlights_query: tree_sitter_json::HIGHLIGHTS_QUERY,
+        inline: None,
+    }
+}
+
+pub(crate) fn markdown() -> Grammar {
+    Grammar {
+        name: "markdown",
+        language: tree_sitter_md::LANGUAGE.into(),
+        highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+        inline: Some(InlineGrammar {
+            language: tree_sitter_md::INLINE_LANGUAGE.into(),
+            highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+        }),
     }
 }
 
@@ -144,6 +170,8 @@ pub fn grammar_for_extension(ext: &str) -> Option<Grammar> {
             ("hpp", c),
             ("json", json),
             ("jsonc", json),
+            ("md", markdown),
+            ("markdown", markdown),
         ]
     });
     entries
@@ -167,7 +195,9 @@ mod tests {
 
     #[test]
     fn known_extensions_resolve() {
-        for ext in ["rs", "go", "js", "ts", "tsx", "py", "c", "cpp", "json"] {
+        for ext in [
+            "rs", "go", "js", "ts", "tsx", "py", "c", "cpp", "json", "md", "markdown",
+        ] {
             let g = grammar_for_extension(ext);
             assert!(g.is_some(), "extension .{ext} should resolve to a grammar");
         }

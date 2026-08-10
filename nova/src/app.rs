@@ -1,6 +1,6 @@
 //! `EditorApp` — owns the `Buffer`, view state, and event handling.
 //!
-//! Mirrors `frontend_tui::App` so the event-handling logic stays in
+//! Mirrors `nova_tui::App` so the event-handling logic stays in
 //! lockstep across frontends (ADR 0005).
 
 use std::time::Instant;
@@ -11,6 +11,35 @@ use eframe::egui::Context;
 use eframe::App;
 
 use crate::theme::GuiTheme;
+
+/// How a Markdown document is presented in the GUI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MarkdownPreviewMode {
+    #[default]
+    Source,
+    Split,
+    Preview,
+}
+
+impl MarkdownPreviewMode {
+    pub const ALL: [Self; 3] = [Self::Source, Self::Split, Self::Preview];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Source => "Source",
+            Self::Split => "Split",
+            Self::Preview => "Preview",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Source => Self::Split,
+            Self::Split => Self::Preview,
+            Self::Preview => Self::Source,
+        }
+    }
+}
 
 /// The GUI editor application. eframe calls `update()` each frame.
 pub struct EditorApp {
@@ -58,10 +87,20 @@ pub struct EditorApp {
     pub project_tree_open: bool,
     /// Whether the minimap (zoomed-out document overview) is visible.
     pub minimap_open: bool,
+    /// GUI presentation mode used while the active document is Markdown.
+    pub markdown_preview_mode: MarkdownPreviewMode,
+    /// Cached parse tree for the rendered Markdown surface.
+    pub(crate) markdown_preview: crate::markdown::MarkdownPreview,
     /// The active document's project tree, including expansion state.
     pub project_tree: Option<core::ProjectTree>,
+    /// Root represented by `project_tree`, used to preserve expansion state
+    /// while switching between files in the same project.
+    pub project_tree_root: Option<std::path::PathBuf>,
     /// Index of the selected row in the visible (flattened) project tree.
     pub project_tree_selected: usize,
+    /// Set when selection changed programmatically and the GUI tree should
+    /// scroll the selected row into view on its next render.
+    pub project_tree_reveal_pending: bool,
     /// Whether the project tree sidebar currently has keyboard focus.
     pub project_tree_focused: bool,
     /// Project-wide search dialog state.
@@ -218,7 +257,7 @@ pub struct CmdLinkState {
 }
 
 /// The three choices offered when closing a dirty document. Mirrors
-/// `frontend_tui::app::CloseChoice` exactly.
+/// `nova_tui::app::CloseChoice` exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseChoice {
     Save,
@@ -284,8 +323,12 @@ impl EditorApp {
             syntax: SyntaxEngine::default_dark(),
             project_tree_open: config.project_tree_open.unwrap_or(true),
             minimap_open: false,
+            markdown_preview_mode: MarkdownPreviewMode::Source,
+            markdown_preview: crate::markdown::MarkdownPreview::default(),
             project_tree: None,
+            project_tree_root: None,
             project_tree_selected: 0,
+            project_tree_reveal_pending: false,
             project_tree_focused: false,
             project_search: ProjectSearch::default(),
             keybindings_help_open: false,
@@ -335,6 +378,21 @@ impl EditorApp {
         } else {
             "Caret animation: off".to_string()
         });
+    }
+
+    /// Set the Markdown presentation mode when the active document supports it.
+    pub fn set_markdown_preview_mode(&mut self, mode: MarkdownPreviewMode) {
+        if self.active_doc().language_id() != Some("markdown") {
+            self.status_message = Some("Markdown preview requires a .md or .markdown file.".into());
+            return;
+        }
+        self.markdown_preview_mode = mode;
+        self.status_message = Some(format!("Markdown view: {}", mode.label()));
+    }
+
+    /// Cycle source → split → preview for the active Markdown document.
+    pub fn cycle_markdown_preview(&mut self) {
+        self.set_markdown_preview_mode(self.markdown_preview_mode.next());
     }
 
     /// Index of the currently focused document.
@@ -767,7 +825,7 @@ impl EditorApp {
     }
 
     /// Intercept an egui event when a modal prompt is open. Mirrors
-    /// `frontend_tui::App::dispatch_modal_key` for parity.
+    /// `nova_tui::App::dispatch_modal_key` for parity.
     ///
     /// - close_confirm: Tab/Shift+Tab cycle the focused choice, Enter
     ///   confirms, `y` confirms as Discard, Esc/`n` cancel.
@@ -853,7 +911,7 @@ impl EditorApp {
     }
 
     /// Apply an `EditorEvent` to the buffer / app state. Same logic as
-    /// `frontend_tui::App::handle_event` so both frontends behave
+    /// `nova_tui::App::handle_event` so both frontends behave
     /// identically.
     pub fn handle_event(&mut self, event: EditorEvent) {
         // Check whether this event modifies the buffer text — used to
@@ -876,9 +934,18 @@ impl EditorApp {
                 | EditorEvent::Redo
                 | EditorEvent::ReplaceOne
                 | EditorEvent::ReplaceAll
+                | EditorEvent::ToggleComment
                 | EditorEvent::RenameApply { .. }
                 | EditorEvent::FormatDocument
         );
+        if modifies_buffer
+            && self.active_doc().language_id() == Some("markdown")
+            && self.markdown_preview_mode == MarkdownPreviewMode::Preview
+        {
+            self.status_message =
+                Some("Markdown preview is read-only; switch to Source or Split to edit.".into());
+            return;
+        }
         // Capture the cursor BEFORE the edit runs so we know which line
         // was touched. Used to invalidate only that line's cached syntax
         // segments (and those below) instead of nuking the whole cache.
@@ -1193,6 +1260,9 @@ impl EditorApp {
             EditorEvent::ToggleMinimap => {
                 self.minimap_open = !self.minimap_open;
             }
+            EditorEvent::CycleMarkdownPreview => {
+                self.cycle_markdown_preview();
+            }
             EditorEvent::CycleTheme => {
                 self.cycle_theme();
                 self.sync_config();
@@ -1446,6 +1516,7 @@ impl EditorApp {
                 self.status_message = Some("New document.".to_string());
                 self.sync_config();
                 self.sync_watcher();
+                self.sync_project_tree_to_active();
             }
             EditorEvent::CloseDoc => {
                 self.request_close_active();
@@ -1455,11 +1526,13 @@ impl EditorApp {
             EditorEvent::NextDoc => {
                 if !self.documents.is_empty() {
                     self.active = (self.active + 1) % self.documents.len();
+                    self.sync_project_tree_to_active();
                 }
             }
             EditorEvent::PrevDoc => {
                 if !self.documents.is_empty() {
                     self.active = (self.active + self.documents.len() - 1) % self.documents.len();
+                    self.sync_project_tree_to_active();
                 }
             }
             EditorEvent::OpenFile(maybe_path) => match maybe_path {
@@ -1807,7 +1880,7 @@ impl EditorApp {
     /// controls what the Tab key inserts (spaces vs tab character)
     /// and how many spaces per indent level. Per-document so opening
     /// a file with different conventions doesn't fight the user's
-    /// preferred mode. Mirrors `frontend_tui::App::set_indent_mode`.
+    /// preferred mode. Mirrors `nova_tui::App::set_indent_mode`.
     pub fn set_indent_mode(&mut self, use_spaces: bool, tab_width: usize) {
         let tab_width = tab_width.clamp(1, 16);
         self.active_doc_mut().view.use_spaces = use_spaces;
@@ -1836,7 +1909,7 @@ impl EditorApp {
 
     /// Toggle soft-wrap on the active document. The GUI frontend
     /// honours this in its renderer — long lines wrap on multiple
-    /// visual rows. Mirrors `frontend_tui::App::toggle_soft_wrap`.
+    /// visual rows. Mirrors `nova_tui::App::toggle_soft_wrap`.
     pub fn toggle_soft_wrap(&mut self) {
         let new_value = !self.active_doc().view.soft_wrap;
         self.active_doc_mut().view.soft_wrap = new_value;
@@ -1849,7 +1922,7 @@ impl EditorApp {
 
     /// Cycle to the next theme and invalidate the syntax cache
     /// for every open document so the new colors appear immediately.
-    /// Mirrors `frontend_tui::App::cycle_theme`.
+    /// Mirrors `nova_tui::App::cycle_theme`.
     pub fn cycle_theme(&mut self) {
         let name = self.syntax.cycle_theme().to_string();
         for doc in &mut self.documents {
@@ -2000,7 +2073,7 @@ impl EditorApp {
 
     /// Replace the currently-active find match with the replace query,
     /// then advance to the next match. Mirrors
-    /// `frontend_tui::App::replace_one`.
+    /// `nova_tui::App::replace_one`.
     pub fn replace_one(&mut self) {
         if self.search.query.is_empty() {
             self.status_message = Some("Replace: nothing to find.".to_string());
@@ -2049,7 +2122,7 @@ impl EditorApp {
     }
 
     /// Replace every find match with the replace query, as a single
-    /// undo entry. Mirrors `frontend_tui::App::replace_all`.
+    /// undo entry. Mirrors `nova_tui::App::replace_all`.
     pub fn replace_all(&mut self) {
         if self.search.query.is_empty() {
             self.status_message = Some("Replace all: nothing to find.".to_string());
@@ -2096,7 +2169,7 @@ impl EditorApp {
     }
 
     /// Compute the byte position a movement should land on. Identical
-    /// to `frontend_tui::App::compute_target`.
+    /// to `nova_tui::App::compute_target`.
     #[allow(dead_code)]
     fn compute_target(&self, movement: Movement) -> usize {
         let pos = self.active_buffer().cursor();
@@ -2407,6 +2480,7 @@ impl EditorApp {
                 choice: CloseChoice::Save,
             });
             self.status_message = None;
+            self.sync_project_tree_to_active();
             return;
         }
         let old_active = self.active;
@@ -2421,6 +2495,7 @@ impl EditorApp {
                 self.active = old_active;
             }
         }
+        self.sync_project_tree_to_active();
     }
 
     /// Cycle the focused choice on the close-confirm prompt. `delta`
@@ -2482,6 +2557,7 @@ impl EditorApp {
             self.active = self.documents.len() - 1;
         }
         self.status_message = Some("Closed document.".to_string());
+        self.sync_project_tree_to_active();
     }
 
     /// Load `path` into the active document. Existing files replace
@@ -2513,6 +2589,7 @@ impl EditorApp {
         ));
         self.sync_watcher();
         self.lsp_open_active();
+        self.sync_project_tree_to_active();
     }
 
     /// Open `path` in a document, switching to an existing document
@@ -2527,6 +2604,7 @@ impl EditorApp {
                     .and_then(|n| n.to_str())
                     .unwrap_or("<path>")
             ));
+            self.sync_project_tree_to_active();
             return;
         }
         // Open as a new document at the end of the list.
@@ -2692,6 +2770,7 @@ impl EditorApp {
                 .position(|d| d.uri().as_ref() == Some(&target_uri))
             {
                 self.active = idx;
+                self.sync_project_tree_to_active();
                 self.set_cursor_lsp_position(target_pos);
             } else {
                 self.open_or_switch_to_path(&path);
@@ -2730,13 +2809,50 @@ impl EditorApp {
     pub fn refresh_project_tree(&mut self) {
         if let Some(project) = self.active_doc().project.clone() {
             self.project_tree = project.tree(10_000).map(core::ProjectTree::new);
-            self.project_tree_selected = self
-                .project_tree_selected
-                .min(self.project_tree_rows().len().saturating_sub(1));
+            self.project_tree_root = Some(project.root);
+            self.project_tree_selected = 0;
+            self.project_tree_reveal_pending = false;
+            self.reveal_active_file_in_project_tree();
         } else {
             self.project_tree = None;
+            self.project_tree_root = None;
             self.project_tree_selected = 0;
+            self.project_tree_reveal_pending = false;
         }
+        self.prev_active = self.active;
+    }
+
+    /// Reveal the active file without rebuilding when the project is unchanged.
+    pub fn sync_project_tree_to_active(&mut self) {
+        let active_root = self.active_doc().project.as_ref().map(|p| p.root.clone());
+        if active_root != self.project_tree_root || !self.reveal_active_file_in_project_tree() {
+            self.refresh_project_tree();
+        } else {
+            self.prev_active = self.active;
+        }
+    }
+
+    /// Expand and select the active document in the current project tree.
+    pub fn reveal_active_file_in_project_tree(&mut self) -> bool {
+        let Some(project) = self.active_doc().project.clone() else {
+            return false;
+        };
+        let Some(path) = self.active_doc().path_buf() else {
+            return false;
+        };
+        let Ok(rel_path) = path.strip_prefix(&project.root) else {
+            return false;
+        };
+        let Some(selected) = self
+            .project_tree
+            .as_mut()
+            .and_then(|tree| tree.reveal(rel_path))
+        else {
+            return false;
+        };
+        self.project_tree_selected = selected;
+        self.project_tree_reveal_pending = true;
+        true
     }
 
     /// Toggle the project-tree sidebar and refresh its contents.
@@ -3317,7 +3433,7 @@ impl App for EditorApp {
 
         // 2. Refresh the project tree when switching documents.
         if self.project_tree_open && self.active != self.prev_active {
-            self.refresh_project_tree();
+            self.sync_project_tree_to_active();
         }
 
         // 3. Auto-save dirty buffers when idle, and immediately on focus
@@ -3516,6 +3632,55 @@ mod tests {
         EditorApp::new(buf)
     }
 
+    fn markdown_app(content: &str) -> EditorApp {
+        let path = std::env::temp_dir().join("nova-preview-test.md");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
+            content.as_bytes().to_vec(),
+            path,
+        ));
+        EditorApp::new(buf)
+    }
+
+    #[test]
+    fn markdown_preview_cycles_through_all_views() {
+        let mut app = markdown_app("# Hello");
+        assert_eq!(app.markdown_preview_mode, MarkdownPreviewMode::Source);
+
+        app.handle_event(EditorEvent::CycleMarkdownPreview);
+        assert_eq!(app.markdown_preview_mode, MarkdownPreviewMode::Split);
+        app.handle_event(EditorEvent::CycleMarkdownPreview);
+        assert_eq!(app.markdown_preview_mode, MarkdownPreviewMode::Preview);
+        app.handle_event(EditorEvent::CycleMarkdownPreview);
+        assert_eq!(app.markdown_preview_mode, MarkdownPreviewMode::Source);
+    }
+
+    #[test]
+    fn markdown_preview_rejects_non_markdown_documents() {
+        let mut app = app_with("plain text");
+        app.handle_event(EditorEvent::CycleMarkdownPreview);
+        assert_eq!(app.markdown_preview_mode, MarkdownPreviewMode::Source);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Markdown preview requires a .md or .markdown file.")
+        );
+    }
+
+    #[test]
+    fn rendered_preview_is_read_only_but_split_view_is_editable() {
+        let mut app = markdown_app("before");
+        app.set_markdown_preview_mode(MarkdownPreviewMode::Preview);
+        app.handle_event(EditorEvent::Insert('!'));
+        assert_eq!(app.active_doc().text(), "before");
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Markdown preview is read-only; switch to Source or Split to edit.")
+        );
+
+        app.set_markdown_preview_mode(MarkdownPreviewMode::Split);
+        app.handle_event(EditorEvent::Insert('!'));
+        assert_eq!(app.active_doc().text(), "!before");
+    }
+
     fn arrow_down_event() -> eframe::egui::Event {
         eframe::egui::Event::Key {
             key: eframe::egui::Key::ArrowDown,
@@ -3648,7 +3813,7 @@ mod tests {
     #[test]
     fn save_clears_dirty_when_path_set() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_gui_save_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_gui_save_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
@@ -4214,7 +4379,7 @@ mod tests {
     fn confirm_close_choice_save_saves_then_closes() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_gui_close_save_{}.txt",
+            "nova_gui_close_save_{}.txt",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
@@ -4259,7 +4424,7 @@ mod tests {
     fn open_file_event_with_some_path_loads_directly() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_gui_open_some_{}.txt",
+            "nova_gui_open_some_{}.txt",
             std::process::id()
         ));
         std::fs::write(&path, b"hi").unwrap();
@@ -4274,7 +4439,7 @@ mod tests {
     fn open_file_with_nonexistent_path_creates_empty_buffer_with_path() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_gui_open_new_{}.txt",
+            "nova_gui_open_new_{}.txt",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
@@ -4428,7 +4593,7 @@ mod tests {
     #[test]
     fn project_tree_shows_by_default_and_toggles() {
         let dir =
-            std::env::temp_dir().join(format!("the_editor_gui_proj_tree_{}", std::process::id()));
+            std::env::temp_dir().join(format!("nova_gui_proj_tree_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -4458,7 +4623,7 @@ mod tests {
     #[test]
     fn project_tree_collapses_and_opens_file() {
         let dir =
-            std::env::temp_dir().join(format!("the_editor_gui_proj_open_{}", std::process::id()));
+            std::env::temp_dir().join(format!("nova_gui_proj_open_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -4503,6 +4668,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn opening_file_reveals_it_in_project_tree() {
+        let dir =
+            std::env::temp_dir().join(format!("nova_gui_proj_reveal_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/nested")).unwrap();
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("other/keep_collapsed.rs"), "").unwrap();
+        let target = dir.join("src/nested/lib.rs");
+        std::fs::write(&target, "pub fn lib() {}").unwrap();
+
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
+            b"fn main() {}".to_vec(),
+            dir.join("main.rs"),
+        ));
+        let mut app = EditorApp::new(buf);
+        app.project_tree
+            .as_mut()
+            .unwrap()
+            .toggle(std::path::Path::new("src"));
+        app.project_tree
+            .as_mut()
+            .unwrap()
+            .toggle(std::path::Path::new("other"));
+
+        app.open_or_switch_to_path(&target);
+
+        let selected = app.project_tree_rows()[app.project_tree_selected].1;
+        assert_eq!(
+            selected.rel_path(),
+            std::path::Path::new("src/nested/lib.rs")
+        );
+        assert!(app.project_tree_reveal_pending);
+        assert!(app
+            .project_tree
+            .as_ref()
+            .unwrap()
+            .expanded
+            .contains(std::path::Path::new("src/nested")));
+        assert!(!app
+            .project_tree
+            .as_ref()
+            .unwrap()
+            .expanded
+            .contains(std::path::Path::new("other")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ----- auto-save -----
 
     fn app_with_path(content: &str, path: std::path::PathBuf) -> EditorApp {
@@ -4516,7 +4732,7 @@ mod tests {
     #[test]
     fn auto_save_writes_idle_dirty_buffer() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_autosave_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_autosave_{}.txt", std::process::id()));
         let mut app = app_with_path("hello", path.clone());
         app.handle_event(EditorEvent::Insert('!'));
         assert!(app.active_doc().is_dirty());
@@ -4542,7 +4758,7 @@ mod tests {
     fn auto_save_respects_config_toggle() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_autosave_off_{}.txt",
+            "nova_autosave_off_{}.txt",
             std::process::id()
         ));
         let mut app = app_with_path("hello", path.clone());
@@ -4559,7 +4775,7 @@ mod tests {
     #[test]
     fn reload_document_at_path_loads_new_content() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_reload_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_reload_{}.txt", std::process::id()));
         std::fs::write(&path, "original").unwrap();
 
         let mut app = app_with_path("original", path.clone());
@@ -4576,7 +4792,7 @@ mod tests {
     fn reload_file_event_reloads_active_document() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_reload_event_{}.txt",
+            "nova_reload_event_{}.txt",
             std::process::id()
         ));
         std::fs::write(&path, "v1").unwrap();
@@ -4697,7 +4913,7 @@ mod tests {
         contents: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "the_editor_gui_proj_{}_{}",
+            "nova_gui_proj_{}_{}",
             std::process::id(),
             name
         ));
@@ -4769,7 +4985,7 @@ mod tests {
 
     fn temp_project_for_fuzzy(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "the_editor_gui_fuzzy_{}_{}",
+            "nova_gui_fuzzy_{}_{}",
             std::process::id(),
             name
         ));
@@ -4894,7 +5110,7 @@ mod tests {
         content: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "the_editor_gui_git_{}_{}",
+            "nova_gui_git_{}_{}",
             std::process::id(),
             name
         ));

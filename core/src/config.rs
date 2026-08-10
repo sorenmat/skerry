@@ -1,8 +1,9 @@
 //! Persistent user configuration and session state.
 //!
-//! The config file lives at `~/.config/the_editor/config.json` (or the
+//! The config file lives at `~/.config/nova/config.json` (or the
 //! platform equivalent) and stores settings and the list of recently
-//! open files for session restore.
+//! open files for session restore. When that file does not exist, Nova
+//! reads the pre-rename config location once for upgrade compatibility.
 
 use std::collections::HashMap;
 use std::fs;
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::ViewState;
 
 const APP_CONFIG_DIR: &str = "nova";
+const LEGACY_APP_CONFIG_DIR: &str = "the_editor";
 const CONFIG_FILE: &str = "config.json";
 const MAX_RECENT_FILES: usize = 20;
 
@@ -135,13 +137,12 @@ impl Config {
     /// Load the config from disk, returning a default config if the file
     /// does not exist or cannot be parsed.
     pub fn load() -> Self {
-        match Self::config_path() {
-            Some(path) if path.exists() => fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default(),
-            _ => Self::default(),
-        }
+        let Some(base_dir) = dirs::config_dir() else {
+            return Self::default();
+        };
+        let current = base_dir.join(APP_CONFIG_DIR).join(CONFIG_FILE);
+        let legacy = base_dir.join(LEGACY_APP_CONFIG_DIR).join(CONFIG_FILE);
+        Self::load_from_paths(&current, &legacy)
     }
 
     /// Save the config to disk. Errors are ignored — a missing config
@@ -164,6 +165,21 @@ impl Config {
     /// Full path to the config file, if it can be determined.
     pub fn config_path() -> Option<PathBuf> {
         Self::config_dir().map(|d| d.join(CONFIG_FILE))
+    }
+
+    fn load_from_paths(current: &Path, legacy: &Path) -> Self {
+        let path = if current.exists() {
+            current
+        } else if legacy.exists() {
+            legacy
+        } else {
+            return Self::default();
+        };
+
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|contents| serde_json::from_str(&contents).ok())
+            .unwrap_or_default()
     }
 
     /// Add a file to the top of the recent-files list, deduplicating and
@@ -259,6 +275,34 @@ mod tests {
 
         let loaded: Config = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn load_falls_back_to_legacy_config_when_current_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("nova/config.json");
+        let legacy = dir.path().join("legacy/config.json");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, r#"{"theme":"legacy-theme"}"#).unwrap();
+
+        let loaded = Config::load_from_paths(&current, &legacy);
+
+        assert_eq!(loaded.theme.as_deref(), Some("legacy-theme"));
+    }
+
+    #[test]
+    fn current_config_takes_precedence_over_legacy_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("nova/config.json");
+        let legacy = dir.path().join("legacy/config.json");
+        fs::create_dir_all(current.parent().unwrap()).unwrap();
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&current, r#"{"theme":"nova-theme"}"#).unwrap();
+        fs::write(&legacy, r#"{"theme":"legacy-theme"}"#).unwrap();
+
+        let loaded = Config::load_from_paths(&current, &legacy);
+
+        assert_eq!(loaded.theme.as_deref(), Some("nova-theme"));
     }
 
     #[test]

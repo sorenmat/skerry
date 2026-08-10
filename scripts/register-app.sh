@@ -10,7 +10,7 @@ set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$PROJECT_ROOT/target/Nova.app"
-BUNDLE_ID="com.smo.the-editor"
+BUNDLE_ID="com.smo.nova"
 EXTENSIONS="rs go json"
 
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"

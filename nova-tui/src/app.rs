@@ -39,6 +39,9 @@ pub struct App {
     pub project_tree_open: bool,
     /// The active document's project tree, including expansion state.
     pub project_tree: Option<core::ProjectTree>,
+    /// Root represented by `project_tree`, used to preserve expansion state
+    /// while switching between files in the same project.
+    pub project_tree_root: Option<std::path::PathBuf>,
     /// Index of the selected row in the visible (flattened) project tree.
     pub project_tree_selected: usize,
     /// Last rendered width of the project-tree sidebar in terminal
@@ -233,6 +236,7 @@ impl App {
             syntax: SyntaxEngine::default_dark(),
             project_tree_open: config.project_tree_open.unwrap_or(true),
             project_tree: None,
+            project_tree_root: None,
             project_tree_selected: 0,
             tree_width: 0,
             project_search: ProjectSearch::default(),
@@ -335,6 +339,7 @@ impl App {
                 .position(|d| d.uri().as_ref() == Some(&target_uri))
             {
                 self.active = idx;
+                self.sync_project_tree_to_active();
                 self.set_cursor_lsp_position(target_pos);
             } else {
                 self.open_or_switch_to_path(&path);
@@ -1314,6 +1319,10 @@ impl App {
             EditorEvent::ToggleMinimap => {
                 // Minimap is GUI-only; TUI ignores it.
             }
+            EditorEvent::CycleMarkdownPreview => {
+                self.status_message =
+                    Some("Markdown preview is available in the Nova GUI.".to_string());
+            }
             EditorEvent::CycleTheme => {
                 self.cycle_theme();
                 self.sync_config();
@@ -1504,6 +1513,7 @@ impl App {
                 self.status_message = Some("New document.".to_string());
                 self.sync_config();
                 self.sync_watcher();
+                self.sync_project_tree_to_active();
             }
             EditorEvent::CloseDoc => {
                 self.request_close_active();
@@ -1513,11 +1523,13 @@ impl App {
             EditorEvent::NextDoc => {
                 if !self.documents.is_empty() {
                     self.active = (self.active + 1) % self.documents.len();
+                    self.sync_project_tree_to_active();
                 }
             }
             EditorEvent::PrevDoc => {
                 if !self.documents.is_empty() {
                     self.active = (self.active + self.documents.len() - 1) % self.documents.len();
+                    self.sync_project_tree_to_active();
                 }
             }
             EditorEvent::OpenFile(maybe_path) => match maybe_path {
@@ -2136,7 +2148,7 @@ impl App {
 
     /// Cycle to the next theme and invalidate the syntax cache
     /// for every open document so the new colors appear immediately.
-    /// Mirrors `frontend_gui::EditorApp::cycle_theme`.
+    /// Mirrors `nova::EditorApp::cycle_theme`.
     pub fn cycle_theme(&mut self) {
         let name = self.syntax.cycle_theme().to_string();
         for doc in &mut self.documents {
@@ -2698,6 +2710,7 @@ impl App {
             self.active = self.documents.len() - 1;
         }
         self.status_message = Some("Closed document.".to_string());
+        self.sync_project_tree_to_active();
     }
 
     /// Load `path` into the active document. If the file exists, its
@@ -2734,6 +2747,7 @@ impl App {
         ));
         self.sync_watcher();
         self.lsp_open_active();
+        self.sync_project_tree_to_active();
     }
 
     /// Open `path` in a document, switching to an existing document if
@@ -2747,6 +2761,7 @@ impl App {
                     .and_then(|n| n.to_str())
                     .unwrap_or("<path>")
             ));
+            self.sync_project_tree_to_active();
             return;
         }
         self.documents.push(Document::new_with_config(
@@ -2772,13 +2787,44 @@ impl App {
     pub fn refresh_project_tree(&mut self) {
         if let Some(project) = self.active_doc().project.clone() {
             self.project_tree = project.tree(10_000).map(core::ProjectTree::new);
-            self.project_tree_selected = self
-                .project_tree_selected
-                .min(self.project_tree_rows().len().saturating_sub(1));
+            self.project_tree_root = Some(project.root);
+            self.project_tree_selected = 0;
+            self.reveal_active_file_in_project_tree();
         } else {
             self.project_tree = None;
+            self.project_tree_root = None;
             self.project_tree_selected = 0;
         }
+    }
+
+    /// Reveal the active file without rebuilding when the project is unchanged.
+    pub fn sync_project_tree_to_active(&mut self) {
+        let active_root = self.active_doc().project.as_ref().map(|p| p.root.clone());
+        if active_root != self.project_tree_root || !self.reveal_active_file_in_project_tree() {
+            self.refresh_project_tree();
+        }
+    }
+
+    /// Expand and select the active document in the current project tree.
+    pub fn reveal_active_file_in_project_tree(&mut self) -> bool {
+        let Some(project) = self.active_doc().project.clone() else {
+            return false;
+        };
+        let Some(path) = self.active_doc().path_buf() else {
+            return false;
+        };
+        let Ok(rel_path) = path.strip_prefix(&project.root) else {
+            return false;
+        };
+        let Some(selected) = self
+            .project_tree
+            .as_mut()
+            .and_then(|tree| tree.reveal(rel_path))
+        else {
+            return false;
+        };
+        self.project_tree_selected = selected;
+        true
     }
 
     /// Toggle the project-tree sidebar and refresh its contents.
@@ -3451,7 +3497,7 @@ mod tests {
     #[test]
     fn save_clears_dirty_when_path_set() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_app_save_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_app_save_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
@@ -4355,7 +4401,7 @@ mod tests {
         // is at cursor position (default 0), so the '!' lands at the
         // start: "!hello".
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_close_save_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_close_save_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
@@ -4412,7 +4458,7 @@ mod tests {
     fn open_file_event_with_some_path_loads_directly() {
         // OpenFile(Some(p)) should bypass the native picker and load directly.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_open_some_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_open_some_{}.txt", std::process::id()));
         std::fs::write(&path, b"hi").unwrap();
 
         let mut app = app_with("buffer");
@@ -4426,7 +4472,7 @@ mod tests {
     #[test]
     fn open_file_with_nonexistent_path_creates_empty_buffer_with_path() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("the_editor_open_new_{}.txt", std::process::id()));
+        let path = dir.join(format!("nova_open_new_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let mut app = app_with("buffer");
@@ -4462,7 +4508,7 @@ mod tests {
     fn close_confirm_dispatch_enter_confirms_save() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_dispatch_save_{}.txt",
+            "nova_dispatch_save_{}.txt",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
@@ -5002,7 +5048,7 @@ mod tests {
     #[test]
     fn project_tree_shows_by_default_and_toggles() {
         let dir =
-            std::env::temp_dir().join(format!("the_editor_tui_proj_tree_{}", std::process::id()));
+            std::env::temp_dir().join(format!("nova_tui_proj_tree_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
@@ -5031,7 +5077,7 @@ mod tests {
     #[test]
     fn project_tree_collapses_and_opens_file() {
         let dir =
-            std::env::temp_dir().join(format!("the_editor_tui_proj_open_{}", std::process::id()));
+            std::env::temp_dir().join(format!("nova_tui_proj_open_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
@@ -5075,6 +5121,94 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn opening_file_reveals_it_in_project_tree() {
+        let dir = std::env::temp_dir().join(format!(
+            "nova_tui_proj_reveal_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/nested")).unwrap();
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("other/keep_collapsed.rs"), "").unwrap();
+        let target = dir.join("src/nested/lib.rs");
+        std::fs::write(&target, "pub fn lib() {}").unwrap();
+
+        let buf: Box<dyn Buffer> = Box::new(core::PieceTableBuffer::from_bytes_with_path(
+            b"fn main() {}".to_vec(),
+            dir.join("main.rs"),
+        ));
+        let mut app = App::new(buf);
+        app.project_tree
+            .as_mut()
+            .unwrap()
+            .toggle(std::path::Path::new("src"));
+        app.project_tree
+            .as_mut()
+            .unwrap()
+            .toggle(std::path::Path::new("other"));
+
+        app.open_or_switch_to_path(&target);
+
+        let selected = app.project_tree_rows()[app.project_tree_selected].1;
+        assert_eq!(
+            selected.rel_path(),
+            std::path::Path::new("src/nested/lib.rs")
+        );
+        assert!(app
+            .project_tree
+            .as_ref()
+            .unwrap()
+            .expanded
+            .contains(std::path::Path::new("src/nested")));
+        assert!(!app
+            .project_tree
+            .as_ref()
+            .unwrap()
+            .expanded
+            .contains(std::path::Path::new("other")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_document_synchronizes_tree_to_remaining_project() {
+        let base = std::env::temp_dir().join(format!(
+            "nova_tui_close_tree_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let first = base.join("first");
+        let second = base.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(second.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(first.join("first.rs"), "").unwrap();
+        std::fs::write(second.join("second.rs"), "").unwrap();
+        let documents = vec![
+            Document::new(Box::new(core::PieceTableBuffer::from_bytes_with_path(
+                Vec::new(),
+                first.join("first.rs"),
+            ))),
+            Document::new(Box::new(core::PieceTableBuffer::from_bytes_with_path(
+                Vec::new(),
+                second.join("second.rs"),
+            ))),
+        ];
+        let mut app = App::new_with_documents(documents, core::Config::default());
+        app.handle_event(EditorEvent::NextDoc);
+
+        app.handle_event(EditorEvent::CloseDoc);
+
+        assert_eq!(app.project_tree_root.as_deref(), Some(first.as_path()));
+        let selected = app.project_tree_rows()[app.project_tree_selected].1;
+        assert_eq!(selected.rel_path(), std::path::Path::new("first.rs"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     // ----- auto-save -----
 
     fn app_with_path(content: &str, path: std::path::PathBuf) -> App {
@@ -5089,7 +5223,7 @@ mod tests {
     fn auto_save_writes_idle_dirty_buffer() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "the_editor_tui_autosave_{}.txt",
+            "nova_tui_autosave_{}.txt",
             std::process::id()
         ));
         let mut app = app_with_path("hello", path.clone());
@@ -5119,7 +5253,7 @@ mod tests {
         contents: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "the_editor_tui_proj_{}_{}",
+            "nova_tui_proj_{}_{}",
             std::process::id(),
             name
         ));
@@ -5191,7 +5325,7 @@ mod tests {
 
     fn temp_project_for_fuzzy_tui(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "the_editor_tui_fuzzy_{}_{}",
+            "nova_tui_fuzzy_{}_{}",
             std::process::id(),
             name
         ));
@@ -5284,7 +5418,7 @@ mod tests {
         content: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "the_editor_tui_git_{}_{}",
+            "nova_tui_git_{}_{}",
             std::process::id(),
             name
         ));

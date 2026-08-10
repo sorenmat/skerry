@@ -4,12 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GUI frontend for the_editor (egui + eframe, swappable renderer)."
+description = "GUI frontend for Nova (egui + eframe, swappable renderer)."
 
 [dependencies]
 core = { path = "../core" }
 egui = "0.30"
 eframe = "0.30"
+pulldown-cmark = { version = "0.12.2", default-features = false }
 rfd = "0.15"
 # Transitive dependencies exposed by core's LSP API.
 lsp-types = "0.95"

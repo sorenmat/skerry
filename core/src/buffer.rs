@@ -63,6 +63,11 @@ pub trait Buffer {
     /// True if there are unsaved edits.
     fn is_dirty(&self) -> bool;
 
+    /// Monotonic counter incremented whenever the buffer text changes.
+    /// Renderers can use this to invalidate derived views without
+    /// reconstructing the full document on every frame.
+    fn revision(&self) -> u64;
+
     // === Geometry ===
 
     /// Total byte length of the buffer.

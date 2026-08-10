@@ -74,7 +74,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     if let Some(area) = tree_area {
         app.tree_width = area.width;
-        let tree_lines = render_project_tree(app, area.width);
+        let tree_lines = render_project_tree(app, area.width, area.height);
         f.render_widget(Paragraph::new(tree_lines), area);
     } else {
         app.tree_width = 0;
@@ -694,7 +694,7 @@ fn render_replace_bar(app: &App) -> Line<'static> {
 
 /// Render the project-tree sidebar as a collapsible tree. The selected
 /// row is highlighted and the list is truncated to the available height.
-fn render_project_tree(app: &App, width: u16) -> Vec<Line<'static>> {
+fn render_project_tree(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let title = app
         .active_doc()
@@ -722,7 +722,14 @@ fn render_project_tree(app: &App, width: u16) -> Vec<Line<'static>> {
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
 
-    for (i, (depth, node)) in rows.iter().enumerate() {
+    let visible_rows = usize::from(height.saturating_sub(2)).max(1);
+    let max_start = rows.len().saturating_sub(visible_rows);
+    let start = app
+        .project_tree_selected
+        .saturating_sub(visible_rows / 2)
+        .min(max_start);
+
+    for (i, (depth, node)) in rows.iter().enumerate().skip(start).take(visible_rows) {
         let is_dir = node.is_dir();
         let expanded = app
             .project_tree
@@ -1074,15 +1081,17 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             Some(s) => s,
             None => {
                 let syntax_theme = syntax_engine.ts_theme();
-                let per_line = app.documents[app.active]
+                let (per_line, complete) = app.documents[app.active]
                     .highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
                 let segs = per_line.into_iter().next().unwrap_or_default();
                 let doc = &mut app.documents[app.active];
-                if doc.syntax.dirty {
-                    doc.syntax.lines.clear();
-                    doc.syntax.dirty = false;
+                if complete {
+                    if doc.syntax.dirty {
+                        doc.syntax.lines.clear();
+                        doc.syntax.dirty = false;
+                    }
+                    doc.syntax.lines.insert(line_idx, segs.clone());
                 }
-                doc.syntax.lines.insert(line_idx, segs.clone());
                 segs
             }
         };

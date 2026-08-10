@@ -20,7 +20,7 @@ use core::{
 };
 use eframe::egui;
 
-use crate::app::{CloseChoice, EditorApp};
+use crate::app::{CloseChoice, EditorApp, MarkdownPreviewMode};
 use crate::theme::GuiTheme;
 
 const FONT_SIZE: f32 = 14.0;
@@ -254,6 +254,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
 
             let mut toggle_tree = false;
             let mut toggle_caret_animation = false;
+            let mut selected_markdown_mode = None;
 
             ui.horizontal(|ui| {
                 ui.label(
@@ -262,6 +263,27 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                         .color(theme.status_text),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if app.active_doc().language_id() == Some("markdown") {
+                        let markdown_combo = egui::ComboBox::from_id_salt("markdown_view_selector")
+                            .selected_text(format!(
+                                "Markdown: {}",
+                                app.markdown_preview_mode.label()
+                            ))
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                for mode in MarkdownPreviewMode::ALL {
+                                    let response = ui.selectable_label(
+                                        app.markdown_preview_mode == mode,
+                                        mode.label(),
+                                    );
+                                    hand_cursor(&response, ui.ctx());
+                                    if response.clicked() {
+                                        selected_markdown_mode = Some(mode);
+                                    }
+                                }
+                            });
+                        hand_cursor(&markdown_combo.response, ui.ctx());
+                    }
                     let syntax_combo = egui::ComboBox::from_id_salt("syntax_theme_selector")
                         .selected_text(&current_syntax_theme)
                         .width(160.0)
@@ -343,6 +365,9 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
             if toggle_caret_animation {
                 app.toggle_caret_animation();
                 app.sync_config();
+            }
+            if let Some(mode) = selected_markdown_mode {
+                app.set_markdown_preview_mode(mode);
             }
 
             if let Some(name) = selected_syntax_theme {
@@ -599,15 +624,52 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
         render_project_tree_sidebar(ctx, app);
     }
 
-    // Minimap sidebar. Lives on the right, toggleable.
-    if app.minimap_open {
+    let markdown_mode = if app.active_doc().language_id() == Some("markdown") {
+        app.markdown_preview_mode
+    } else {
+        MarkdownPreviewMode::Source
+    };
+    let markdown_document_id = app.active_doc().id();
+    if markdown_mode != MarkdownPreviewMode::Source {
+        let preview_key = (markdown_document_id, app.active_buffer().revision());
+        if app.markdown_preview.needs_refresh(preview_key) {
+            let markdown = app.active_doc().text();
+            app.markdown_preview.refresh(preview_key, &markdown);
+        }
+    }
+
+    // Minimap sidebar. Lives on the right, toggleable. It is hidden when
+    // source text itself is hidden.
+    if app.minimap_open && markdown_mode != MarkdownPreviewMode::Preview {
         render_minimap(ctx, app);
+    }
+
+    if markdown_mode == MarkdownPreviewMode::Split {
+        egui::SidePanel::right("markdown_preview")
+            .resizable(true)
+            .default_width(ctx.available_rect().width() * 0.5)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.editor_bg)
+                    .inner_margin(egui::Margin::symmetric(14.0, 0.0))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.separator)),
+            )
+            .show(ctx, |ui| {
+                app.markdown_preview
+                    .render(ui, markdown_document_id, &theme)
+            });
     }
 
     egui::CentralPanel::default()
         .frame(egui::Frame::none().fill(theme.editor_bg))
-        .show(ctx, |ui| {
-            render_text(ui, app, &theme);
+        .show(ctx, |ui| match markdown_mode {
+            MarkdownPreviewMode::Preview => {
+                app.markdown_preview
+                    .render(ui, markdown_document_id, &theme);
+            }
+            MarkdownPreviewMode::Source | MarkdownPreviewMode::Split => {
+                render_text(ui, app, &theme);
+            }
         });
 
     // Modal prompts render on top. Close-confirm is a centred dialog;
@@ -682,58 +744,90 @@ fn render_project_tree_sidebar(ctx: &egui::Context, app: &mut EditorApp) {
                 return;
             }
 
-            egui::ScrollArea::vertical()
+            // SelectableLabel is at least `interact_size.y` tall. This must
+            // match the height passed to `show_rows` or virtualization and
+            // programmatic scrolling disagree about every row's position.
+            let row_height = ui.spacing().interact_size.y;
+            let mut scroll_area = egui::ScrollArea::vertical()
                 .id_salt("project_tree_scroll")
-                .auto_shrink([false; 2])
-                .show_rows(
-                    ui,
-                    ui.text_style_height(&egui::TextStyle::Body),
-                    rows.len(),
-                    |ui, row_range| {
-                        for i in row_range {
-                            let (depth, node) = &rows[i];
-                            let is_selected = i == selected;
-                            let is_dir = node.is_dir();
-                            let expanded = app
-                                .project_tree
-                                .as_ref()
-                                .map(|t| t.expanded.contains(node.rel_path()))
-                                .unwrap_or(false);
+                .auto_shrink([false; 2]);
+            if app.project_tree_reveal_pending {
+                let centered = project_tree_reveal_offset(
+                    selected,
+                    row_height,
+                    ui.spacing().item_spacing.y,
+                    ui.available_height(),
+                );
+                scroll_area = scroll_area.vertical_scroll_offset(centered);
+                app.project_tree_reveal_pending = false;
+            }
+            scroll_area.show_rows(
+                ui,
+                row_height,
+                rows.len(),
+                |ui, row_range| {
+                    // Virtualized rows must stay at the fixed height supplied
+                    // to `show_rows`, even for deeply nested or long names.
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    for i in row_range {
+                        let (depth, node) = &rows[i];
+                        let is_selected = i == selected;
+                        let is_dir = node.is_dir();
+                        let expanded = app
+                            .project_tree
+                            .as_ref()
+                            .map(|t| t.expanded.contains(node.rel_path()))
+                            .unwrap_or(false);
 
-                            let indent = "  ".repeat(*depth);
-                            let icon = if is_dir {
-                                if expanded {
-                                    "📂"
-                                } else {
-                                    "📁"
-                                }
+                        let indent = "  ".repeat(*depth);
+                        let icon = if is_dir {
+                            if expanded {
+                                "📂"
                             } else {
-                                "  "
-                            };
-                            let label = format!("{indent}{icon} {}", node.name());
-                            let text = egui::RichText::new(label).monospace();
-                            let response = if is_selected {
-                                ui.selectable_label(true, text.strong())
-                            } else {
-                                ui.selectable_label(false, text)
-                            };
-                            hand_cursor(&response, ui.ctx());
-                            if response.clicked() {
-                                app.project_tree_focused = true;
-                                app.project_tree_selected = i;
-                                if is_dir {
-                                    if let Some(tree) = app.project_tree.as_mut() {
-                                        tree.toggle(node.rel_path());
-                                    }
-                                } else if let Some(project) = project_root.as_ref() {
-                                    let path = project.root.join(node.rel_path());
-                                    app.open_or_switch_to_path(&path);
+                                "📁"
+                            }
+                        } else {
+                            "  "
+                        };
+                        let label = format!("{indent}{icon} {}", node.name());
+                        let text = egui::RichText::new(label).monospace();
+                        let response = if is_selected {
+                            ui.selectable_label(true, text.strong())
+                        } else {
+                            ui.selectable_label(false, text)
+                        };
+                        hand_cursor(&response, ui.ctx());
+                        if response.clicked() {
+                            app.project_tree_focused = true;
+                            app.project_tree_selected = i;
+                            if is_dir {
+                                if let Some(tree) = app.project_tree.as_mut() {
+                                    tree.toggle(node.rel_path());
                                 }
+                            } else if let Some(project) = project_root.as_ref() {
+                                let path = project.root.join(node.rel_path());
+                                app.open_or_switch_to_path(&path);
                             }
                         }
-                    },
-                );
+                    }
+                },
+            );
         });
+}
+
+/// Scroll offset that centers a row in egui's virtualized project tree.
+/// `ScrollArea::show_rows` includes item spacing in every row stride, so the
+/// same spacing must be included here or the target drifts off-screen in long
+/// trees.
+fn project_tree_reveal_offset(
+    selected: usize,
+    row_height: f32,
+    row_spacing: f32,
+    viewport_height: f32,
+) -> f32 {
+    let row_stride = row_height + row_spacing;
+    let row_center = (selected as f32 + 0.5) * row_stride;
+    (row_center - viewport_height * 0.5).max(0.0)
 }
 
 /// Render the minimap — a zoomed-out document overview on the right
@@ -2177,13 +2271,18 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 let segments: Vec<core::ColorSegment> = match cached {
                     Some(s) => s,
                     None => {
-                        let per_line = doc.highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
+                        let (per_line, complete) =
+                            doc.highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
                         let segs = per_line.into_iter().next().unwrap_or_default();
-                        if doc.syntax.dirty {
-                            doc.syntax.lines.clear();
-                            doc.syntax.dirty = false;
+                        if complete {
+                            if doc.syntax.dirty {
+                                doc.syntax.lines.clear();
+                                doc.syntax.dirty = false;
+                            }
+                            doc.syntax.lines.insert(line_idx, segs.clone());
+                        } else {
+                            ui.ctx().request_repaint();
                         }
-                        doc.syntax.lines.insert(line_idx, segs.clone());
                         segs
                     }
                 };
@@ -2255,15 +2354,19 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                         // (immutable doc borrow ends here, producing an
                         // owned Vec), then insert into the cache.
                         let syntax_theme = app.syntax.ts_theme();
-                        let per_line = app.documents[app.active]
+                        let (per_line, complete) = app.documents[app.active]
                             .highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
                         let segs = per_line.into_iter().next().unwrap_or_default();
                         let doc = &mut app.documents[app.active];
-                        if doc.syntax.dirty {
-                            doc.syntax.lines.clear();
-                            doc.syntax.dirty = false;
+                        if complete {
+                            if doc.syntax.dirty {
+                                doc.syntax.lines.clear();
+                                doc.syntax.dirty = false;
+                            }
+                            doc.syntax.lines.insert(line_idx, segs.clone());
+                        } else {
+                            ui.ctx().request_repaint();
                         }
-                        doc.syntax.lines.insert(line_idx, segs.clone());
                         segs
                     }
                 };
@@ -2920,7 +3023,43 @@ fn word_range_at_char_col(line_text: &str, char_col: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::word_range_at_char_col;
+    use super::{project_tree_reveal_offset, word_range_at_char_col};
+
+    #[test]
+    fn project_tree_reveal_offset_accounts_for_virtual_row_spacing() {
+        let offset = project_tree_reveal_offset(100, 18.0, 6.0, 240.0);
+        assert_eq!(offset, 2_292.0);
+    }
+
+    #[test]
+    fn truncated_project_tree_label_stays_one_virtual_row_high() {
+        let ctx = egui::Context::default();
+        let mut measured = None;
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(120.0, 100.0),
+            )),
+            ..Default::default()
+        });
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            let row_height = ui.spacing().interact_size.y;
+            let response = ui.selectable_label(
+                false,
+                egui::RichText::new(format!(
+                    "{}a_very_long_filename_that_cannot_fit.rs",
+                    "  ".repeat(20)
+                ))
+                .monospace(),
+            );
+            measured = Some((response.rect.height(), row_height));
+        });
+        let _ = ctx.end_pass();
+
+        let (actual, expected) = measured.unwrap();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn word_range_finds_identifier_at_col() {

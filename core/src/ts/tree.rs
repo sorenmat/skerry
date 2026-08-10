@@ -1,12 +1,12 @@
 //! Per-document tree-sitter parse tree with incremental reparsing.
 //!
-//! A [`DocTree`] owns a [`Parser`] configured for one grammar and the
-//! latest [`Tree`] produced from the buffer. On an edit the caller describes
-//! the change as an [`EditDelta`] (the byte range replaced and the
-//! replacement length); [`DocTree::apply_edit`] feeds that to
-//! [`Tree::edit`] and re-parses, reusing unchanged nodes so a single
-//! keystroke only re-parses the touched region. This is the low-latency
-//! pattern described in Zed's "syntax-aware editing" writeup.
+//! A [`DocTree`] owns either a standard [`Parser`] plus [`Tree`], or
+//! Markdown's paired block/inline parser and trees. On an edit the caller
+//! describes the change as an [`EditDelta`] (the byte range replaced and the
+//! replacement length); [`DocTree::apply_edit`] edits and re-parses the active
+//! tree representation, reusing unchanged nodes so a single keystroke only
+//! re-parses the touched region. This is the low-latency pattern described in
+//! Zed's "syntax-aware editing" writeup.
 //!
 //! The tree itself is not used for highlighting until phase 3; this module
 //! only keeps it correct and current.
@@ -86,21 +86,33 @@ impl EditDelta {
     }
 }
 
-/// A parser plus its current tree for one document.
+/// The syntax parser and its current tree representation for one document.
 pub struct DocTree {
-    parser: Parser,
+    parser: Option<Parser>,
     tree: Option<Tree>,
+    markdown_parser: Option<tree_sitter_md::MarkdownParser>,
+    markdown_tree: Option<tree_sitter_md::MarkdownTree>,
 }
 
 impl DocTree {
     /// Create a `DocTree` for `grammar`. The parser is configured but no
     /// parse is performed; call [`Self::parse`] with the buffer bytes.
     pub fn new(grammar: Grammar) -> Option<Self> {
+        if grammar.inline.is_some() {
+            return Some(Self {
+                parser: None,
+                tree: None,
+                markdown_parser: Some(tree_sitter_md::MarkdownParser::default()),
+                markdown_tree: None,
+            });
+        }
         let mut parser = Parser::new();
         parser.set_language(&grammar.language).ok()?;
         Some(Self {
-            parser,
+            parser: Some(parser),
             tree: None,
+            markdown_parser: None,
+            markdown_tree: None,
         })
     }
 
@@ -108,7 +120,11 @@ impl DocTree {
     /// (subsequent parses reuse `self.tree` when present). The tree is
     /// stored and returned by reference via [`Self::tree`].
     pub fn parse(&mut self, source: &[u8]) {
-        self.tree = self.parser.parse(source, self.tree.as_ref());
+        if let Some(parser) = self.markdown_parser.as_mut() {
+            self.markdown_tree = parser.parse(source, self.markdown_tree.as_ref());
+        } else if let Some(parser) = self.parser.as_mut() {
+            self.tree = parser.parse(source, self.tree.as_ref());
+        }
     }
 
     /// Apply an edit and re-parse. The old tree is edited in place to
@@ -116,15 +132,34 @@ impl DocTree {
     /// as a hint — only the changed region is re-examined. `source` is the
     /// buffer bytes AFTER the edit.
     pub fn apply_edit(&mut self, delta: EditDelta, source: &[u8]) {
-        if let Some(tree) = self.tree.as_mut() {
-            tree.edit(&delta.to_input_edit());
+        let edit = delta.to_input_edit();
+        if let Some(parser) = self.markdown_parser.as_mut() {
+            if let Some(tree) = self.markdown_tree.as_mut() {
+                tree.edit(&edit);
+            }
+            self.markdown_tree = parser.parse(source, self.markdown_tree.as_ref());
+            return;
         }
-        self.tree = self.parser.parse(source, self.tree.as_ref());
+        if let Some(tree) = self.tree.as_mut() {
+            tree.edit(&edit);
+        }
+        if let Some(parser) = self.parser.as_mut() {
+            self.tree = parser.parse(source, self.tree.as_ref());
+        }
     }
 
     /// The current parse tree, if one has been produced.
     pub fn tree(&self) -> Option<&Tree> {
-        self.tree.as_ref()
+        self.tree.as_ref().or_else(|| {
+            self.markdown_tree
+                .as_ref()
+                .map(tree_sitter_md::MarkdownTree::block_tree)
+        })
+    }
+
+    /// The paired block/inline Markdown tree, when this document is Markdown.
+    pub fn markdown_tree(&self) -> Option<&tree_sitter_md::MarkdownTree> {
+        self.markdown_tree.as_ref()
     }
 }
 
@@ -178,5 +213,23 @@ mod tests {
         let tree = dt.tree().unwrap();
         assert_eq!(tree.root_node().kind(), "document");
         assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn markdown_grammar_parses_block_and_inline_trees() {
+        let g = grammar_for_extension("md").unwrap();
+        let mut dt = DocTree::new(g).unwrap();
+        let original = b"# Title\n\nSome **strong** text.\n";
+        dt.parse(original);
+        let markdown = dt.markdown_tree().unwrap();
+        assert_eq!(markdown.block_tree().root_node().kind(), "document");
+        assert!(!markdown.inline_trees().is_empty());
+
+        let insert_at = original.len() - 2;
+        let delta = EditDelta::single_line(2, 20, insert_at, 1);
+        dt.apply_edit(delta, b"# Title\n\nSome **strong** text!.\n");
+        let reparsed = dt.markdown_tree().unwrap();
+        assert!(!reparsed.inline_trees().is_empty());
+        assert!(!reparsed.block_tree().root_node().has_error());
     }
 }
