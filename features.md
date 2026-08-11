@@ -1,13 +1,13 @@
-# Nova — Implemented Features
+# Skerry — Implemented Features
 
-> Snapshot of every feature shipped in Nova as of master
-> (`6085f19`, 2026-06-29). Every entry here is real, running code —
+> Snapshot of every feature currently shipped in Skerry. Every entry here is
+> real, running code —
 > no roadmap items, no aspirational checkboxes. Anything that exists
 > only as a state field without visible behaviour is flagged.
 
 ## At a glance
 
-Nova is a dual-frontend text editor in Rust: a **GUI** (egui +
+Skerry is a dual-frontend text editor in Rust: a **GUI** (egui +
 eframe) and a **TUI** (ratatui + crossterm) sharing the same `core`
 engine. Both ship from day one with full feature parity (ADR 0005).
 The engine is built around a **Piece Table** buffer backed by an
@@ -17,11 +17,11 @@ multi-GB log files without a mode switch.
 Workspace layout:
 
 ```
-Nova/
-├── core/          # UI-agnostic text engine (Buffer, Document, search, undo)
-├── nova/          # egui + eframe GUI
-├── nova-tui/      # ratatui + crossterm TUI
-└── docs/adr/      # architectural decision records
+Skerry/
+├── core/        # UI-agnostic text engine (Buffer, Document, search, undo)
+├── skerry/      # egui + eframe GUI
+├── skerry-tui/  # ratatui + crossterm TUI
+└── docs/adr/    # architectural decision records
 ```
 
 ## Core engine (`core` crate)
@@ -347,8 +347,8 @@ Nova/
 
 ## File I/O
 
-- **Open via CLI args** — `nova path1 path2` and
-  `nova-tui path1 path2` open one document per PATH. With no
+- **Open via CLI args** — `skerry path1 path2` and
+  `skerry-tui path1 path2` open one document per PATH. With no
   paths, opens a single empty document.
 - **Open via dialog** (Cmd/Ctrl+O) — text-input dialog, Enter
   submits, Esc cancels. Ctrl/Alt-modified keys are filtered out so
@@ -437,17 +437,17 @@ is open.
 
 ## macOS installation and file associations
 
-- **`make app-bundle`** builds the relocatable `target/Nova.app`. The
-  app contains the release `nova` executable and an AppleScript entry
+- **`make app-bundle`** builds the relocatable `target/Skerry.app`. The
+  app contains the release `skerry` executable and an AppleScript entry
   point that handles macOS "open document" events.
-- **Homebrew** installs the app as **Nova** and links its bundled
-  executable as **`nv`**. See `INSTALL.md` for the tap and install
+- **Homebrew** installs the app as **Skerry** and links its bundled
+  executable as **`sky`**. See `INSTALL.md` for the tap and install
   commands.
 - **`make register-app`** registers the bundle with Launch Services as
   the default editor for `.rs`, `.go`, and `.json` files.
 - Double-clicking one of those files in Finder opens it in the GUI
   frontend. The wrapper forwards the file path to the binary as a
-  command-line argument. `nv PATH...` opens the same GUI from a shell.
+  command-line argument. `sky PATH...` opens the same GUI from a shell.
 
 ## Per-document settings
 
@@ -483,10 +483,10 @@ use different conventions without re-configuring.
   frame, and not when tab-switching to a doc whose cursor happens
   to be at a position the renderer just rendered).
 
-## GUI-only (`nova`)
+## GUI-only (`skerry`)
 
 - **Backend: egui 0.30 + eframe 0.30**, immediate-mode GUI.
-- **Default window**: 800 × 600, title "Nova".
+- **Default window**: 800 × 600, title "Skerry".
 - **Swappable renderer** — GUI behaviour is renderer-agnostic
   (ADR 0006). The concrete renderer is egui today; a future raw-wgpu
   slot is reserved.
@@ -499,7 +499,7 @@ use different conventions without re-configuring.
   (`output.shapes`) without a display server. Used to reproduce and
   fix the tab-advance selection bug.
 
-## TUI-only (`nova-tui`)
+## TUI-only (`skerry-tui`)
 
 - **Backend: ratatui 0.29 + crossterm 0.28**.
 - **Mouse capture enabled** at startup so crossterm delivers
@@ -517,21 +517,21 @@ use different conventions without re-configuring.
 
 ## Engineering / non-feature properties
 
-- **Three-crate Cargo workspace**: `core`, `nova-tui`,
-  `nova`. Frontends depend on `core`; `core` depends on
+- **Three-crate Cargo workspace**: `core`, `skerry-tui`,
+  `skerry`. Frontends depend on `core`; `core` depends on
   neither.
 - **Rust 1.75**, edition 2021. `unsafe_code = "deny"` workspace-wide.
-- **7 ADRs** in `docs/adr/` document the architectural decisions
+- **8 ADRs** in `docs/adr/` document the architectural decisions
   (Piece Table, mmap+delta, byte positions, linear undo, full
   frontend parity, swappable GUI renderer, cursor/selection on
-  Buffer).
+  Buffer, and product naming).
 - **Unit tests in every crate** — `cargo test --workspace`.
 - **Integration render tests**:
-  - `nova/tests/auto_scroll.rs` — offscreen egui render
+  - `skerry/tests/auto_scroll.rs` — offscreen egui render
     tests for the auto-scroll path.
-  - `nova/tests/render_repro.rs` — reproduces the
+  - `skerry/tests/render_repro.rs` — reproduces the
     tab-advance selection bug and asserts on paint commands.
-  - `nova-tui/src/ui_tests.rs` — ratatui TestBackend smoke
+  - `skerry-tui/src/ui_tests.rs` — ratatui TestBackend smoke
     tests covering header, dirty marker, status bar, tab strip, find
     match highlight, etc.
 

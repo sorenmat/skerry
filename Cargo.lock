@@ -2251,32 +2251,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nova"
-version = "0.1.0"
-dependencies = [
- "core",
- "eframe",
- "egui",
- "lsp-types",
- "pulldown-cmark",
- "rfd",
- "url",
-]
-
-[[package]]
-name = "nova-tui"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "core",
- "crossterm",
- "lsp-types",
- "ratatui",
- "rfd",
- "url",
-]
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3269,6 +3243,32 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
+name = "skerry"
+version = "0.1.0"
+dependencies = [
+ "core",
+ "eframe",
+ "egui",
+ "lsp-types",
+ "pulldown-cmark",
+ "rfd",
+ "url",
+]
+
+[[package]]
+name = "skerry-tui"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "core",
+ "crossterm",
+ "lsp-types",
+ "ratatui",
+ "rfd",
+ "url",
+]
 
 [[package]]
 name = "slab"

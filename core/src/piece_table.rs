@@ -1,7 +1,7 @@
 //! Piece Table buffer implementation — production-ready.
 //!
 //! Implements [`Buffer`] for [`PieceTableBuffer`], the canonical text
-//! representation for Nova. See:
+//! representation for Skerry. See:
 //!
 //! - [`docs/adr/0001`](../../../docs/adr/0001-piece-table-as-primary-buffer.md)
 //!   — why Piece Table.
@@ -1526,10 +1526,7 @@ mod tests {
     #[test]
     fn save_roundtrip_writes_to_disk() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "nova_save_roundtrip_{}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("skerry_save_roundtrip_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let mut buf =
@@ -1547,10 +1544,7 @@ mod tests {
     #[test]
     fn save_overwrites_existing_content() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "nova_save_overwrite_{}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("skerry_save_overwrite_{}.txt", std::process::id()));
         std::fs::write(&path, b"original content\n").unwrap();
 
         let mut buf =
@@ -1632,7 +1626,7 @@ mod tests {
     #[test]
     fn from_path_reads_small_file() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_mmap_small_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_mmap_small_{}.txt", std::process::id()));
         let content = b"hello\nworld\nmemmap test".to_vec();
         std::fs::write(&path, &content).unwrap();
 
@@ -1648,7 +1642,7 @@ mod tests {
     #[test]
     fn from_path_handles_empty_file() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_mmap_empty_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_mmap_empty_{}.txt", std::process::id()));
         std::fs::write(&path, b"").unwrap();
 
         let buf = PieceTableBuffer::from_path(path.clone()).unwrap();
@@ -1663,7 +1657,7 @@ mod tests {
     fn from_path_errors_on_missing_file() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
-            "nova_mmap_nonexistent_{}.txt",
+            "skerry_mmap_nonexistent_{}.txt",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path); // ensure it doesn't exist
@@ -1679,13 +1673,10 @@ mod tests {
         // requires absolute paths) and LSP silently never started. The
         // source_path must now be absolute.
         let dir = std::env::temp_dir();
-        let file = dir.join(format!(
-            "nova_abs_path_{}.rs",
-            std::process::id()
-        ));
+        let file = dir.join(format!("skerry_abs_path_{}.rs", std::process::id()));
         std::fs::write(&file, b"x").unwrap();
 
-        // Run from `dir` so the relative path "nova_abs_path_<pid>.rs"
+        // Run from `dir` so the relative path "skerry_abs_path_<pid>.rs"
         // resolves. Save and restore the cwd so the test is isolated.
         let prev_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
@@ -1724,7 +1715,7 @@ mod tests {
         // we wanted to test "without mmap". Verifies that from_path
         // works for sizes that matter.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_mmap_large_{}.bin", std::process::id()));
+        let path = dir.join(format!("skerry_mmap_large_{}.bin", std::process::id()));
 
         let mut content = Vec::with_capacity(10 * 1024 * 1024);
         for i in 0..(10 * 1024 * 1024) {
@@ -1746,7 +1737,7 @@ mod tests {
     #[test]
     fn mmap_buffer_edits_and_saves_correctly() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_mmap_save_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_mmap_save_{}.txt", std::process::id()));
         let original = b"line0\nline1\nline2\nline3".to_vec();
         std::fs::write(&path, &original).unwrap();
 
@@ -1770,7 +1761,7 @@ mod tests {
     #[test]
     fn mmap_buffer_undo_works() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_mmap_undo_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_mmap_undo_{}.txt", std::process::id()));
         std::fs::write(&path, b"original").unwrap();
 
         let mut buf = PieceTableBuffer::from_path(path.clone()).unwrap();
@@ -1786,7 +1777,7 @@ mod tests {
     fn save_atomic_writes_via_temp_file() {
         // Verify the .tmp file is cleaned up after a successful rename.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_atomic_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_atomic_{}.txt", std::process::id()));
         std::fs::write(&path, b"initial").unwrap();
 
         let mut buf = PieceTableBuffer::from_path(path.clone()).unwrap();
@@ -1953,7 +1944,7 @@ mod tests {
     #[test]
     fn undo_after_save_clears_dirty_on_undo() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_undo_save_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_undo_save_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let mut buf = PieceTableBuffer::from_bytes_with_path(b"hi".to_vec(), path.clone());

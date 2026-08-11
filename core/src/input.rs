@@ -425,10 +425,17 @@ mod tests {
         let _ = EditorEvent::LspHover;
         let _ = EditorEvent::LspGoToDefinition;
         let _ = EditorEvent::RenameSymbol;
-        let _ = EditorEvent::RenameApply { new_name: String::new() };
+        let _ = EditorEvent::RenameApply {
+            new_name: String::new(),
+        };
         let _ = EditorEvent::FormatDocument;
         let _ = EditorEvent::AddCursor { pos: 0 };
-        let _ = EditorEvent::ColumnSelect { from_line: 0, from_col: 0, to_line: 0, to_col: 0 };
+        let _ = EditorEvent::ColumnSelect {
+            from_line: 0,
+            from_col: 0,
+            to_line: 0,
+            to_col: 0,
+        };
         let _ = EditorEvent::SelectNextOccurrence;
         let _ = EditorEvent::SelectAll;
         let _ = EditorEvent::ToggleComment;

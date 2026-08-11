@@ -2,19 +2,40 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR="$PROJECT_ROOT/target/Nova.app"
-BIN="${NOVA_BINARY:-$PROJECT_ROOT/target/release/nova}"
-SCRIPT="$PROJECT_ROOT/scripts/Nova.applescript"
+APP_DIR="$PROJECT_ROOT/target/Skerry.app"
+BIN="${SKERRY_BINARY:-$PROJECT_ROOT/target/release/skerry}"
+SCRIPT="$PROJECT_ROOT/scripts/Skerry.applescript"
+ICON_SOURCE="$PROJECT_ROOT/assets/Skerry-icon.png"
+ICONSET_DIR="$PROJECT_ROOT/target/Skerry.iconset"
 
 if [ ! -x "$BIN" ]; then
-    echo "error: Nova binary not found or not executable: $BIN" >&2
+    echo "error: Skerry binary not found or not executable: $BIN" >&2
     echo "       Run 'make build-release' first." >&2
+    exit 1
+fi
+
+if [ ! -f "$ICON_SOURCE" ]; then
+    echo "error: Skerry icon source not found: $ICON_SOURCE" >&2
     exit 1
 fi
 
 rm -rf "$APP_DIR"
 osacompile -o "$APP_DIR" "$SCRIPT"
-install -m 755 "$BIN" "$APP_DIR/Contents/Resources/nova"
+install -m 755 "$BIN" "$APP_DIR/Contents/Resources/skerry"
+
+rm -rf "$ICONSET_DIR"
+mkdir -p "$ICONSET_DIR"
+sips -z 16 16 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null
+sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16@2x.png" >/dev/null
+sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32.png" >/dev/null
+sips -z 64 64 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32@2x.png" >/dev/null
+sips -z 128 128 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128.png" >/dev/null
+sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null
+sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256.png" >/dev/null
+sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
+sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null
+install -m 644 "$ICON_SOURCE" "$ICONSET_DIR/icon_512x512@2x.png"
+iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/Skerry.icns"
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -61,15 +82,13 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key>
     <string>droplet</string>
     <key>CFBundleIdentifier</key>
-    <string>com.smo.nova</string>
+    <string>com.smo.skerry</string>
     <key>CFBundleIconFile</key>
-    <string>droplet</string>
-    <key>CFBundleIconName</key>
-    <string>droplet</string>
+    <string>Skerry.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Nova</string>
+    <string>Skerry</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
@@ -82,7 +101,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign - "$APP_DIR/Contents/Resources/nova"
+codesign --force --sign - "$APP_DIR/Contents/Resources/skerry"
 codesign --force --sign - "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 

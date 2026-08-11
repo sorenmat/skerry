@@ -95,10 +95,7 @@ impl SyntaxEngine {
 
     /// All bundled theme names, in deterministic order.
     pub fn theme_names(&self) -> Vec<&str> {
-        crate::ts::bundled_themes()
-            .iter()
-            .map(|t| t.name)
-            .collect()
+        crate::ts::bundled_themes().iter().map(|t| t.name).collect()
     }
 
     /// The active tree-sitter theme. Resolves the current theme name to
@@ -106,8 +103,7 @@ impl SyntaxEngine {
     /// when the name doesn't match a bundled tree-sitter theme (e.g. an
     /// old persisted name like `base16-ocean.dark` from the syntect era).
     pub fn ts_theme(&self) -> &'static crate::ts::TsTheme {
-        crate::ts::find_theme(&self.theme_name)
-            .unwrap_or_else(|| &crate::ts::bundled_themes()[0])
+        crate::ts::find_theme(&self.theme_name).unwrap_or_else(|| &crate::ts::bundled_themes()[0])
     }
 
     /// Switch to the next bundled theme, wrapping around. Returns the
@@ -156,10 +152,9 @@ mod tests {
         let mut cache = SyntaxCache::default();
         let color = HighlightColor { r: 1, g: 2, b: 3 };
         for line in 0..10 {
-            cache.lines.insert(
-                line,
-                vec![ColorSegment { range: 0..1, color }],
-            );
+            cache
+                .lines
+                .insert(line, vec![ColorSegment { range: 0..1, color }]);
         }
         cache.invalidate_from(4);
         assert!(cache.dirty, "should mark dirty");
@@ -168,7 +163,10 @@ mod tests {
             assert!(cache.lines.contains_key(&kept), "line {kept} kept");
         }
         for dropped in 4..10 {
-            assert!(!cache.lines.contains_key(&dropped), "line {dropped} dropped");
+            assert!(
+                !cache.lines.contains_key(&dropped),
+                "line {dropped} dropped"
+            );
         }
     }
 

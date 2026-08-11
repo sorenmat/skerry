@@ -102,7 +102,8 @@ impl Search {
 
         // Filter matches to the selection range if set.
         if let Some((sel_start, sel_end)) = self.selection_range {
-            self.matches.retain(|&(s, e)| s >= sel_start && e <= sel_end);
+            self.matches
+                .retain(|&(s, e)| s >= sel_start && e <= sel_end);
         }
 
         self.current = if self.matches.is_empty() {
@@ -151,9 +152,7 @@ impl Search {
                 // Compare case-insensitively.
                 let candidate = &remaining[..needle_bytes.len()];
                 if candidate.eq_ignore_ascii_case(needle_bytes) {
-                    if self.whole_word
-                        && !is_whole_word(haystack, byte_pos, byte_pos + query_len)
-                    {
+                    if self.whole_word && !is_whole_word(haystack, byte_pos, byte_pos + query_len) {
                         continue;
                     }
                     self.matches.push((byte_pos, byte_pos + query_len));

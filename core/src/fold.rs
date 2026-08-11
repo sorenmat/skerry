@@ -39,11 +39,8 @@ impl FoldState {
     pub fn update_foldable(&mut self, tree: Option<&Tree>) {
         self.foldable = tree.map(foldable_ranges).unwrap_or_default();
         // Remove folded ranges that no longer exist.
-        self.folded.retain(|f| {
-            self.foldable
-                .iter()
-                .any(|r| r.start_line == f.start_line)
-        });
+        self.folded
+            .retain(|f| self.foldable.iter().any(|r| r.start_line == f.start_line));
         self.rebuild_mapping();
     }
 
@@ -51,12 +48,7 @@ impl FoldState {
     /// start_line is at or before `line`, and toggles it.
     pub fn toggle(&mut self, line: usize) {
         // Find the foldable range starting at `line` (or the nearest one).
-        if let Some(range) = self
-            .foldable
-            .iter()
-            .find(|r| r.start_line == line)
-            .copied()
-        {
+        if let Some(range) = self.foldable.iter().find(|r| r.start_line == line).copied() {
             if let Some(idx) = self
                 .folded
                 .iter()
@@ -81,18 +73,15 @@ impl FoldState {
     pub fn set_foldable(&mut self, ranges: Vec<FoldRange>) {
         self.foldable = ranges;
         // Remove folded ranges that no longer exist.
-        self.folded.retain(|f| {
-            self.foldable
-                .iter()
-                .any(|r| r.start_line == f.start_line)
-        });
+        self.folded
+            .retain(|f| self.foldable.iter().any(|r| r.start_line == f.start_line));
     }
 
     /// True if `doc_line` is inside a folded range (should be hidden).
     pub fn is_hidden(&self, doc_line: usize) -> bool {
-        self.folded.iter().any(|f| {
-            doc_line > f.start_line && doc_line <= f.end_line
-        })
+        self.folded
+            .iter()
+            .any(|f| doc_line > f.start_line && doc_line <= f.end_line)
     }
 
     /// Is `doc_line` the start of a folded range?
@@ -275,7 +264,10 @@ mod tests {
     #[test]
     fn unfold_all_clears() {
         let mut fs = FoldState::new();
-        fs.folded.push(FoldRange { start_line: 2, end_line: 5 });
+        fs.folded.push(FoldRange {
+            start_line: 2,
+            end_line: 5,
+        });
         fs.rebuild(100);
         assert!(fs.has_folds());
         fs.unfold_all();
@@ -285,17 +277,23 @@ mod tests {
     #[test]
     fn is_hidden_checks_interior_lines() {
         let mut fs = FoldState::new();
-        fs.folded.push(FoldRange { start_line: 2, end_line: 5 });
-        assert!(!fs.is_hidden(2));  // start line is visible
-        assert!(fs.is_hidden(3));   // interior
-        assert!(fs.is_hidden(5));   // end line
-        assert!(!fs.is_hidden(6));  // after
+        fs.folded.push(FoldRange {
+            start_line: 2,
+            end_line: 5,
+        });
+        assert!(!fs.is_hidden(2)); // start line is visible
+        assert!(fs.is_hidden(3)); // interior
+        assert!(fs.is_hidden(5)); // end line
+        assert!(!fs.is_hidden(6)); // after
     }
 
     #[test]
     fn display_line_count_subtracts_hidden() {
         let mut fs = FoldState::new();
-        fs.folded.push(FoldRange { start_line: 2, end_line: 5 });
+        fs.folded.push(FoldRange {
+            start_line: 2,
+            end_line: 5,
+        });
         // 10 doc lines - 3 hidden (lines 3,4,5) = 7 display lines
         assert_eq!(fs.display_line_count(10), 7);
     }

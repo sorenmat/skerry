@@ -199,8 +199,8 @@ pub const DARK: GuiTheme = GuiTheme {
     button_text: Color32::from_rgb(230, 230, 230),
     input_bg: Color32::from_rgb(55, 55, 58),
     border: Color32::from_rgb(80, 80, 80),
-        separator: Color32::from_rgb(70, 70, 70),
-        indent_guide: Color32::from_rgb(50, 50, 55),
+    separator: Color32::from_rgb(70, 70, 70),
+    indent_guide: Color32::from_rgb(50, 50, 55),
 
     popup_bg: Color32::from_rgb(48, 48, 51),
     popup_border: Color32::from_rgb(85, 85, 88),
@@ -249,8 +249,8 @@ pub const LIGHT: GuiTheme = GuiTheme {
     button_text: Color32::from_rgb(50, 50, 50),
     input_bg: Color32::WHITE,
     border: Color32::from_rgb(200, 200, 200),
-        separator: Color32::from_rgb(220, 220, 220),
-        indent_guide: Color32::from_rgb(235, 235, 235),
+    separator: Color32::from_rgb(220, 220, 220),
+    indent_guide: Color32::from_rgb(235, 235, 235),
 
     popup_bg: Color32::from_rgb(250, 250, 250),
     popup_border: Color32::from_rgb(200, 200, 200),

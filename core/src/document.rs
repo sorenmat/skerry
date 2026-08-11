@@ -304,14 +304,8 @@ impl Document {
         }
         for seg in result.segments {
             // Find which line this segment starts on.
-            let rel = seg
-                .range
-                .start
-                .saturating_sub(first_range.start);
-            let line_offset = match line_starts
-                .iter()
-                .position(|&s| s > seg.range.start)
-            {
+            let rel = seg.range.start.saturating_sub(first_range.start);
+            let line_offset = match line_starts.iter().position(|&s| s > seg.range.start) {
                 Some(idx) => idx.saturating_sub(1),
                 None => count.saturating_sub(1),
             };
@@ -458,7 +452,7 @@ mod tests {
     #[test]
     fn path_proxies_to_buffer() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_doc_test_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_doc_test_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
             b"hello".to_vec(),

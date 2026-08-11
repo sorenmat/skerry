@@ -73,7 +73,10 @@ pub fn expand(body: &str) -> (String, usize) {
 
 /// Try to find a snippet trigger at the end of the current line before
 /// the cursor. Returns the trigger word and its byte range if found.
-pub fn trigger_at_cursor(line_text: &str, cursor_byte_col: usize) -> Option<(String, std::ops::Range<usize>)> {
+pub fn trigger_at_cursor(
+    line_text: &str,
+    cursor_byte_col: usize,
+) -> Option<(String, std::ops::Range<usize>)> {
     let chars: Vec<char> = line_text.chars().collect();
     let col = cursor_byte_col.min(chars.len());
     // Walk backward from the cursor to find the word boundary.
