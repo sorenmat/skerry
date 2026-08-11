@@ -8,6 +8,13 @@ SCRIPT="$PROJECT_ROOT/scripts/Skerry.applescript"
 ICON_SOURCE="$PROJECT_ROOT/assets/Skerry-icon.png"
 ICONSET_DIR="$PROJECT_ROOT/target/Skerry.iconset"
 
+if [ -n "${SKERRY_VERSION:-}" ]; then
+    VERSION="$SKERRY_VERSION"
+else
+    PACKAGE_ID="$(cargo pkgid -p skerry --manifest-path "$PROJECT_ROOT/Cargo.toml")"
+    VERSION="${PACKAGE_ID##*#}"
+fi
+
 if [ ! -x "$BIN" ]; then
     echo "error: Skerry binary not found or not executable: $BIN" >&2
     echo "       Run 'make build-release' first." >&2
@@ -16,6 +23,16 @@ fi
 
 if [ ! -f "$ICON_SOURCE" ]; then
     echo "error: Skerry icon source not found: $ICON_SOURCE" >&2
+    exit 1
+fi
+
+if [ -z "$VERSION" ]; then
+    echo "error: Skerry version could not be read from Cargo.toml" >&2
+    exit 1
+fi
+
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "error: invalid Skerry bundle version: $VERSION" >&2
     exit 1
 fi
 
@@ -100,6 +117,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP_DIR/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$VERSION" "$APP_DIR/Contents/Info.plist"
 
 codesign --force --sign - "$APP_DIR/Contents/Resources/skerry"
 codesign --force --sign - "$APP_DIR"

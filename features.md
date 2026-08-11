@@ -521,10 +521,10 @@ use different conventions without re-configuring.
   `skerry`. Frontends depend on `core`; `core` depends on
   neither.
 - **Rust 1.75**, edition 2021. `unsafe_code = "deny"` workspace-wide.
-- **8 ADRs** in `docs/adr/` document the architectural decisions
+- **9 ADRs** in `docs/adr/` document the architectural decisions
   (Piece Table, mmap+delta, byte positions, linear undo, full
   frontend parity, swappable GUI renderer, cursor/selection on
-  Buffer, and product naming).
+  Buffer, product naming, and the unsigned v0.1.2 release exception).
 - **Unit tests in every crate** — `cargo test --workspace`.
 - **Integration render tests**:
   - `skerry/tests/auto_scroll.rs` — offscreen egui render
