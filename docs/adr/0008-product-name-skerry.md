@@ -17,7 +17,9 @@ crate, executable, repository, and Homebrew cask.
 The product is named **Skerry**. Public identifiers use `skerry`, including the
 GUI executable and crate, `skerry-tui`, `Skerry.app`, the `skerry` Homebrew
 cask, and `com.smo.skerry`. Homebrew also installs `sky` as the short command
-for opening the GUI from a terminal.
+for opening the GUI from a terminal. The canonical cask lives in the separate
+`sorenmat/homebrew-skerry` tap repository so `brew tap sorenmat/skerry`
+follows Homebrew's repository naming convention.
 
 Skerry reads configuration from `~/.config/skerry`. When that file is absent,
 it falls back to the previous `nova` and `the_editor` locations in that order

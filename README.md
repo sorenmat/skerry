@@ -7,8 +7,9 @@ and multi-gigabyte files in the same session.
 ## Install on macOS
 
 ```sh
-brew tap sorenmat/skerry https://github.com/sorenmat/skerry.git
-brew install --cask sorenmat/skerry/skerry
+brew tap sorenmat/skerry
+brew trust sorenmat/skerry
+brew install --cask skerry
 ```
 
 Homebrew installs `Skerry.app` and the `sky` command:
@@ -16,6 +17,23 @@ Homebrew installs `Skerry.app` and the `sky` command:
 ```sh
 sky path/to/file
 ```
+
+The cask is maintained in the
+[sorenmat/homebrew-skerry](https://github.com/sorenmat/homebrew-skerry) tap.
+
+### Opening the unsigned v0.1.2 release
+
+Skerry v0.1.2 is ad-hoc signed but not Developer ID signed or Apple-notarized.
+If you installed it from the Skerry project's official `sorenmat/skerry` tap
+and accept that limitation, remove quarantine from this copy and open it with:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Skerry.app
+open /Applications/Skerry.app
+```
+
+Use `sudo xattr -dr com.apple.quarantine /Applications/Skerry.app` only if the
+first command reports a permission error.
 
 See [INSTALL.md](INSTALL.md) for release requirements, upgrades, uninstallation,
 and local app-bundle builds.
