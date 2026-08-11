@@ -25,7 +25,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build Nova
+      - name: Build Skerry
         run: cargo build --workspace --release --locked
 
       - name: Build application bundle
@@ -38,7 +38,7 @@ jobs:
           APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
         run: |
           certificate_path="$RUNNER_TEMP/developer-id.p12"
-          keychain_path="$RUNNER_TEMP/nova-signing.keychain-db"
+          keychain_path="$RUNNER_TEMP/skerry-signing.keychain-db"
           keychain_password="$(uuidgen)"
 
           test -n "$APPLE_CERTIFICATE_BASE64"
@@ -56,10 +56,10 @@ jobs:
           security list-keychains -d user -s "$keychain_path"
 
           codesign --force --options runtime --timestamp \
-            --sign "$APPLE_DEVELOPER_ID" target/Nova.app/Contents/Resources/nova
+            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app/Contents/Resources/skerry
           codesign --force --options runtime --timestamp \
-            --sign "$APPLE_DEVELOPER_ID" target/Nova.app
-          codesign --verify --deep --strict --verbose=2 target/Nova.app
+            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app
+          codesign --verify --deep --strict --verbose=2 target/Skerry.app
 
           rm -f "$certificate_path"
 
@@ -73,30 +73,30 @@ jobs:
           test -n "$APPLE_APP_PASSWORD"
           test -n "$APPLE_TEAM_ID"
 
-          ditto -c -k --keepParent target/Nova.app "$RUNNER_TEMP/Nova-notarization.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/Nova-notarization.zip" \
+          ditto -c -k --keepParent target/Skerry.app "$RUNNER_TEMP/Skerry-notarization.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/Skerry-notarization.zip" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
-          xcrun stapler staple target/Nova.app
-          xcrun stapler validate target/Nova.app
-          spctl --assess --type execute --verbose=2 target/Nova.app
+          xcrun stapler staple target/Skerry.app
+          xcrun stapler validate target/Skerry.app
+          spctl --assess --type execute --verbose=2 target/Skerry.app
 
       - name: Package application bundle
-        run: tar -czf "Nova-macos-${{ matrix.arch }}.tar.gz" -C target Nova.app
+        run: tar -czf "Skerry-macos-${{ matrix.arch }}.tar.gz" -C target Skerry.app
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Nova-macos-${{ matrix.arch }}
-          path: Nova-macos-${{ matrix.arch }}.tar.gz
+          name: Skerry-macos-${{ matrix.arch }}
+          path: Skerry-macos-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
       - name: Remove signing keychain
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/Nova-notarization.zip"
-          security delete-keychain "$RUNNER_TEMP/nova-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/Skerry-notarization.zip"
+          security delete-keychain "$RUNNER_TEMP/skerry-signing.keychain-db" || true
 
   publish:
     name: Publish GitHub release
@@ -108,7 +108,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: Nova-macos-*
+          pattern: Skerry-macos-*
           path: dist
           merge-multiple: true
 

@@ -104,13 +104,11 @@ pub fn visual_line_width(line_text: &str, tab_width: usize) -> usize {
 /// `use_spaces` and `tab_width` match the document's indent mode (same
 /// values `InsertTab` uses). Returns the indent as an owned String (no
 /// leading newline — the caller inserts "\n" + this).
-pub fn auto_indent(
-    buffer: &dyn Buffer,
-    line: usize,
-    use_spaces: bool,
-    tab_width: usize,
-) -> String {
-    let line_text = buffer.line_text(line).map(|c| c.into_owned()).unwrap_or_default();
+pub fn auto_indent(buffer: &dyn Buffer, line: usize, use_spaces: bool, tab_width: usize) -> String {
+    let line_text = buffer
+        .line_text(line)
+        .map(|c| c.into_owned())
+        .unwrap_or_default();
 
     // Leading whitespace of the current line (spaces + tabs).
     let leading: String = line_text
@@ -195,11 +193,7 @@ fn char_at(buffer: &dyn Buffer, pos: BytePos) -> Option<char> {
 
 /// Find the matching bracket for `ch` at `start` position, scanning
 /// forward for openers and backward for closers. Handles nesting.
-fn find_match(
-    buffer: &dyn Buffer,
-    start: BytePos,
-    ch: char,
-) -> Option<(BytePos, BytePos)> {
+fn find_match(buffer: &dyn Buffer, start: BytePos, ch: char) -> Option<(BytePos, BytePos)> {
     match ch {
         '(' | '[' | '{' => {
             let close = matching_close(ch)?;
@@ -416,9 +410,7 @@ pub fn column_selections(
 pub fn line_comment_prefix(language_id: &str) -> Option<&'static str> {
     match language_id {
         "rust" | "c" | "cpp" => Some("// "),
-        "go" | "javascript" | "javascriptreact" | "typescript" | "typescriptreact" => {
-            Some("// ")
-        }
+        "go" | "javascript" | "javascriptreact" | "typescript" | "typescriptreact" => Some("// "),
         "python" | "toml" => Some("# "),
         _ => None,
     }
@@ -475,7 +467,11 @@ pub fn compute_comment_toggles(
             if after_ws.starts_with(prefix.trim_end()) {
                 let remove_start = range.start + trimmed_start;
                 let remove_len = prefix.trim_end().len();
-                edits.push((remove_start, String::new(), remove_start..remove_start + remove_len));
+                edits.push((
+                    remove_start,
+                    String::new(),
+                    remove_start..remove_start + remove_len,
+                ));
             }
         }
     } else {
@@ -686,7 +682,10 @@ mod tests {
     fn auto_indent_adds_level_after_open_brace() {
         let buffer = PieceTableBuffer::from_bytes("fn main() {".as_bytes().to_vec());
         let indent = auto_indent(&buffer, 0, true, 4);
-        assert_eq!(indent, "    ", "no leading WS + one indent level = 4 spaces");
+        assert_eq!(
+            indent, "    ",
+            "no leading WS + one indent level = 4 spaces"
+        );
     }
 
     #[test]

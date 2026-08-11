@@ -1,10 +1,10 @@
 [package]
-name = "nova"
+name = "skerry"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GUI frontend for Nova (egui + eframe, swappable renderer)."
+description = "GUI frontend for Skerry (egui + eframe, swappable renderer)."
 
 [dependencies]
 core = { path = "../core" }

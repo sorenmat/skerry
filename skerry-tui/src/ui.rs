@@ -997,8 +997,8 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         };
 
         let number_prefix = format!("{:>width$} │ ", line_idx + 1, width = gutter_width);
-        let blame_on = app.active_doc().view.git_blame_enabled
-            && app.active_doc().git_blame.enabled();
+        let blame_on =
+            app.active_doc().view.git_blame_enabled && app.active_doc().git_blame.enabled();
         let blame_span = if blame_on {
             if let Some(entry) = app.active_doc().git_blame.entry(line_idx) {
                 format!("{:<8}", entry.short_hash)
@@ -1064,7 +1064,10 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             Span::styled(diag_marker.to_string(), diag_style),
         ];
         if blame_on {
-            spans.push(Span::styled(blame_span, Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                blame_span,
+                Style::default().fg(Color::DarkGray),
+            ));
         }
         spans.push(Span::styled(number_prefix, gutter_style));
 
@@ -1073,7 +1076,11 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         // insert into the cache (mutable). The split avoids borrowing
         // the doc both ways at once.
         let cached = if !app.documents[app.active].syntax.dirty {
-            app.documents[app.active].syntax.lines.get(&line_idx).cloned()
+            app.documents[app.active]
+                .syntax
+                .lines
+                .get(&line_idx)
+                .cloned()
         } else {
             None
         };
@@ -1081,8 +1088,11 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
             Some(s) => s,
             None => {
                 let syntax_theme = syntax_engine.ts_theme();
-                let (per_line, complete) = app.documents[app.active]
-                    .highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
+                let (per_line, complete) = app.documents[app.active].highlight_lines_ts(
+                    line_idx,
+                    line_idx + 1,
+                    syntax_theme,
+                );
                 let segs = per_line.into_iter().next().unwrap_or_default();
                 let doc = &mut app.documents[app.active];
                 if complete {

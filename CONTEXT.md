@@ -1,10 +1,10 @@
-# Nova
+# Skerry
 
 A dual-frontend (GUI + TUI) text editor in Rust targeting Linux and macOS. Designed for mixed workloads in a single session: source files (1KB–100KB) and multi-GB files, with edits required in both regimes and no user-visible mode switch.
 
-The installed macOS application is named **Nova**. Its Homebrew-provided
-command-line shortcut is **`nv`**; the packaged Rust executable remains
-`nova` internally.
+The installed macOS application is named **Skerry**. Its Homebrew-provided
+command-line shortcut is **`sky`**; the packaged Rust executable remains
+`skerry` internally.
 
 ## Language
 

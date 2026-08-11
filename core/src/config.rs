@@ -1,9 +1,9 @@
 //! Persistent user configuration and session state.
 //!
-//! The config file lives at `~/.config/nova/config.json` (or the
+//! The config file lives at `~/.config/skerry/config.json` (or the
 //! platform equivalent) and stores settings and the list of recently
-//! open files for session restore. When that file does not exist, Nova
-//! reads the pre-rename config location once for upgrade compatibility.
+//! open files for session restore. When that file does not exist, Skerry
+//! reads the previous product config locations for upgrade compatibility.
 
 use std::collections::HashMap;
 use std::fs;
@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::ViewState;
 
-const APP_CONFIG_DIR: &str = "nova";
-const LEGACY_APP_CONFIG_DIR: &str = "the_editor";
+const APP_CONFIG_DIR: &str = "skerry";
+const NOVA_CONFIG_DIR: &str = "nova";
+const ORIGINAL_CONFIG_DIR: &str = "the_editor";
 const CONFIG_FILE: &str = "config.json";
 const MAX_RECENT_FILES: usize = 20;
 
@@ -141,8 +142,9 @@ impl Config {
             return Self::default();
         };
         let current = base_dir.join(APP_CONFIG_DIR).join(CONFIG_FILE);
-        let legacy = base_dir.join(LEGACY_APP_CONFIG_DIR).join(CONFIG_FILE);
-        Self::load_from_paths(&current, &legacy)
+        let nova = base_dir.join(NOVA_CONFIG_DIR).join(CONFIG_FILE);
+        let original = base_dir.join(ORIGINAL_CONFIG_DIR).join(CONFIG_FILE);
+        Self::load_from_paths(&current, &[&nova, &original])
     }
 
     /// Save the config to disk. Errors are ignored — a missing config
@@ -167,13 +169,14 @@ impl Config {
         Self::config_dir().map(|d| d.join(CONFIG_FILE))
     }
 
-    fn load_from_paths(current: &Path, legacy: &Path) -> Self {
+    fn load_from_paths(current: &Path, legacy: &[&Path]) -> Self {
         let path = if current.exists() {
             current
-        } else if legacy.exists() {
-            legacy
         } else {
-            return Self::default();
+            let Some(legacy) = legacy.iter().find(|path| path.exists()) else {
+                return Self::default();
+            };
+            legacy
         };
 
         fs::read_to_string(path)
@@ -280,29 +283,46 @@ mod tests {
     #[test]
     fn load_falls_back_to_legacy_config_when_current_is_absent() {
         let dir = tempfile::tempdir().unwrap();
-        let current = dir.path().join("nova/config.json");
-        let legacy = dir.path().join("legacy/config.json");
-        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        fs::write(&legacy, r#"{"theme":"legacy-theme"}"#).unwrap();
+        let current = dir.path().join("skerry/config.json");
+        let nova = dir.path().join("nova/config.json");
+        let original = dir.path().join("the_editor/config.json");
+        fs::create_dir_all(nova.parent().unwrap()).unwrap();
+        fs::write(&nova, r#"{"theme":"nova-theme"}"#).unwrap();
+        fs::create_dir_all(original.parent().unwrap()).unwrap();
+        fs::write(&original, r#"{"theme":"original-theme"}"#).unwrap();
 
-        let loaded = Config::load_from_paths(&current, &legacy);
+        let loaded = Config::load_from_paths(&current, &[&nova, &original]);
 
-        assert_eq!(loaded.theme.as_deref(), Some("legacy-theme"));
+        assert_eq!(loaded.theme.as_deref(), Some("nova-theme"));
     }
 
     #[test]
     fn current_config_takes_precedence_over_legacy_config() {
         let dir = tempfile::tempdir().unwrap();
-        let current = dir.path().join("nova/config.json");
-        let legacy = dir.path().join("legacy/config.json");
+        let current = dir.path().join("skerry/config.json");
+        let legacy = dir.path().join("nova/config.json");
         fs::create_dir_all(current.parent().unwrap()).unwrap();
         fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        fs::write(&current, r#"{"theme":"nova-theme"}"#).unwrap();
-        fs::write(&legacy, r#"{"theme":"legacy-theme"}"#).unwrap();
+        fs::write(&current, r#"{"theme":"skerry-theme"}"#).unwrap();
+        fs::write(&legacy, r#"{"theme":"nova-theme"}"#).unwrap();
 
-        let loaded = Config::load_from_paths(&current, &legacy);
+        let loaded = Config::load_from_paths(&current, &[&legacy]);
 
-        assert_eq!(loaded.theme.as_deref(), Some("nova-theme"));
+        assert_eq!(loaded.theme.as_deref(), Some("skerry-theme"));
+    }
+
+    #[test]
+    fn original_config_is_used_when_nova_config_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("skerry/config.json");
+        let nova = dir.path().join("nova/config.json");
+        let original = dir.path().join("the_editor/config.json");
+        fs::create_dir_all(original.parent().unwrap()).unwrap();
+        fs::write(&original, r#"{"theme":"original-theme"}"#).unwrap();
+
+        let loaded = Config::load_from_paths(&current, &[&nova, &original]);
+
+        assert_eq!(loaded.theme.as_deref(), Some("original-theme"));
     }
 
     #[test]

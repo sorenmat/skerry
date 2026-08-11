@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use lsp_types::{
     ClientCapabilities, ClientInfo, CompletionList, CompletionParams, Diagnostic,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentSymbolParams, GotoDefinitionResponse, Hover,
-    HoverContents, InitializeParams, MarkedString, Position, RenameParams, ServerCapabilities,
+    DidSaveTextDocumentParams, DocumentSymbolParams, GotoDefinitionResponse, Hover, HoverContents,
+    InitializeParams, MarkedString, Position, RenameParams, ServerCapabilities,
     TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
     TextDocumentPositionParams, VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceFolder,
 };
@@ -252,7 +252,7 @@ impl LspManager {
                 let init_params = serde_json::to_value(InitializeParams {
                     process_id: Some(std::process::id()),
                     client_info: Some(ClientInfo {
-                        name: "Nova".to_string(),
+                        name: "Skerry".to_string(),
                         version: Some(env!("CARGO_PKG_VERSION").to_string()),
                     }),
                     root_uri: None,
@@ -623,7 +623,8 @@ impl LspManager {
             })
             .unwrap_or_default(),
         );
-        self.pending.insert(id, PendingRequest::Formatting(uri.clone()));
+        self.pending
+            .insert(id, PendingRequest::Formatting(uri.clone()));
     }
 
     /// Peek at formatting edits if they've arrived.
@@ -825,22 +826,23 @@ impl LspManager {
                                     .or_else(|_| {
                                         let flat: Vec<lsp_types::SymbolInformation> =
                                             serde_json::from_value(result)?;
-                                        Ok::<_, serde_json::Error>(flat
-                                            .into_iter()
-                                            .map(|si| lsp_types::DocumentSymbol {
-                                                name: si.name,
-                                                detail: None,
-                                                kind: si.kind,
-                                                tags: si.tags,
-                                                #[allow(deprecated)]
-                                                deprecated: si.deprecated,
-                                                range: si.location.range,
-                                                selection_range: si.location.range,
-                                                children: None,
-                                            })
-                                            .collect())
-                                        })
-                                        .unwrap_or_default();
+                                        Ok::<_, serde_json::Error>(
+                                            flat.into_iter()
+                                                .map(|si| lsp_types::DocumentSymbol {
+                                                    name: si.name,
+                                                    detail: None,
+                                                    kind: si.kind,
+                                                    tags: si.tags,
+                                                    #[allow(deprecated)]
+                                                    deprecated: si.deprecated,
+                                                    range: si.location.range,
+                                                    selection_range: si.location.range,
+                                                    children: None,
+                                                })
+                                                .collect(),
+                                        )
+                                    })
+                                    .unwrap_or_default();
                                 self.symbol_results.insert(uri, symbols);
                             }
                         }

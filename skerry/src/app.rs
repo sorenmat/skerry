@@ -1,6 +1,6 @@
 //! `EditorApp` — owns the `Buffer`, view state, and event handling.
 //!
-//! Mirrors `nova_tui::App` so the event-handling logic stays in
+//! Mirrors `skerry_tui::App` so the event-handling logic stays in
 //! lockstep across frontends (ADR 0005).
 
 use std::time::Instant;
@@ -257,7 +257,7 @@ pub struct CmdLinkState {
 }
 
 /// The three choices offered when closing a dirty document. Mirrors
-/// `nova_tui::app::CloseChoice` exactly.
+/// `skerry_tui::app::CloseChoice` exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseChoice {
     Save,
@@ -527,8 +527,10 @@ impl EditorApp {
         let end = buf.line_byte_range(end_line)?;
         let start_text = buf.line_text(start_line)?;
         let end_text = buf.line_text(end_line)?;
-        let start_byte = start.start + core::char_col_to_byte_col(&start_text, range.start.character as usize);
-        let end_byte = end.start + core::char_col_to_byte_col(&end_text, range.end.character as usize);
+        let start_byte =
+            start.start + core::char_col_to_byte_col(&start_text, range.start.character as usize);
+        let end_byte =
+            end.start + core::char_col_to_byte_col(&end_text, range.end.character as usize);
         Some(start_byte..end_byte)
     }
 
@@ -557,8 +559,7 @@ impl EditorApp {
         let cmd = match core::formatter_for_language(&self.config, lang) {
             Some(c) => c,
             None => {
-                self.status_message =
-                    Some(format!("No formatter configured for {lang}."));
+                self.status_message = Some(format!("No formatter configured for {lang}."));
                 return false;
             }
         };
@@ -825,7 +826,7 @@ impl EditorApp {
     }
 
     /// Intercept an egui event when a modal prompt is open. Mirrors
-    /// `nova_tui::App::dispatch_modal_key` for parity.
+    /// `skerry_tui::App::dispatch_modal_key` for parity.
     ///
     /// - close_confirm: Tab/Shift+Tab cycle the focused choice, Enter
     ///   confirms, `y` confirms as Discard, Esc/`n` cancel.
@@ -911,7 +912,7 @@ impl EditorApp {
     }
 
     /// Apply an `EditorEvent` to the buffer / app state. Same logic as
-    /// `nova_tui::App::handle_event` so both frontends behave
+    /// `skerry_tui::App::handle_event` so both frontends behave
     /// identically.
     pub fn handle_event(&mut self, event: EditorEvent) {
         // Check whether this event modifies the buffer text — used to
@@ -950,7 +951,9 @@ impl EditorApp {
         // was touched. Used to invalidate only that line's cached syntax
         // segments (and those below) instead of nuking the whole cache.
         let edit_start_line = if modifies_buffer {
-            self.active_buffer().pos_to_linecol(self.active_buffer().cursor()).map(|(l, _)| l)
+            self.active_buffer()
+                .pos_to_linecol(self.active_buffer().cursor())
+                .map(|(l, _)| l)
         } else {
             None
         };
@@ -1007,12 +1010,8 @@ impl EditorApp {
                     let pos = self.active_buffer().cursor();
                     let (line, _) = self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                     let v = &self.active_doc().view;
-                    let indent = core::auto_indent(
-                        self.active_buffer(),
-                        line,
-                        v.use_spaces,
-                        v.tab_width,
-                    );
+                    let indent =
+                        core::auto_indent(self.active_buffer(), line, v.use_spaces, v.tab_width);
                     self.insert_text(&format!("\n{indent}"));
                     return;
                 }
@@ -1038,8 +1037,7 @@ impl EditorApp {
                                     self.active_buffer_mut()
                                         .set_selection(Selection::collapsed(new_pos));
                                 }
-                                Err(e) => self.status_message =
-                                    Some(format!("delete error: {e}")),
+                                Err(e) => self.status_message = Some(format!("delete error: {e}")),
                             }
                             return;
                         }
@@ -1151,7 +1149,8 @@ impl EditorApp {
                         .pos_to_linecol(sel.anchor.max(sel.head))
                         .unwrap_or((0, 0));
                     if start_line != end_line {
-                        let r = sel.range(); self.search.selection_range = Some((r.start, r.end));
+                        let r = sel.range();
+                        self.search.selection_range = Some((r.start, r.end));
                     } else {
                         self.search.selection_range = None;
                     }
@@ -1274,20 +1273,28 @@ impl EditorApp {
                     && self.active_buffer().selections().len() == 1
                 {
                     let pos = self.active_buffer().cursor();
-                    let (line, byte_col) = self
-                        .active_buffer()
-                        .pos_to_linecol(pos)
-                        .unwrap_or((0, 0));
+                    let (line, byte_col) =
+                        self.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                     if let Some(line_text) = self.active_buffer().line_text(line) {
                         let line_text = line_text.into_owned();
-                        if let Some((trigger, range)) = core::snippet_trigger_at_cursor(&line_text, byte_col) {
+                        if let Some((trigger, range)) =
+                            core::snippet_trigger_at_cursor(&line_text, byte_col)
+                        {
                             if let Some(body) = self.config.snippets.get(&trigger) {
                                 let (expanded, cursor_offset) = core::expand_snippet(body);
                                 // Replace the trigger word with the snippet body.
-                                let line_start = self.active_buffer().line_byte_range(line).unwrap_or(0..0).start;
+                                let line_start = self
+                                    .active_buffer()
+                                    .line_byte_range(line)
+                                    .unwrap_or(0..0)
+                                    .start;
                                 let trigger_start = line_start + range.start;
                                 let trigger_end = line_start + range.end;
-                                if self.active_buffer_mut().replace(trigger_start..trigger_end, &expanded).is_ok() {
+                                if self
+                                    .active_buffer_mut()
+                                    .replace(trigger_start..trigger_end, &expanded)
+                                    .is_ok()
+                                {
                                     let new_cursor = trigger_start + cursor_offset;
                                     self.active_buffer_mut().set_cursor(new_cursor);
                                     self.active_doc_mut().syntax.invalidate();
@@ -1364,8 +1371,7 @@ impl EditorApp {
             EditorEvent::AddCursor { pos } => {
                 // Multi-cursor: add a cursor without removing existing ones.
                 let clamped = pos.min(self.active_buffer().len());
-                let mut sels: Vec<Selection> =
-                    self.active_buffer().selections().to_vec();
+                let mut sels: Vec<Selection> = self.active_buffer().selections().to_vec();
                 // Don't add if the position is already a cursor.
                 if !sels.iter().any(|s| s.head == clamped && s.is_collapsed()) {
                     sels.push(Selection::collapsed(clamped));
@@ -1373,7 +1379,12 @@ impl EditorApp {
                     self.active_buffer_mut().set_selections(sels);
                 }
             }
-            EditorEvent::ColumnSelect { from_line, from_col, to_line, to_col } => {
+            EditorEvent::ColumnSelect {
+                from_line,
+                from_col,
+                to_line,
+                to_col,
+            } => {
                 let sels = core::column_selections(
                     self.active_buffer(),
                     from_line,
@@ -1390,8 +1401,10 @@ impl EditorApp {
             }
             EditorEvent::SelectAll => {
                 let len = self.active_buffer().len();
-                self.active_buffer_mut()
-                    .set_selections(vec![Selection { anchor: 0, head: len }]);
+                self.active_buffer_mut().set_selections(vec![Selection {
+                    anchor: 0,
+                    head: len,
+                }]);
             }
             EditorEvent::ToggleComment => {
                 let Some(lang) = self.active_doc().language_id() else {
@@ -1434,8 +1447,7 @@ impl EditorApp {
                 // If multi-cursor is active, collapse to one. Otherwise quit.
                 if self.active_buffer().selections().len() > 1 {
                     let primary = self.active_buffer().selections()[0];
-                    self.active_buffer_mut()
-                        .set_selections(vec![primary]);
+                    self.active_buffer_mut().set_selections(vec![primary]);
                 } else {
                     self.sync_config();
                     self.should_quit = true;
@@ -1470,8 +1482,7 @@ impl EditorApp {
                             if self.active_buffer_mut().save().is_ok() {
                                 self.active_doc_mut().refresh_git_gutter();
                                 self.lsp_save_active();
-                                self.status_message =
-                                    Some("Saved + formatted.".to_string());
+                                self.status_message = Some("Saved + formatted.".to_string());
                             }
                         }
                     }
@@ -1728,8 +1739,7 @@ impl EditorApp {
                         let word = self.word_at_cursor().unwrap_or_default();
                         self.rename_dialog = Some(RenameDialog { new_name: word });
                     } else {
-                        self.status_message =
-                            Some("LSP: rename not supported.".to_string());
+                        self.status_message = Some("LSP: rename not supported.".to_string());
                     }
                 }
             }
@@ -1737,8 +1747,7 @@ impl EditorApp {
                 self.rename_dialog = None;
                 if let Some((uri, pos)) = self.lsp_cursor_position() {
                     self.lsp_manager.request_rename(&uri, pos, &new_name);
-                    self.status_message =
-                        Some("LSP: requesting rename...".to_string());
+                    self.status_message = Some("LSP: requesting rename...".to_string());
                 }
             }
             EditorEvent::FormatDocument => {
@@ -1801,7 +1810,8 @@ impl EditorApp {
             } else if let Some((start_byte, old_len, line, col)) = ts_pre_edit {
                 let new_len = self.active_buffer().len();
                 let len_diff = new_len as i64 - old_len as i64;
-                let delta = core::ts::EditDelta::single_line(line, col, start_byte, len_diff as i32);
+                let delta =
+                    core::ts::EditDelta::single_line(line, col, start_byte, len_diff as i32);
                 self.active_doc_mut().apply_ts_edit(delta);
             }
             self.active_doc_mut().git_gutter.mark_dirty();
@@ -1868,7 +1878,8 @@ impl EditorApp {
         if self.active_buffer_mut().insert(pos, &pair).is_ok() {
             // Cursor lands after the pair (after `close`); move it back
             // one char so it sits between `open` and `close`.
-            let between = core::move_left_by_char(self.active_buffer(), self.active_buffer().cursor());
+            let between =
+                core::move_left_by_char(self.active_buffer(), self.active_buffer().cursor());
             self.active_buffer_mut().set_cursor(between);
             self.active_buffer_mut()
                 .set_selection(Selection::collapsed(between));
@@ -1880,7 +1891,7 @@ impl EditorApp {
     /// controls what the Tab key inserts (spaces vs tab character)
     /// and how many spaces per indent level. Per-document so opening
     /// a file with different conventions doesn't fight the user's
-    /// preferred mode. Mirrors `nova_tui::App::set_indent_mode`.
+    /// preferred mode. Mirrors `skerry_tui::App::set_indent_mode`.
     pub fn set_indent_mode(&mut self, use_spaces: bool, tab_width: usize) {
         let tab_width = tab_width.clamp(1, 16);
         self.active_doc_mut().view.use_spaces = use_spaces;
@@ -1909,7 +1920,7 @@ impl EditorApp {
 
     /// Toggle soft-wrap on the active document. The GUI frontend
     /// honours this in its renderer — long lines wrap on multiple
-    /// visual rows. Mirrors `nova_tui::App::toggle_soft_wrap`.
+    /// visual rows. Mirrors `skerry_tui::App::toggle_soft_wrap`.
     pub fn toggle_soft_wrap(&mut self) {
         let new_value = !self.active_doc().view.soft_wrap;
         self.active_doc_mut().view.soft_wrap = new_value;
@@ -1922,7 +1933,7 @@ impl EditorApp {
 
     /// Cycle to the next theme and invalidate the syntax cache
     /// for every open document so the new colors appear immediately.
-    /// Mirrors `nova_tui::App::cycle_theme`.
+    /// Mirrors `skerry_tui::App::cycle_theme`.
     pub fn cycle_theme(&mut self) {
         let name = self.syntax.cycle_theme().to_string();
         for doc in &mut self.documents {
@@ -1983,12 +1994,11 @@ impl EditorApp {
         // Skip occurrences that overlap an existing selection.
         while let Some(pos) = found {
             let candidate = pos..(pos + needle_bytes.len());
-            let overlaps = existing.iter().any(|r| {
-                candidate.start < r.end && candidate.end > r.start
-            });
+            let overlaps = existing
+                .iter()
+                .any(|r| candidate.start < r.end && candidate.end > r.start);
             if !overlaps && pos != last_head {
-                let mut sels: Vec<Selection> =
-                    self.active_buffer().selections().to_vec();
+                let mut sels: Vec<Selection> = self.active_buffer().selections().to_vec();
                 sels.push(Selection {
                     anchor: candidate.start,
                     head: candidate.end,
@@ -2064,8 +2074,10 @@ impl EditorApp {
             all_cursors.extend(collapsed);
             all_cursors.sort();
             all_cursors.dedup();
-            let new_sels: Vec<Selection> =
-                all_cursors.iter().map(|&p| Selection::collapsed(p)).collect();
+            let new_sels: Vec<Selection> = all_cursors
+                .iter()
+                .map(|&p| Selection::collapsed(p))
+                .collect();
             self.active_buffer_mut().set_selections(new_sels);
         }
         any_deleted
@@ -2073,7 +2085,7 @@ impl EditorApp {
 
     /// Replace the currently-active find match with the replace query,
     /// then advance to the next match. Mirrors
-    /// `nova_tui::App::replace_one`.
+    /// `skerry_tui::App::replace_one`.
     pub fn replace_one(&mut self) {
         if self.search.query.is_empty() {
             self.status_message = Some("Replace: nothing to find.".to_string());
@@ -2122,7 +2134,7 @@ impl EditorApp {
     }
 
     /// Replace every find match with the replace query, as a single
-    /// undo entry. Mirrors `nova_tui::App::replace_all`.
+    /// undo entry. Mirrors `skerry_tui::App::replace_all`.
     pub fn replace_all(&mut self) {
         if self.search.query.is_empty() {
             self.status_message = Some("Replace all: nothing to find.".to_string());
@@ -2169,7 +2181,7 @@ impl EditorApp {
     }
 
     /// Compute the byte position a movement should land on. Identical
-    /// to `nova_tui::App::compute_target`.
+    /// to `skerry_tui::App::compute_target`.
     #[allow(dead_code)]
     fn compute_target(&self, movement: Movement) -> usize {
         let pos = self.active_buffer().cursor();
@@ -2224,11 +2236,16 @@ impl EditorApp {
                     .active_buffer()
                     .line_text(line)
                     .map(|t| {
-                        core::byte_to_char_col(&t, t.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+                        core::byte_to_char_col(
+                            &t,
+                            t.chars().take_while(|c| *c == ' ' || *c == '\t').count(),
+                        )
                     })
                     .unwrap_or(0);
                 if col == 0 {
-                    self.active_buffer().linecol_to_pos(line, first_nws).unwrap_or(0)
+                    self.active_buffer()
+                        .linecol_to_pos(line, first_nws)
+                        .unwrap_or(0)
                 } else {
                     self.active_buffer().linecol_to_pos(line, 0).unwrap_or(0)
                 }
@@ -3633,7 +3650,7 @@ mod tests {
     }
 
     fn markdown_app(content: &str) -> EditorApp {
-        let path = std::env::temp_dir().join("nova-preview-test.md");
+        let path = std::env::temp_dir().join("skerry-preview-test.md");
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
             content.as_bytes().to_vec(),
             path,
@@ -3813,7 +3830,7 @@ mod tests {
     #[test]
     fn save_clears_dirty_when_path_set() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_gui_save_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_gui_save_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
@@ -3885,10 +3902,7 @@ mod tests {
         // Typing 'x' should produce "ax\nbx" with both cursors advancing.
         let mut app = app_with("a\nb");
         app.active_buffer_mut()
-            .set_selections(vec![
-                Selection::collapsed(1),
-                Selection::collapsed(3),
-            ]);
+            .set_selections(vec![Selection::collapsed(1), Selection::collapsed(3)]);
         app.handle_event(EditorEvent::Insert('x'));
         assert_eq!(app.active_buffer().to_bytes(), b"ax\nbx".to_vec());
         assert_eq!(app.active_buffer().selections().len(), 2);
@@ -3899,11 +3913,10 @@ mod tests {
     #[test]
     fn multi_cursor_move_moves_all_cursors() {
         let mut app = app_with("hello\nworld");
-        app.active_buffer_mut()
-            .set_selections(vec![
-                Selection::collapsed(2),  // on line 0
-                Selection::collapsed(8),  // on line 1
-            ]);
+        app.active_buffer_mut().set_selections(vec![
+            Selection::collapsed(2), // on line 0
+            Selection::collapsed(8), // on line 1
+        ]);
         app.handle_event(EditorEvent::Move(Movement::Right));
         assert_eq!(app.active_buffer().selections()[0].head, 3);
         assert_eq!(app.active_buffer().selections()[1].head, 9);
@@ -4378,10 +4391,7 @@ mod tests {
     #[test]
     fn confirm_close_choice_save_saves_then_closes() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "nova_gui_close_save_{}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("skerry_gui_close_save_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
             b"hello".to_vec(),
@@ -4423,10 +4433,7 @@ mod tests {
     #[test]
     fn open_file_event_with_some_path_loads_directly() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "nova_gui_open_some_{}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("skerry_gui_open_some_{}.txt", std::process::id()));
         std::fs::write(&path, b"hi").unwrap();
         let mut app = app_with("buffer");
         app.handle_event(EditorEvent::OpenFile(Some(path.clone())));
@@ -4438,10 +4445,7 @@ mod tests {
     #[test]
     fn open_file_with_nonexistent_path_creates_empty_buffer_with_path() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "nova_gui_open_new_{}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("skerry_gui_open_new_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let mut app = app_with("buffer");
         app.handle_event(EditorEvent::OpenFile(Some(path.clone())));
@@ -4592,8 +4596,7 @@ mod tests {
 
     #[test]
     fn project_tree_shows_by_default_and_toggles() {
-        let dir =
-            std::env::temp_dir().join(format!("nova_gui_proj_tree_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("skerry_gui_proj_tree_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -4622,8 +4625,7 @@ mod tests {
 
     #[test]
     fn project_tree_collapses_and_opens_file() {
-        let dir =
-            std::env::temp_dir().join(format!("nova_gui_proj_open_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("skerry_gui_proj_open_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -4671,7 +4673,7 @@ mod tests {
     #[test]
     fn opening_file_reveals_it_in_project_tree() {
         let dir =
-            std::env::temp_dir().join(format!("nova_gui_proj_reveal_{}", std::process::id()));
+            std::env::temp_dir().join(format!("skerry_gui_proj_reveal_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src/nested")).unwrap();
         std::fs::create_dir_all(dir.join("other")).unwrap();
@@ -4732,7 +4734,7 @@ mod tests {
     #[test]
     fn auto_save_writes_idle_dirty_buffer() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_autosave_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_autosave_{}.txt", std::process::id()));
         let mut app = app_with_path("hello", path.clone());
         app.handle_event(EditorEvent::Insert('!'));
         assert!(app.active_doc().is_dirty());
@@ -4757,10 +4759,7 @@ mod tests {
     #[test]
     fn auto_save_respects_config_toggle() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "nova_autosave_off_{}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("skerry_autosave_off_{}.txt", std::process::id()));
         let mut app = app_with_path("hello", path.clone());
         app.config.auto_save = false;
         app.handle_event(EditorEvent::Insert('!'));
@@ -4775,7 +4774,7 @@ mod tests {
     #[test]
     fn reload_document_at_path_loads_new_content() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nova_reload_{}.txt", std::process::id()));
+        let path = dir.join(format!("skerry_reload_{}.txt", std::process::id()));
         std::fs::write(&path, "original").unwrap();
 
         let mut app = app_with_path("original", path.clone());
@@ -4791,10 +4790,7 @@ mod tests {
     #[test]
     fn reload_file_event_reloads_active_document() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "nova_reload_event_{}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("skerry_reload_event_{}.txt", std::process::id()));
         std::fs::write(&path, "v1").unwrap();
 
         let mut app = app_with_path("v1", path.clone());
@@ -4912,11 +4908,8 @@ mod tests {
         name: &str,
         contents: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "nova_gui_proj_{}_{}",
-            std::process::id(),
-            name
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("skerry_gui_proj_{}_{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
@@ -4984,11 +4977,8 @@ mod tests {
     // ----- fuzzy file finder -----
 
     fn temp_project_for_fuzzy(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "nova_gui_fuzzy_{}_{}",
-            std::process::id(),
-            name
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("skerry_gui_fuzzy_{}_{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::create_dir_all(dir.join("tests")).unwrap();
@@ -5109,11 +5099,8 @@ mod tests {
         file_name: &str,
         content: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "nova_gui_git_{}_{}",
-            std::process::id(),
-            name
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("skerry_gui_git_{}_{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         run_git(&dir, &["init", "-q"]);

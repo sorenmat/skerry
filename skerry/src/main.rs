@@ -1,8 +1,8 @@
 //! GUI frontend entry point.
 //!
-//! Usage: `nova [PATH...]` — opens one document per PATH
+//! Usage: `skerry [PATH...]` — opens one document per PATH
 //! argument. With no PATH, opens one unsaved buffer. Same feature
-//! set as `nova-tui` (ADR 0005).
+//! set as `skerry-tui` (ADR 0005).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use core::{Buffer, Document, PieceTableBuffer};
 use eframe::egui;
 
-use nova::app::EditorApp;
+use skerry::app::EditorApp;
 
 fn main() -> eframe::Result<()> {
     let config = core::Config::load();
@@ -32,12 +32,12 @@ fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(initial_size)
-            .with_title("Nova"),
+            .with_title("Skerry"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Nova",
+        "Skerry",
         native_options,
         Box::new(|_cc| Ok(Box::new(EditorApp::new_with_documents(documents, config)))),
     )

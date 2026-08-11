@@ -1,4 +1,4 @@
-//! Project/workspace support for Nova.
+//! Project/workspace support for Skerry.
 //!
 //! A *project* is a directory on disk that contains related files. The
 //! editor detects a project by walking up from the active document's

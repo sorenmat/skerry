@@ -1,10 +1,10 @@
 [package]
-name = "nova-tui"
+name = "skerry-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Terminal frontend for Nova (ratatui + crossterm)."
+description = "Terminal frontend for Skerry (ratatui + crossterm)."
 
 [dependencies]
 core = { path = "../core" }

@@ -100,9 +100,8 @@ pub(crate) fn highlight_doc_range(
         return result;
     }
     let inline_trees = markdown_tree.inline_trees();
-    let first = inline_trees.partition_point(|tree| {
-        tree.root_node().byte_range().end <= byte_range.start
-    });
+    let first =
+        inline_trees.partition_point(|tree| tree.root_node().byte_range().end <= byte_range.start);
     for inline_tree in &inline_trees[first..] {
         let root_range = inline_tree.root_node().byte_range();
         if root_range.start >= byte_range.end {
@@ -187,12 +186,18 @@ fn highlight_range_with_query(
     // returns data. Loop = advance, then read, then break when done.
     loop {
         captures.advance();
-        let Some((m, cap_idx)) = captures.get() else { break };
-        let Some(cap) = m.captures.get(*cap_idx) else { continue };
+        let Some((m, cap_idx)) = captures.get() else {
+            break;
+        };
+        let Some(cap) = m.captures.get(*cap_idx) else {
+            continue;
+        };
         let Some(name) = capture_names.get(cap.index as usize).copied() else {
             continue;
         };
-        let Some(color) = theme.color_for(name) else { continue };
+        let Some(color) = theme.color_for(name) else {
+            continue;
+        };
         raw.push((cap.node.byte_range(), color));
     }
     drop(captures);
@@ -313,10 +318,16 @@ fn merge_captures(caps: &[(Range<usize>, HighlightColor)]) -> Vec<ColorSegment> 
                     if last.color == color && last.range.end == start {
                         last.range.end = byte;
                     } else {
-                        segments.push(ColorSegment { range: start..byte, color });
+                        segments.push(ColorSegment {
+                            range: start..byte,
+                            color,
+                        });
                     }
                 } else {
-                    segments.push(ColorSegment { range: start..byte, color });
+                    segments.push(ColorSegment {
+                        range: start..byte,
+                        color,
+                    });
                 }
             }
         }
@@ -336,7 +347,11 @@ fn merge_captures(caps: &[(Range<usize>, HighlightColor)]) -> Vec<ColorSegment> 
         let next_color = active.last().map(|(_, _, c)| *c);
         if next_color != current_color || span_start.is_none() {
             current_color = next_color;
-            span_start = if next_color.is_some() { Some(byte) } else { None };
+            span_start = if next_color.is_some() {
+                Some(byte)
+            } else {
+                None
+            };
         }
     }
 
@@ -434,14 +449,9 @@ mod tests {
         let grammar = grammar_for_extension("md").unwrap();
         let mut tree = DocTree::new(grammar.clone()).unwrap();
         tree.parse(src.as_bytes());
-        let segments = highlight_doc_range(
-            &tree,
-            &grammar,
-            &OCEAN_DARK,
-            0..src.len(),
-            src.as_bytes(),
-        )
-        .segments;
+        let segments =
+            highlight_doc_range(&tree, &grammar, &OCEAN_DARK, 0..src.len(), src.as_bytes())
+                .segments;
         let title = src.find("Title").unwrap();
         let strong = src.find("strong").unwrap();
         let code = src.find("code").unwrap();

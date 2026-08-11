@@ -16,7 +16,7 @@ pub mod theme;
 pub mod tree;
 
 pub use grammar::{grammar_for_path, Grammar};
-pub use highlight::highlight_range;
 pub(crate) use highlight::highlight_doc_range;
+pub use highlight::highlight_range;
 pub use theme::{bundled_themes, find_theme, TsTheme};
 pub use tree::{DocTree, EditDelta};

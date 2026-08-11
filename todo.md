@@ -1,4 +1,4 @@
-# Nova — Roadmap to world-class
+# Skerry — Roadmap to world-class
 
 Prioritized plan based on the current feature set and the biggest gaps next to modern editors (VS Code, Zed, Sublime).
 

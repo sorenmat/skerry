@@ -63,7 +63,8 @@ mod tests {
 
     #[test]
     fn project_tree_scrolls_selected_file_into_view() {
-        let dir = std::env::temp_dir().join(format!("nova_tui_tree_scroll_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("skerry_tui_tree_scroll_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
@@ -244,10 +245,7 @@ mod tests {
         // With a dirty buffer, opening the prompt should add a row
         // showing "has unsaved changes" and the three options.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "nova_render_close_{}.txt",
-            std::process::id()
-        ));
+        let path = dir.join(format!("skerry_render_close_{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
             b"hello".to_vec(),

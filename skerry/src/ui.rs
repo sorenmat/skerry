@@ -583,24 +583,22 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                         .as_ref()
                         .map(|d| d.new_name.clone())
                         .unwrap_or_default();
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut name).desired_width(300.0),
-                    );
+                    let response =
+                        ui.add(egui::TextEdit::singleline(&mut name).desired_width(300.0));
                     if response.changed() {
                         if let Some(d) = app.rename_dialog.as_mut() {
                             d.new_name = name;
                         }
                     }
                     if response.gained_focus()
-                        || (app.rename_dialog.as_ref().map_or(true, |d| {
-                            d.new_name.is_empty() && !response.has_focus()
-                        }))
+                        || (app
+                            .rename_dialog
+                            .as_ref()
+                            .map_or(true, |d| d.new_name.is_empty() && !response.has_focus()))
                     {
                         response.request_focus();
                     }
-                    if response.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    {
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         if let Some(d) = app.rename_dialog.take() {
                             if !d.new_name.is_empty() {
                                 app.handle_event(EditorEvent::RenameApply {
@@ -610,9 +608,7 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                         }
                     }
                     let cancel_btn = ui.button("Cancel");
-                    if cancel_btn.clicked()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                    {
+                    if cancel_btn.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         app.rename_dialog = None;
                     }
                 });
@@ -761,57 +757,52 @@ fn render_project_tree_sidebar(ctx: &egui::Context, app: &mut EditorApp) {
                 scroll_area = scroll_area.vertical_scroll_offset(centered);
                 app.project_tree_reveal_pending = false;
             }
-            scroll_area.show_rows(
-                ui,
-                row_height,
-                rows.len(),
-                |ui, row_range| {
-                    // Virtualized rows must stay at the fixed height supplied
-                    // to `show_rows`, even for deeply nested or long names.
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                    for i in row_range {
-                        let (depth, node) = &rows[i];
-                        let is_selected = i == selected;
-                        let is_dir = node.is_dir();
-                        let expanded = app
-                            .project_tree
-                            .as_ref()
-                            .map(|t| t.expanded.contains(node.rel_path()))
-                            .unwrap_or(false);
+            scroll_area.show_rows(ui, row_height, rows.len(), |ui, row_range| {
+                // Virtualized rows must stay at the fixed height supplied
+                // to `show_rows`, even for deeply nested or long names.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                for i in row_range {
+                    let (depth, node) = &rows[i];
+                    let is_selected = i == selected;
+                    let is_dir = node.is_dir();
+                    let expanded = app
+                        .project_tree
+                        .as_ref()
+                        .map(|t| t.expanded.contains(node.rel_path()))
+                        .unwrap_or(false);
 
-                        let indent = "  ".repeat(*depth);
-                        let icon = if is_dir {
-                            if expanded {
-                                "📂"
-                            } else {
-                                "📁"
-                            }
+                    let indent = "  ".repeat(*depth);
+                    let icon = if is_dir {
+                        if expanded {
+                            "📂"
                         } else {
-                            "  "
-                        };
-                        let label = format!("{indent}{icon} {}", node.name());
-                        let text = egui::RichText::new(label).monospace();
-                        let response = if is_selected {
-                            ui.selectable_label(true, text.strong())
-                        } else {
-                            ui.selectable_label(false, text)
-                        };
-                        hand_cursor(&response, ui.ctx());
-                        if response.clicked() {
-                            app.project_tree_focused = true;
-                            app.project_tree_selected = i;
-                            if is_dir {
-                                if let Some(tree) = app.project_tree.as_mut() {
-                                    tree.toggle(node.rel_path());
-                                }
-                            } else if let Some(project) = project_root.as_ref() {
-                                let path = project.root.join(node.rel_path());
-                                app.open_or_switch_to_path(&path);
+                            "📁"
+                        }
+                    } else {
+                        "  "
+                    };
+                    let label = format!("{indent}{icon} {}", node.name());
+                    let text = egui::RichText::new(label).monospace();
+                    let response = if is_selected {
+                        ui.selectable_label(true, text.strong())
+                    } else {
+                        ui.selectable_label(false, text)
+                    };
+                    hand_cursor(&response, ui.ctx());
+                    if response.clicked() {
+                        app.project_tree_focused = true;
+                        app.project_tree_selected = i;
+                        if is_dir {
+                            if let Some(tree) = app.project_tree.as_mut() {
+                                tree.toggle(node.rel_path());
                             }
+                        } else if let Some(project) = project_root.as_ref() {
+                            let path = project.root.join(node.rel_path());
+                            app.open_or_switch_to_path(&path);
                         }
                     }
-                },
-            );
+                }
+            });
         });
 }
 
@@ -881,8 +872,10 @@ fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
             let editor_line_height = ui.fonts(|f| f.row_height(&font_id));
 
             let _total_height = total_lines as f32 * mini_line_height;
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(mini_width, ui.available_height()), egui::Sense::click_and_drag());
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(mini_width, ui.available_height()),
+                egui::Sense::click_and_drag(),
+            );
             let painter = ui.painter_at(rect);
 
             // Background.
@@ -908,7 +901,8 @@ fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
                         // Approximate: 1 char ≈ 1 byte for most code.
                         // Scale factor: mini_width / max_line_width_estimate.
                         let scale = mini_width / 120.0; // assume ~120 char lines max
-                        let x = rect.left() + (seg.range.start as f32 * scale).min(mini_width - 2.0);
+                        let x =
+                            rect.left() + (seg.range.start as f32 * scale).min(mini_width - 2.0);
                         let w = ((seg.range.end - seg.range.start) as f32 * scale).max(1.0);
                         let w = (x + w).min(rect.right()) - x;
                         if w > 0.0 {
@@ -951,11 +945,7 @@ fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
                 egui::pos2(rect.left(), view_top),
                 egui::vec2(rect.width(), view_height),
             );
-            painter.rect_filled(
-                view_rect,
-                0.0,
-                theme.selection_bg,
-            );
+            painter.rect_filled(view_rect, 0.0, theme.selection_bg);
 
             // Click/drag to scroll.
             if response.dragged() || response.clicked() {
@@ -964,12 +954,11 @@ fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
                     // Target: center the viewport on the clicked line.
                     let target_line =
                         (click_y / mini_line_height).floor() - (view_lines as f32 / 2.0);
-                    let target_offset =
-                        (target_line.max(0.0) * editor_line_height).round();
+                    let target_offset = (target_line.max(0.0) * editor_line_height).round();
                     // Write the new scroll offset to the persisted state.
                     ui.ctx().data_mut(|d| {
-                        if let Some(mut state) = d
-                            .get_persisted::<egui::containers::scroll_area::State>(scroll_id)
+                        if let Some(mut state) =
+                            d.get_persisted::<egui::containers::scroll_area::State>(scroll_id)
                         {
                             state.offset.y = target_offset;
                             d.insert_persisted(scroll_id, state);
@@ -1445,11 +1434,8 @@ fn render_symbol_picker_window(ctx: &egui::Context, app: &mut EditorApp) {
                                 continue;
                             };
                             let is_selected = row == selected;
-                            let label = format!(
-                                "{}  L{}",
-                                sym.name,
-                                sym.selection_range.start.line + 1
-                            );
+                            let label =
+                                format!("{}  L{}", sym.name, sym.selection_range.start.line + 1);
                             let text = egui::RichText::new(label).monospace().size(14.0);
                             let response = if is_selected {
                                 ui.selectable_label(true, text.strong())
@@ -1459,9 +1445,7 @@ fn render_symbol_picker_window(ctx: &egui::Context, app: &mut EditorApp) {
                             hand_cursor(&response, ui.ctx());
                             if response.clicked() {
                                 app.symbol_picker.selected = row;
-                                if let Some(sym) =
-                                    app.symbol_picker.items.get(idx).cloned()
-                                {
+                                if let Some(sym) = app.symbol_picker.items.get(idx).cloned() {
                                     let line = sym.selection_range.start.line as usize;
                                     app.go_to_line(line + 1);
                                     app.symbol_picker.open = false;
@@ -1543,7 +1527,10 @@ fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
                     rows.push(("F12".to_string(), "Go to definition"));
                     rows.push(("( ) [ ] { } \" '".to_string(), "Auto-pair brackets/quotes"));
                     rows.push(("Enter after {".to_string(), "Auto-indent"));
-                    rows.push(("Home".to_string(), "Smart Home (toggle col 0 / first non-WS)"));
+                    rows.push((
+                        "Home".to_string(),
+                        "Smart Home (toggle col 0 / first non-WS)",
+                    ));
                     if is_mac {
                         rows.push(("Cmd+/".to_string(), "Toggle comment"));
                     } else {
@@ -1760,8 +1747,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
 
     // When git blame is active, the gutter origin shifts right by
     // BLAME_WIDTH to make room for the blame column.
-    let blame_on = app.active_doc().view.git_blame_enabled
-        && app.active_doc().git_blame.enabled();
+    let blame_on = app.active_doc().view.git_blame_enabled && app.active_doc().git_blame.enabled();
     let gw = if blame_on {
         GIT_GUTTER_WIDTH + BLAME_WIDTH
     } else {
@@ -1869,8 +1855,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             if app.cmd_link.range.is_some() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             } else if let Some(pos) = response.hover_pos() {
-                let gutter_right =
-                    rect.left() + gw + gutter_width as f32 * char_width + char_width;
+                let gutter_right = rect.left() + gw + gutter_width as f32 * char_width + char_width;
                 if pos.x >= gutter_right {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                 } else {
@@ -2101,10 +2086,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                         entry.short_hash, entry.author, entry.relative_time
                     );
                     painter.text(
-                        egui::pos2(
-                            (rect.left() + BLAME_WIDTH - 4.0).round(),
-                            y,
-                        ),
+                        egui::pos2((rect.left() + BLAME_WIDTH - 4.0).round(), y),
                         egui::Align2::RIGHT_TOP,
                         blame_text,
                         egui::FontId::monospace(FONT_SIZE - 1.0),
@@ -2185,7 +2167,8 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     let total_chars = line_text.chars().count();
                     let take_lo =
                         byte_to_char_col(&line_text, intersect.start - start).min(total_chars);
-                    let take_hi = byte_to_char_col(&line_text, intersect.end - start).min(total_chars);
+                    let take_hi =
+                        byte_to_char_col(&line_text, intersect.end - start).min(total_chars);
                     if take_hi > take_lo {
                         Some((take_lo, take_hi))
                     } else {
@@ -2343,33 +2326,38 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 // Cache lookup first (immutable borrow of doc.syntax). If
                 // present and not dirty, skip the tree-sitter query.
                 let cached = if !app.documents[app.active].syntax.dirty {
-                    app.documents[app.active].syntax.lines.get(&line_idx).cloned()
+                    app.documents[app.active]
+                        .syntax
+                        .lines
+                        .get(&line_idx)
+                        .cloned()
                 } else {
                     None
                 };
-                let segments: Vec<core::ColorSegment> = match cached {
-                    Some(s) => s,
-                    None => {
-                        // Cache miss: highlight this line via tree-sitter
-                        // (immutable doc borrow ends here, producing an
-                        // owned Vec), then insert into the cache.
-                        let syntax_theme = app.syntax.ts_theme();
-                        let (per_line, complete) = app.documents[app.active]
-                            .highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
-                        let segs = per_line.into_iter().next().unwrap_or_default();
-                        let doc = &mut app.documents[app.active];
-                        if complete {
-                            if doc.syntax.dirty {
-                                doc.syntax.lines.clear();
-                                doc.syntax.dirty = false;
+                let segments: Vec<core::ColorSegment> =
+                    match cached {
+                        Some(s) => s,
+                        None => {
+                            // Cache miss: highlight this line via tree-sitter
+                            // (immutable doc borrow ends here, producing an
+                            // owned Vec), then insert into the cache.
+                            let syntax_theme = app.syntax.ts_theme();
+                            let (per_line, complete) = app.documents[app.active]
+                                .highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
+                            let segs = per_line.into_iter().next().unwrap_or_default();
+                            let doc = &mut app.documents[app.active];
+                            if complete {
+                                if doc.syntax.dirty {
+                                    doc.syntax.lines.clear();
+                                    doc.syntax.dirty = false;
+                                }
+                                doc.syntax.lines.insert(line_idx, segs.clone());
+                            } else {
+                                ui.ctx().request_repaint();
                             }
-                            doc.syntax.lines.insert(line_idx, segs.clone());
-                        } else {
-                            ui.ctx().request_repaint();
+                            segs
                         }
-                        segs
-                    }
-                };
+                    };
                 if segments.is_empty() {
                     // No syntax (unknown extension, too large, or
                     // passthrough) — draw as before.
@@ -2612,7 +2600,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
         if app.active_buffer().selection().is_collapsed()
             && app.active_buffer().selections().len() == 1
         {
-            if let Some((bracket_pos, match_pos)) = core::matching_bracket(app.active_buffer(), cursor_pos) {
+            if let Some((bracket_pos, match_pos)) =
+                core::matching_bracket(app.active_buffer(), cursor_pos)
+            {
                 for pos in [bracket_pos, match_pos] {
                     let (bl, bc) = app.active_buffer().pos_to_linecol(pos).unwrap_or((0, 0));
                     if bl < start_line || bl >= end_line {
@@ -2695,7 +2685,14 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     // Start of a potential column-select drag. Record the
                     // (line, col). If it turns into a drag, we'll fan out.
                     if let Some(byte_pos) = pixel_to_byte_pos(
-                        app, pos, rect, text_x, char_width, line_height, prefix_chars, gutter_width,
+                        app,
+                        pos,
+                        rect,
+                        text_x,
+                        char_width,
+                        line_height,
+                        prefix_chars,
+                        gutter_width,
                     ) {
                         if let Some((line, col)) = app.active_buffer().pos_to_linecol(byte_pos) {
                             app.column_select_start = Some((line, col));
@@ -2707,7 +2704,14 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     // current position, one selection per line.
                     if let Some((from_line, from_col)) = app.column_select_start {
                         if let Some(byte_pos) = pixel_to_byte_pos(
-                            app, pos, rect, text_x, char_width, line_height, prefix_chars, gutter_width,
+                            app,
+                            pos,
+                            rect,
+                            text_x,
+                            char_width,
+                            line_height,
+                            prefix_chars,
+                            gutter_width,
                         ) {
                             if let Some((to_line, to_col)) =
                                 app.active_buffer().pos_to_linecol(byte_pos)
