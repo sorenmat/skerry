@@ -2449,73 +2449,93 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 // segment gets its own background rectangle so
                 // adjacent matches render as adjacent coloured
                 // bars.
-                let mut highlights = match_highlights;
-                // Stable sort by start (matches on the same
-                // char-col keep insertion order — shouldn't
-                // happen in practice since memchr matches are
-                // non-overlapping).
-                highlights.sort_by_key(|h| h.0);
+                // Normalize possibly-overlapping match ranges into disjoint
+                // spans. The current match wins wherever ranges overlap so
+                // its complete range stays visually identifiable while the
+                // user navigates between hits.
+                let mut events: Vec<(usize, i32, i32)> = Vec::new();
+                for (lo, hi, color) in match_highlights {
+                    let is_current = color == current_match_color;
+                    let depths = if is_current { (0, 1) } else { (1, 0) };
+                    events.push((lo, depths.0, depths.1));
+                    events.push((hi, -depths.0, -depths.1));
+                }
+                events.sort_unstable_by_key(|event| event.0);
 
+                let mut highlights = Vec::new();
+                let mut other_depth = 0i32;
+                let mut current_depth = 0i32;
+                let mut event_idx = 0usize;
+                while event_idx < events.len() {
+                    let pos = events[event_idx].0;
+                    while event_idx < events.len() && events[event_idx].0 == pos {
+                        other_depth += events[event_idx].1;
+                        current_depth += events[event_idx].2;
+                        event_idx += 1;
+                    }
+                    let Some(next_pos) = events.get(event_idx).map(|event| event.0) else {
+                        break;
+                    };
+                    let color = if current_depth > 0 {
+                        Some(current_match_color)
+                    } else if other_depth > 0 {
+                        Some(other_match_color)
+                    } else {
+                        None
+                    };
+                    if let Some(color) = color {
+                        if let Some((_, previous_hi, previous_color)) = highlights.last_mut() {
+                            if *previous_hi == pos && *previous_color == color {
+                                *previous_hi = next_pos;
+                                continue;
+                            }
+                        }
+                        highlights.push((pos, next_pos, color));
+                    }
+                }
+
+                let line_chars: Vec<char> = line_text.chars().collect();
                 let mut cursor = 0usize;
-                let total_chars = line_text.chars().count();
+                let mut segment_x = text_x.round();
+                let total_chars = line_chars.len();
                 for (lo, hi, color) in highlights {
                     if lo > cursor {
-                        let plain: String =
-                            line_text.chars().skip(cursor).take(lo - cursor).collect();
+                        let plain: String = line_chars[cursor..lo].iter().collect();
                         if !plain.is_empty() {
-                            painter.text(
-                                egui::pos2(text_x, y),
-                                egui::Align2::LEFT_TOP,
-                                plain,
-                                font_id.clone(),
-                                theme.text,
-                            );
+                            let galley = painter.layout_no_wrap(plain, font_id.clone(), theme.text);
+                            let width = galley.size().x;
+                            painter.galley(egui::pos2(segment_x, y), galley, theme.text);
+                            segment_x += width;
                         }
                     }
-                    let matched: String = line_text.chars().skip(lo).take(hi - lo).collect();
+                    let matched: String = line_chars[lo..hi].iter().collect();
                     if !matched.is_empty() {
-                        // Width must be measured from `text_x` so
-                        // we account for the chars before this
-                        // segment too — `width_of(&matched)` alone
-                        // would be wrong if a previous segment
-                        // included tabs (tab advance ≠ 1 char).
-                        let matched_x = (text_x
-                            + width_of(&line_text.chars().take(lo).collect::<String>()))
-                        .round();
-                        let matched_w = width_of(&matched).round();
-                        painter.rect_filled(
-                            egui::Rect::from_min_size(
-                                egui::pos2(matched_x, y),
-                                egui::vec2(matched_w, line_height),
-                            ),
-                            0.0,
-                            color,
-                        );
                         let match_text_color = if color == current_match_color {
                             theme.match_current_text
                         } else {
                             theme.match_other_text
                         };
-                        painter.text(
-                            egui::pos2(matched_x, y),
-                            egui::Align2::LEFT_TOP,
-                            matched,
-                            font_id.clone(),
-                            match_text_color,
+                        let galley =
+                            painter.layout_no_wrap(matched, font_id.clone(), match_text_color);
+                        let matched_w = galley.size().x;
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(segment_x, y),
+                                egui::vec2(matched_w, line_height),
+                            ),
+                            0.0,
+                            color,
                         );
+                        painter.galley(egui::pos2(segment_x, y), galley, match_text_color);
+                        segment_x += matched_w;
                     }
                     cursor = hi;
                 }
                 if cursor < total_chars {
-                    let tail: String = line_text.chars().skip(cursor).collect();
+                    let tail: String = line_chars[cursor..].iter().collect();
                     if !tail.is_empty() {
-                        painter.text(
-                            egui::pos2(text_x, y),
-                            egui::Align2::LEFT_TOP,
-                            tail,
-                            font_id.clone(),
-                            theme.text,
-                        );
+                        let galley = painter.layout_no_wrap(tail, font_id.clone(), theme.text);
+                        painter.galley(egui::pos2(segment_x, y), galley, theme.text);
                     }
                 }
             }

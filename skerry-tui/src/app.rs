@@ -750,6 +750,12 @@ impl App {
                         if self.dispatch_modal_key(key) {
                             continue;
                         }
+                        // Quit and close are application-level shortcuts.
+                        // Completion and query popups must not consume them
+                        // as printable input.
+                        if self.dispatch_application_shortcut(key) {
+                            continue;
+                        }
                         // LSP completion popup intercepts navigation and
                         // insertion keys while it's open.
                         if self.lsp_completion.open {
@@ -903,6 +909,16 @@ impl App {
         }
 
         false
+    }
+
+    fn dispatch_application_shortcut(&mut self, key: cxevent::KeyEvent) -> bool {
+        let Some(event @ (EditorEvent::Quit | EditorEvent::CloseDoc)) =
+            crate::event::translate_key(key, None)
+        else {
+            return false;
+        };
+        self.handle_event(event);
+        true
     }
 
     fn apply_clipboard_action(
@@ -1442,11 +1458,10 @@ impl App {
                 self.active_doc_mut().syntax.invalidate();
             }
             EditorEvent::CollapseCursors => {
-                if self.active_buffer().selections().len() > 1 {
-                    let primary = self.active_buffer().selections()[0];
-                    self.active_buffer_mut().set_selections(vec![primary]);
-                } else {
-                    self.handle_event(EditorEvent::CloseDoc);
+                let primary = self.active_buffer().selections()[0];
+                if self.active_buffer().selections().len() > 1 || !primary.is_collapsed() {
+                    self.active_buffer_mut()
+                        .set_selections(vec![Selection::collapsed(primary.head)]);
                 }
             }
             EditorEvent::Paste(text) => {
@@ -3509,6 +3524,30 @@ mod tests {
     }
 
     #[test]
+    fn escape_with_single_caret_does_not_close_document() {
+        let mut app = app_with("hello");
+        app.active_buffer_mut().set_cursor(3);
+
+        app.handle_event(EditorEvent::CollapseCursors);
+
+        assert!(!app.should_quit);
+        assert_eq!(app.documents.len(), 1);
+        assert_eq!(app.active_buffer().cursor(), 3);
+    }
+
+    #[test]
+    fn escape_collapses_selection_to_its_head() {
+        let mut app = app_with("hello");
+        app.active_buffer_mut()
+            .set_selection(Selection { anchor: 1, head: 4 });
+
+        app.handle_event(EditorEvent::CollapseCursors);
+
+        assert_eq!(app.active_buffer().selection(), Selection::collapsed(4));
+        assert!(!app.should_quit);
+    }
+
+    #[test]
     fn save_clears_dirty_when_path_set() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("skerry_app_save_{}.txt", std::process::id()));
@@ -4516,6 +4555,36 @@ mod tests {
         ));
         assert!(consumed);
         assert!(app.close_confirm.is_none());
+    }
+
+    #[test]
+    fn completion_does_not_swallow_quit_shortcut() {
+        let mut app = app_with("hello");
+        app.lsp_completion.open = true;
+
+        let consumed = app.dispatch_application_shortcut(key(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+
+        assert!(consumed);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn completion_does_not_swallow_close_shortcut() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.lsp_completion.open = true;
+
+        let consumed = app.dispatch_application_shortcut(key(
+            crossterm::event::KeyCode::Char('w'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+
+        assert!(consumed);
+        assert!(app.close_confirm.is_some());
+        assert!(!app.should_quit);
     }
 
     #[test]
