@@ -557,9 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_collapses_or_quits() {
-        // Escape now dispatches CollapseCursors; the handler decides
-        // whether to collapse multi-cursor or quit.
+    fn escape_collapses_cursor_state() {
         assert_eq!(
             translate_event(&key_event(Key::Escape, true, no_mods())),
             Some(EditorEvent::CollapseCursors)

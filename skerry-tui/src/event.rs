@@ -23,6 +23,15 @@ use crate::app::App;
 /// bar instead of the buffer. The caller passes the current App so
 /// we can append to the live query.
 pub fn translate_key(key: KeyEvent, app: Option<&App>) -> Option<EditorEvent> {
+    // Quit and close are application-level shortcuts. Query dialogs must
+    // not append their letters or otherwise consume them.
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::SHIFT)
+        && matches!(key.code, KeyCode::Char('q' | 'Q' | 'w' | 'W'))
+    {
+        return translate_buffer_key(key);
+    }
+
     if let Some(app) = app {
         if app.fuzzy_finder.open {
             if let Some(fuzzy_event) = fuzzy_finder_translate(key, app) {
@@ -528,9 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_collapses_or_closes_doc() {
-        // Escape now dispatches CollapseCursors; the handler decides
-        // whether to collapse multi-cursor or close the doc.
+    fn escape_collapses_cursor_state() {
         assert_eq!(
             translate_key(key(KeyCode::Esc), None),
             Some(EditorEvent::CollapseCursors)
@@ -549,6 +556,30 @@ mod tests {
         assert_eq!(
             translate_key(key_alt(KeyCode::Char('r')), Some(&app)),
             Some(EditorEvent::ToggleFindRegex)
+        );
+    }
+
+    #[test]
+    fn text_dialogs_do_not_swallow_quit_or_close_shortcuts() {
+        let mut app = app_with("hello world");
+
+        app.handle_event(EditorEvent::FindOpen);
+        assert_eq!(
+            translate_key(key_ctrl('q'), Some(&app)),
+            Some(EditorEvent::Quit)
+        );
+
+        app.handle_event(EditorEvent::ReplaceOpen);
+        assert_eq!(
+            translate_key(key_ctrl('w'), Some(&app)),
+            Some(EditorEvent::CloseDoc)
+        );
+
+        app.handle_event(EditorEvent::FindClose);
+        app.handle_event(EditorEvent::ProjectSearch(None));
+        assert_eq!(
+            translate_key(key_ctrl('q'), Some(&app)),
+            Some(EditorEvent::Quit)
         );
     }
 

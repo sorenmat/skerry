@@ -640,6 +640,7 @@ impl EditorApp {
         self.fuzzy_finder.open
             || self.command_palette.open
             || self.project_search.open
+            || self.symbol_picker.open
             || self.search.bar_open
             || self.search.replace_bar_open
     }
@@ -664,12 +665,68 @@ impl EditorApp {
         let mut clipboard_events: Vec<crate::event::ClipboardAction> = Vec::new();
         ctx.input(|i| {
             for event in &i.events {
+                // Blocking prompts have first refusal on every input event.
+                // In particular, Esc must cancel the visible close prompt
+                // even when a find bar or picker remains open underneath it.
+                if self.dispatch_modal_event(event) {
+                    continue;
+                }
+
+                // Quit and close are application-level shortcuts. Let them
+                // pass through query widgets and completion popups instead of
+                // being swallowed as text/navigation input.
+                if let Some(editor_event @ (EditorEvent::Quit | EditorEvent::CloseDoc)) =
+                    crate::event::translate_event(event)
+                {
+                    self.handle_event(editor_event);
+                    continue;
+                }
+
                 let text_modal_open = self.text_modal_open();
                 if !text_modal_open {
                     if let Some(clip) =
                         crate::event::classify_clipboard_event(event, self.active_buffer())
                     {
                         clipboard_events.push(clip);
+                        continue;
+                    }
+                }
+                if self.symbol_picker.open {
+                    if let eframe::egui::Event::Key {
+                        key, pressed: true, ..
+                    } = event
+                    {
+                        match *key {
+                            eframe::egui::Key::Escape => self.symbol_picker.open = false,
+                            eframe::egui::Key::ArrowUp => {
+                                self.symbol_picker.selected =
+                                    self.symbol_picker.selected.saturating_sub(1);
+                            }
+                            eframe::egui::Key::ArrowDown => {
+                                if !self.symbol_picker.filtered.is_empty() {
+                                    self.symbol_picker.selected = (self.symbol_picker.selected + 1)
+                                        .min(self.symbol_picker.filtered.len() - 1);
+                                }
+                            }
+                            eframe::egui::Key::Enter => {
+                                let selected = self
+                                    .symbol_picker
+                                    .filtered
+                                    .get(self.symbol_picker.selected)
+                                    .and_then(|&idx| self.symbol_picker.items.get(idx))
+                                    .map(|symbol| symbol.selection_range.start.line as usize + 1);
+                                if let Some(line) = selected {
+                                    self.go_to_line(line);
+                                    self.symbol_picker.open = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if matches!(
+                        event,
+                        eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
+                    ) {
                         continue;
                     }
                 }
@@ -796,12 +853,6 @@ impl EditorApp {
                         self.handle_event(tree_event);
                         continue;
                     }
-                }
-                // Modal prompts intercept keys before translate_event
-                // so e.g. Ctrl+W inside the open-file dialog doesn't
-                // bounce back into a close-confirm prompt.
-                if self.dispatch_modal_event(event) {
-                    continue;
                 }
                 // The keybindings help window closes on Esc.
                 if self.keybindings_help_open {
@@ -1444,13 +1495,10 @@ impl EditorApp {
                 let _ = cursor;
             }
             EditorEvent::CollapseCursors => {
-                // If multi-cursor is active, collapse to one. Otherwise quit.
-                if self.active_buffer().selections().len() > 1 {
-                    let primary = self.active_buffer().selections()[0];
-                    self.active_buffer_mut().set_selections(vec![primary]);
-                } else {
-                    self.sync_config();
-                    self.should_quit = true;
+                let primary = self.active_buffer().selections()[0];
+                if self.active_buffer().selections().len() > 1 || !primary.is_collapsed() {
+                    self.active_buffer_mut()
+                        .set_selections(vec![Selection::collapsed(primary.head)]);
                 }
             }
             EditorEvent::Paste(text) => {
@@ -3488,7 +3536,7 @@ impl App for EditorApp {
         // 8. Render the frame.
         crate::ui::render(ctx, self);
 
-        // 7. Close the window if the user requested quit (Ctrl+Q / Esc).
+        // 7. Close the window if the user explicitly requested quit.
         if self.should_quit {
             self.request_close(ctx);
         }
@@ -3825,6 +3873,29 @@ mod tests {
         assert!(!app.should_quit);
         app.handle_event(EditorEvent::Quit);
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn escape_with_single_caret_does_not_quit() {
+        let mut app = app_with("hello");
+        app.active_buffer_mut().set_cursor(3);
+
+        app.handle_event(EditorEvent::CollapseCursors);
+
+        assert!(!app.should_quit);
+        assert_eq!(app.active_buffer().cursor(), 3);
+    }
+
+    #[test]
+    fn escape_collapses_selection_to_its_head() {
+        let mut app = app_with("hello");
+        app.active_buffer_mut()
+            .set_selection(Selection { anchor: 1, head: 4 });
+
+        app.handle_event(EditorEvent::CollapseCursors);
+
+        assert_eq!(app.active_buffer().selection(), Selection::collapsed(4));
+        assert!(!app.should_quit);
     }
 
     #[test]
@@ -4486,6 +4557,12 @@ mod tests {
         }
     }
 
+    fn dispatch_key(app: &mut EditorApp, key: Key, modifiers: Modifiers) {
+        let ctx = eframe::egui::Context::default();
+        ctx.input_mut(|input| input.events.push(key_event(key, true, modifiers)));
+        app.handle_input(&ctx);
+    }
+
     #[test]
     fn primary_o_opens_file_dialog() {
         let ev = key_event(Key::O, true, primary_mods());
@@ -4493,6 +4570,47 @@ mod tests {
             crate::event::translate_event(&ev),
             Some(EditorEvent::OpenFile(None))
         );
+    }
+
+    #[test]
+    fn command_palette_does_not_swallow_quit_shortcut() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::CommandPalette(None));
+        assert!(app.command_palette.open);
+
+        dispatch_key(&mut app, Key::Q, primary_mods());
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn close_confirmation_has_escape_priority_over_find_bar() {
+        let mut app = app_with("hello");
+        app.handle_event(EditorEvent::Insert('!'));
+        app.handle_event(EditorEvent::FindOpen);
+        dispatch_key(&mut app, Key::W, primary_mods());
+        assert!(app.close_confirm.is_some());
+        assert!(app.search.bar_open);
+
+        dispatch_key(&mut app, Key::Escape, Modifiers::default());
+
+        assert!(app.close_confirm.is_none());
+        assert!(app.search.bar_open);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn escape_closes_symbol_picker_without_changing_selection() {
+        let mut app = app_with("hello");
+        let selection = Selection { anchor: 1, head: 4 };
+        app.active_buffer_mut().set_selection(selection);
+        app.symbol_picker.open = true;
+
+        dispatch_key(&mut app, Key::Escape, Modifiers::default());
+
+        assert!(!app.symbol_picker.open);
+        assert_eq!(app.active_buffer().selection(), selection);
+        assert!(!app.should_quit);
     }
 
     // ----- theme cycling -----

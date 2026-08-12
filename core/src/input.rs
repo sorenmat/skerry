@@ -148,8 +148,8 @@ pub enum EditorEvent {
     SelectAll,
     /// Toggle line comments on the selected lines.
     ToggleComment,
-    /// Collapse multi-cursor to a single primary cursor. If only one
-    /// cursor is active, the frontend may interpret this as quit/close.
+    /// Collapse a selection or multi-cursor state to a single primary
+    /// caret. If only one collapsed caret is active, this is a no-op.
     CollapseCursors,
     /// Toggle the fold at the given line.
     ToggleFold { line: usize },
