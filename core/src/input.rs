@@ -10,11 +10,13 @@
 
 use std::path::PathBuf;
 
-use crate::BytePos;
+use crate::{BytePos, KeybindingMode};
 
 /// An input event the editor acts on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorEvent {
+    /// Select and persist one of the built-in keyboard presets.
+    SetKeybindingMode(KeybindingMode),
     /// Insert a character at the cursor position. If the selection is
     /// non-empty, the selection is replaced by the inserted character.
     Insert(char),
@@ -55,6 +57,8 @@ pub enum EditorEvent {
     ScrollRight,
     /// Open the find bar. No-op if it's already open.
     FindOpen,
+    /// Open the find bar and make backward navigation the default.
+    FindOpenBackward,
     /// Close the find bar.
     FindClose,
     /// Replace the current find query and re-run the search. The
@@ -184,6 +188,8 @@ pub enum EditorEvent {
     /// v1: closes unconditionally — does NOT prompt on dirty buffers.
     /// A future stage will add a "save before close?" prompt.
     CloseDoc,
+    /// Close the active document without a dirty-buffer confirmation.
+    ForceCloseDoc,
     /// Switch to the next document in the session, wrapping at the end.
     /// Default binding: Cmd/Ctrl+Tab.
     NextDoc,

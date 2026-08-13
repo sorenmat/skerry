@@ -52,6 +52,8 @@ pub struct Search {
     /// across multiple searches so the user can refine and navigate
     /// without re-opening.
     pub bar_open: bool,
+    /// Whether query refresh and plain Enter navigate backward.
+    pub backward: bool,
     /// Whether the replace bar is open. Independent from `bar_open`
     /// — the user can have only one, both, or neither. The replace
     /// bar is hidden when the find bar is closed (no point editing
@@ -108,6 +110,8 @@ impl Search {
 
         self.current = if self.matches.is_empty() {
             None
+        } else if self.backward {
+            Some(self.matches.len() - 1)
         } else {
             Some(0)
         };

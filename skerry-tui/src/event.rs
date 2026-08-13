@@ -13,6 +13,33 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use crate::app::App;
 
+/// Normalize crossterm keys for the shared keymap engine.
+pub fn keymap_input(key: KeyEvent) -> Option<core::KeyInput> {
+    let modifiers = core::KeyModifiers {
+        ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
+        alt: key.modifiers.contains(KeyModifiers::ALT),
+        shift: key.modifiers.contains(KeyModifiers::SHIFT),
+        command: key.modifiers.contains(KeyModifiers::CONTROL),
+    };
+    match key.code {
+        KeyCode::Char(ch) => Some(core::KeyInput::Char(ch, modifiers)),
+        KeyCode::Esc => Some(core::KeyInput::Key(core::KeyCode::Escape, modifiers)),
+        KeyCode::Enter => Some(core::KeyInput::Key(core::KeyCode::Enter, modifiers)),
+        KeyCode::Backspace => Some(core::KeyInput::Key(core::KeyCode::Backspace, modifiers)),
+        KeyCode::Delete => Some(core::KeyInput::Key(core::KeyCode::Delete, modifiers)),
+        KeyCode::Tab | KeyCode::BackTab => Some(core::KeyInput::Key(core::KeyCode::Tab, modifiers)),
+        KeyCode::Left => Some(core::KeyInput::Key(core::KeyCode::Left, modifiers)),
+        KeyCode::Right => Some(core::KeyInput::Key(core::KeyCode::Right, modifiers)),
+        KeyCode::Up => Some(core::KeyInput::Key(core::KeyCode::Up, modifiers)),
+        KeyCode::Down => Some(core::KeyInput::Key(core::KeyCode::Down, modifiers)),
+        KeyCode::Home => Some(core::KeyInput::Key(core::KeyCode::Home, modifiers)),
+        KeyCode::End => Some(core::KeyInput::Key(core::KeyCode::End, modifiers)),
+        KeyCode::PageUp => Some(core::KeyInput::Key(core::KeyCode::PageUp, modifiers)),
+        KeyCode::PageDown => Some(core::KeyInput::Key(core::KeyCode::PageDown, modifiers)),
+        _ => None,
+    }
+}
+
 /// Translate a crossterm `KeyEvent` into an `EditorEvent`.
 ///
 /// Returns `None` for keys we don't bind to anything (e.g. function keys,
@@ -82,7 +109,7 @@ fn find_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
     match key.code {
         KeyCode::Esc => Some(EditorEvent::FindClose),
         KeyCode::Enter => {
-            if key.modifiers.contains(KeyModifiers::SHIFT) {
+            if key.modifiers.contains(KeyModifiers::SHIFT) != app.search.backward {
                 Some(EditorEvent::FindPrev)
             } else {
                 Some(EditorEvent::FindNext)
@@ -134,7 +161,7 @@ fn replace_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
     }
 }
 
-fn project_tree_translate(key: KeyEvent) -> Option<EditorEvent> {
+pub(crate) fn project_tree_translate(key: KeyEvent) -> Option<EditorEvent> {
     match key.code {
         KeyCode::Esc => Some(EditorEvent::ToggleProjectTree),
         KeyCode::Up => Some(EditorEvent::ProjectTreeMove { delta: -1 }),

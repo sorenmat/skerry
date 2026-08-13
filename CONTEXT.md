@@ -39,6 +39,26 @@ On Linux, Homebrew installs release binaries instead of a cask: `skerry`,
 
 **EditorEvent**: Frontend-agnostic input event type that both TUI (crossterm) and GUI (egui/winit) translate into. Core handles input identically regardless of frontend.
 
+**Keybinding preset**: One of the persistent, application-global `Standard`,
+`Vim`, or `Emacs` input conventions. A preset chooses how normalized keys are
+interpreted; it does not change document contents or the system clipboard.
+
+**Keymap state**: Process-local modal or prefix state shared by both frontends,
+including Vim mode/count/operator/register state and Emacs prefix/mark/kill-ring
+state. Changing presets resets this transient state and collapses multi-cursors.
+
+**Unnamed register**: Vim's application-global characterwise or linewise text
+slot. Deletes and yanks replace it; `p` and `P` read it. It is deliberately
+separate from the system clipboard.
+
+**Kill ring**: Emacs's application-global, ordered collection of up to 60 text
+kills. Consecutive compatible kills coalesce; `C-y` yanks and `M-y` rotates it.
+
+**Gutter annotation**: Compact line metadata rendered beside the line number.
+It can combine a Git change marker, inline Git blame ownership, and an LSP
+diagnostic stripe. In the GUI, gutter hover expands every annotation affecting
+that row into one tooltip; it does not issue a new LSP hover request.
+
 **Selection**: A range on the `Buffer` represented as `Selection { anchor: usize, head: usize }`, both UTF-8 byte offsets. Single selection in v0.1; multi-cursor deferred.
 
 **Workload (Mixed)**: The editor must handle source files (1KB–100KB) and multi-GB files in the same session with no mode switch. Optimised for the common (small-file) case without breaking the tail.

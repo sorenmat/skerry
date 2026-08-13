@@ -77,6 +77,8 @@ pub struct EditorApp {
     pub active: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    /// Shared transient state for the active built-in keyboard preset.
+    pub keymap: core::KeymapState,
     /// Number of lines that fit in the current viewport. Updated each
     /// frame by the renderer; used by PageUp/PageDown to compute a
     /// reasonable page size when there's no other source of truth.
@@ -231,7 +233,6 @@ pub struct FuzzyFinder {
 pub struct CommandPalette {
     pub open: bool,
     pub query: String,
-    pub items: Vec<core::Command>,
     pub filtered: Vec<&'static core::Command>,
     pub selected: usize,
 }
@@ -337,6 +338,7 @@ impl EditorApp {
         for doc in &mut documents {
             config.apply_document_defaults(&mut doc.view);
         }
+        let keybinding_mode = config.keybinding_mode;
         let theme = config
             .ui_theme
             .as_deref()
@@ -348,6 +350,7 @@ impl EditorApp {
             active: 0,
             should_quit: false,
             status_message: None,
+            keymap: core::KeymapState::new(keybinding_mode),
             viewport_lines: 20,
             search: Search::new(),
             close_confirm: None,
@@ -428,6 +431,38 @@ impl EditorApp {
             doc.syntax.invalidate();
         }
         true
+    }
+
+    /// Select and persist a built-in keyboard preset.
+    pub fn set_keybinding_mode(&mut self, mode: core::KeybindingMode) {
+        self.config.keybinding_mode = mode;
+        self.keymap.set_mode(mode);
+        for document in &mut self.documents {
+            let cursor = document.buffer.cursor();
+            document.buffer.set_cursor(cursor);
+        }
+        self.status_message = Some(format!("Keybindings: {}", mode.label()));
+    }
+
+    fn apply_keymap_output(&mut self, output: core::KeymapOutput) {
+        for event in output.events {
+            self.handle_event(event);
+        }
+        if let Some(status) = output.status {
+            self.status_message = Some(status);
+        }
+    }
+
+    fn acknowledge_active_save(&mut self) {
+        if self.file_watcher.is_none() {
+            return;
+        }
+        let path = self.active_doc().path().map(std::path::Path::to_path_buf);
+        let bytes = path.as_ref().map(|_| self.active_buffer().to_bytes());
+        if let (Some(watcher), Some(path), Some(bytes)) = (self.file_watcher.as_mut(), path, bytes)
+        {
+            watcher.acknowledge_write(&path, &bytes);
+        }
     }
 
     /// Toggle smooth vertical caret animation in the GUI.
@@ -710,6 +745,7 @@ impl EditorApp {
         if self.pending_format_save {
             self.pending_format_save = false;
             if self.active_buffer_mut().save().is_ok() {
+                self.acknowledge_active_save();
                 self.active_doc_mut().refresh_git_gutter();
                 self.lsp_save_active();
                 self.status_message = Some("Saved + formatted.".to_string());
@@ -736,6 +772,7 @@ impl EditorApp {
             || self.symbol_picker.open
             || self.search.bar_open
             || self.search.replace_bar_open
+            || self.rename_dialog.is_some()
     }
 
     /// Pull input events from egui and apply them to the buffer.
@@ -768,11 +805,15 @@ impl EditorApp {
                 // Quit and close are application-level shortcuts. Let them
                 // pass through query widgets and completion popups instead of
                 // being swallowed as text/navigation input.
-                if let Some(editor_event @ (EditorEvent::Quit | EditorEvent::CloseDoc)) =
-                    crate::event::translate_event(event)
+                if self.keymap.mode() == core::KeybindingMode::Standard
+                    || gui_command_without_ctrl(event)
                 {
-                    self.handle_event(editor_event);
-                    continue;
+                    if let Some(editor_event @ (EditorEvent::Quit | EditorEvent::CloseDoc)) =
+                        crate::event::translate_event(event)
+                    {
+                        self.handle_event(editor_event);
+                        continue;
+                    }
                 }
 
                 // Settings is a modal surface: Esc dismisses it and other
@@ -803,7 +844,11 @@ impl EditorApp {
                 let text_modal_open = self.text_modal_open();
                 let csv_table_open = self.active_doc().language_id() == Some("csv")
                     && self.csv_preview_mode == CsvPreviewMode::Table;
-                if !text_modal_open && !csv_table_open {
+                if !text_modal_open
+                    && !csv_table_open
+                    && (self.keymap.mode() == core::KeybindingMode::Standard
+                        || gui_command_without_ctrl(event))
+                {
                     if let Some(clip) =
                         crate::event::classify_clipboard_event(event, self.active_buffer())
                     {
@@ -851,7 +896,7 @@ impl EditorApp {
                     }
                 }
                 if self.search.bar_open {
-                    if let Some(bar_event) = find_bar_translate(event) {
+                    if let Some(bar_event) = find_bar_translate(event, self.search.backward) {
                         self.handle_event(bar_event);
                         continue;
                     }
@@ -965,6 +1010,14 @@ impl EditorApp {
                         continue;
                     }
                 }
+                if self.rename_dialog.is_some()
+                    && matches!(
+                        event,
+                        eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
+                    )
+                {
+                    continue;
+                }
                 // Project-tree sidebar intercepts navigation keys only
                 // when it has keyboard focus. Mouse clicks update focus
                 // in the UI renderers.
@@ -983,7 +1036,29 @@ impl EditorApp {
                     } = event
                     {
                         self.keybindings_help_open = false;
+                    }
+                    if matches!(
+                        event,
+                        eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
+                    ) {
                         continue;
+                    }
+                }
+                let rendered_read_only = (self.active_doc().language_id() == Some("markdown")
+                    && self.markdown_preview_mode == MarkdownPreviewMode::Preview)
+                    || (self.active_doc().language_id() == Some("csv")
+                        && self.csv_preview_mode == CsvPreviewMode::Table);
+                if !rendered_read_only && !self.text_modal_open() {
+                    if let Some(input) = crate::event::keymap_input(event) {
+                        let output = self.keymap.handle(
+                            &input,
+                            &*self.documents[self.active].buffer,
+                            self.viewport_lines,
+                        );
+                        if output.consumed {
+                            self.apply_keymap_output(output);
+                            continue;
+                        }
                     }
                 }
                 if let Some(editor_event) = crate::event::translate_event(event) {
@@ -1157,6 +1232,10 @@ impl EditorApp {
             None
         };
         match event {
+            EditorEvent::SetKeybindingMode(mode) => {
+                self.set_keybinding_mode(mode);
+                self.sync_config();
+            }
             EditorEvent::Insert(ch) => {
                 // Auto-pairing: only for single-cursor (the primary is
                 // collapsed AND there are no other cursors). With multi-
@@ -1313,7 +1392,8 @@ impl EditorApp {
                 let new = self.active_doc().view.scroll_x_cols.saturating_add(1);
                 self.active_doc_mut().view.scroll_x_cols = new;
             }
-            EditorEvent::FindOpen => {
+            EditorEvent::FindOpen | EditorEvent::FindOpenBackward => {
+                self.search.backward = matches!(event, EditorEvent::FindOpenBackward);
                 self.search.bar_open = true;
                 // Find in selection: if there's a multi-line selection,
                 // scope the search to that range.
@@ -1644,6 +1724,7 @@ impl EditorApp {
             }
             EditorEvent::Save => match self.active_buffer_mut().save() {
                 Ok(()) => {
+                    self.acknowledge_active_save();
                     self.status_message = Some("Saved.".to_string());
                     self.active_doc_mut().refresh_git_gutter();
                     self.lsp_save_active();
@@ -1657,6 +1738,7 @@ impl EditorApp {
                             // External formatter applied directly; re-save
                             // the formatted content.
                             if self.active_buffer_mut().save().is_ok() {
+                                self.acknowledge_active_save();
                                 self.active_doc_mut().refresh_git_gutter();
                                 self.lsp_save_active();
                                 self.status_message = Some("Saved + formatted.".to_string());
@@ -1696,6 +1778,7 @@ impl EditorApp {
                 }
             }
             EditorEvent::NewDoc => {
+                self.keymap.reset_transient();
                 self.documents.push(Document::new_with_config(
                     Box::new(core::PieceTableBuffer::new()),
                     &self.config,
@@ -1711,30 +1794,36 @@ impl EditorApp {
                 self.sync_config();
                 self.sync_watcher();
             }
+            EditorEvent::ForceCloseDoc => self.perform_close_active(),
             EditorEvent::NextDoc => {
                 if !self.documents.is_empty() {
+                    self.keymap.reset_transient();
                     self.active = (self.active + 1) % self.documents.len();
                     self.sync_project_tree_to_active();
                 }
             }
             EditorEvent::PrevDoc => {
                 if !self.documents.is_empty() {
+                    self.keymap.reset_transient();
                     self.active = (self.active + self.documents.len() - 1) % self.documents.len();
                     self.sync_project_tree_to_active();
                 }
             }
-            EditorEvent::OpenFile(maybe_path) => match maybe_path {
-                Some(path) => {
-                    self.open_path(&path);
-                    self.sync_config();
-                }
-                None => {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+            EditorEvent::OpenFile(maybe_path) => {
+                self.keymap.reset_transient();
+                match maybe_path {
+                    Some(path) => {
                         self.open_path(&path);
                         self.sync_config();
                     }
+                    None => {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            self.open_path(&path);
+                            self.sync_config();
+                        }
+                    }
                 }
-            },
+            }
             EditorEvent::GoToLine(maybe_line) => match maybe_line {
                 Some(line) => self.go_to_line(line),
                 None => {
@@ -3215,7 +3304,7 @@ impl EditorApp {
     /// Move the command-palette selection by `delta` rows, wrapping at
     /// the ends.
     pub fn move_command_palette_selection(&mut self, delta: isize) {
-        let len = self.command_palette.items.len();
+        let len = self.command_palette.filtered.len();
         if len == 0 {
             return;
         }
@@ -3228,7 +3317,7 @@ impl EditorApp {
     pub fn execute_selected_command(&mut self) {
         let Some(command) = self
             .command_palette
-            .items
+            .filtered
             .get(self.command_palette.selected)
         else {
             return;
@@ -3390,7 +3479,7 @@ impl EditorApp {
     pub fn handle_external_changes(&mut self) {
         let changes: Vec<core::FileChange> = self
             .file_watcher
-            .as_ref()
+            .as_mut()
             .map(|w| w.poll_changes())
             .unwrap_or_default();
         for change in changes {
@@ -3448,12 +3537,29 @@ impl EditorApp {
     /// auto-save and by the explicit auto-save idle check.
     pub fn save_all_dirty(&mut self) {
         let mut saved_any = false;
-        for doc in &mut self.documents {
-            if doc.buffer.source_path().is_none() || !doc.buffer.is_dirty() {
-                continue;
-            }
-            match doc.buffer.save() {
-                Ok(()) => saved_any = true,
+        let watcher_available = self.file_watcher.is_some();
+        for index in 0..self.documents.len() {
+            let save_result = {
+                let doc = &mut self.documents[index];
+                if doc.buffer.source_path().is_none() || !doc.buffer.is_dirty() {
+                    continue;
+                }
+                doc.buffer.save().map(|()| {
+                    (
+                        doc.path().map(std::path::Path::to_path_buf),
+                        watcher_available.then(|| doc.buffer.to_bytes()),
+                    )
+                })
+            };
+            match save_result {
+                Ok((path, bytes)) => {
+                    saved_any = true;
+                    if let (Some(watcher), Some(path), Some(bytes)) =
+                        (self.file_watcher.as_mut(), path, bytes)
+                    {
+                        watcher.acknowledge_write(&path, &bytes);
+                    }
+                }
                 Err(e) => {
                     self.status_message = Some(format!("Auto-save error: {e}"));
                     return;
@@ -3682,11 +3788,13 @@ impl App for EditorApp {
 fn csv_table_allows_event(event: &EditorEvent) -> bool {
     matches!(
         event,
-        EditorEvent::Save
+        EditorEvent::SetKeybindingMode(_)
+            | EditorEvent::Save
             | EditorEvent::SaveAs(_)
             | EditorEvent::ReloadFile
             | EditorEvent::NewDoc
             | EditorEvent::CloseDoc
+            | EditorEvent::ForceCloseDoc
             | EditorEvent::NextDoc
             | EditorEvent::PrevDoc
             | EditorEvent::OpenFile(_)
@@ -3722,6 +3830,13 @@ fn csv_table_allows_event(event: &EditorEvent) -> bool {
     )
 }
 
+fn gui_command_without_ctrl(event: &eframe::egui::Event) -> bool {
+    matches!(
+        event,
+        eframe::egui::Event::Key { modifiers, .. } if modifiers.command && !modifiers.ctrl
+    )
+}
+
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -3729,7 +3844,7 @@ fn is_word_char(c: char) -> bool {
 /// Translate an egui event to a find-bar action. Returns `None` for
 /// events we don't intercept — the caller then falls through to the
 /// regular key translation.
-fn find_bar_translate(event: &eframe::egui::Event) -> Option<EditorEvent> {
+fn find_bar_translate(event: &eframe::egui::Event, backward: bool) -> Option<EditorEvent> {
     use eframe::egui::{Event, Key};
     match event {
         Event::Key {
@@ -3743,7 +3858,7 @@ fn find_bar_translate(event: &eframe::egui::Event) -> Option<EditorEvent> {
             modifiers,
             ..
         } => {
-            if modifiers.shift {
+            if modifiers.shift != backward {
                 Some(EditorEvent::FindPrev)
             } else {
                 Some(EditorEvent::FindNext)
@@ -4099,6 +4214,202 @@ mod tests {
         assert_eq!(app.active_buffer().to_bytes(), b"hi".to_vec());
         assert_eq!(app.active_buffer().cursor(), 2);
         assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn newline_keeps_cursor_at_insertion_site() {
+        let mut app = app_with("first\nsecond\nthird");
+        let pos = app.active_buffer().linecol_to_pos(1, 3).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.handle_event(EditorEvent::Insert('\n'));
+        assert_eq!(app.active_buffer().cursor(), pos + 1);
+        assert_eq!(app.active_buffer().to_bytes(), b"first\nsec\nond\nthird");
+    }
+
+    #[test]
+    fn enter_key_keeps_cursor_at_insertion_site_in_every_keymap() {
+        for mode in core::KeybindingMode::ALL {
+            let mut app = app_with("first\nsecond\nthird");
+            app.set_keybinding_mode(mode);
+            if mode == core::KeybindingMode::Vim {
+                let ctx = eframe::egui::Context::default();
+                ctx.input_mut(|input| input.events.push(eframe::egui::Event::Text("i".into())));
+                app.handle_input(&ctx);
+            }
+            let pos = app.active_buffer().linecol_to_pos(1, 3).unwrap();
+            app.active_buffer_mut().set_cursor(pos);
+            dispatch_key(
+                &mut app,
+                eframe::egui::Key::Enter,
+                eframe::egui::Modifiers::default(),
+            );
+            assert_eq!(
+                app.active_buffer().cursor(),
+                pos + 1,
+                "Enter moved the cursor incorrectly in {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vim_open_line_keeps_cursor_near_current_line() {
+        for command in ['o', 'O'] {
+            let mut app = app_with("first\nsecond\nthird");
+            app.set_keybinding_mode(core::KeybindingMode::Vim);
+            let pos = app.active_buffer().linecol_to_pos(1, 3).unwrap();
+            app.active_buffer_mut().set_cursor(pos);
+            let ctx = eframe::egui::Context::default();
+            ctx.input_mut(|input| {
+                input
+                    .events
+                    .push(eframe::egui::Event::Text(command.to_string()))
+            });
+            app.handle_input(&ctx);
+            let (line, _) = app
+                .active_buffer()
+                .pos_to_linecol(app.active_buffer().cursor())
+                .unwrap();
+            assert!(line >= 1, "Vim {command} jumped to line {line}");
+        }
+    }
+
+    #[test]
+    fn emacs_open_line_at_cargo_toml_eof_keeps_point_at_eof() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../Cargo.toml");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path).unwrap());
+        let mut app = EditorApp::new_with_documents(
+            vec![core::Document::new_with_config(
+                buf,
+                &core::Config::default(),
+            )],
+            core::Config::default(),
+        );
+        app.set_keybinding_mode(core::KeybindingMode::Emacs);
+        let eof = app.active_buffer().len();
+        app.active_buffer_mut().set_cursor(eof);
+        dispatch_key(
+            &mut app,
+            eframe::egui::Key::O,
+            eframe::egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.active_buffer().cursor(), eof);
+        let (line, _) = app.active_buffer().pos_to_linecol(eof).unwrap();
+        assert!(line > 0, "Emacs C-o moved point to the first line");
+    }
+
+    #[test]
+    fn auto_save_watcher_does_not_reload_and_reset_cursor() {
+        let dir =
+            std::env::temp_dir().join(format!("skerry-self-save-cursor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Cargo.toml");
+        std::fs::write(&path, "[package]\nname = \"demo\"\n").unwrap();
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path).unwrap());
+        let mut app = EditorApp::new_with_documents(
+            vec![core::Document::new_with_config(
+                buf,
+                &core::Config::default(),
+            )],
+            core::Config::default(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let eof = app.active_buffer().len();
+        app.active_buffer_mut().set_cursor(eof);
+        app.handle_event(EditorEvent::Insert('\n'));
+        let cursor_after_insert = app.active_buffer().cursor();
+        app.save_all_dirty();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        app.handle_external_changes();
+
+        assert_eq!(app.active_buffer().cursor(), cursor_after_insert);
+        assert_eq!(app.status_message.as_deref(), Some("Auto-saved."));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn format_on_save_watcher_does_not_reload_and_reset_cursor() {
+        let dir = std::env::temp_dir().join(format!(
+            "skerry-format-self-save-cursor-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path).unwrap());
+        let mut app = EditorApp::new_with_documents(
+            vec![core::Document::new_with_config(
+                buf,
+                &core::Config::default(),
+            )],
+            core::Config::default(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let uri = app.active_doc().uri().unwrap();
+        let eof = app.active_buffer().len();
+        app.active_buffer_mut().set_cursor(eof);
+        app.pending_format_save = true;
+        app.lsp_manager.store_formatting_result(
+            &uri,
+            vec![lsp_types::TextEdit {
+                range: lsp_types::Range::new(
+                    lsp_types::Position::new(0, 10),
+                    lsp_types::Position::new(0, 10),
+                ),
+                new_text: " ".to_string(),
+            }],
+        );
+
+        app.apply_pending_format();
+        let cursor_after_format = app.active_buffer().cursor();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        app.handle_external_changes();
+
+        assert_eq!(app.active_buffer().cursor(), cursor_after_format);
+        assert_eq!(app.status_message.as_deref(), Some("Saved + formatted."));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn earlier_auto_save_stays_acknowledged_when_a_later_save_fails() {
+        let dir =
+            std::env::temp_dir().join(format!("skerry-partial-auto-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first_path = dir.join("first.txt");
+        std::fs::write(&first_path, "first").unwrap();
+        let missing_path = dir.join("missing").join("second.txt");
+        let documents = vec![
+            core::Document::new(Box::new(PieceTableBuffer::from_bytes_with_path(
+                b"first!".to_vec(),
+                first_path,
+            ))),
+            core::Document::new(Box::new(PieceTableBuffer::from_bytes_with_path(
+                b"second!".to_vec(),
+                missing_path,
+            ))),
+        ];
+        let mut app = EditorApp::new_with_documents(documents, core::Config::default());
+        app.documents[0].buffer.insert(0, "x").unwrap();
+        app.documents[1].buffer.insert(0, "x").unwrap();
+        app.documents[0].buffer.set_cursor(4);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+
+        app.save_all_dirty();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        app.handle_external_changes();
+
+        assert_eq!(app.documents[0].buffer.cursor(), 4);
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Auto-save error"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -5673,5 +5984,43 @@ mod tests {
             .pos_to_linecol(app.active_buffer().cursor())
             .unwrap();
         assert_eq!(line, 0);
+    }
+
+    #[test]
+    fn command_palette_executes_filtered_keybinding_mode_command() {
+        let mut app = app_with("hello");
+        app.open_command_palette(Some("keybindings_vim".into()));
+        assert_eq!(app.command_palette.filtered.len(), 1);
+        app.execute_selected_command();
+        assert_eq!(app.keymap.mode(), core::KeybindingMode::Vim);
+        assert_eq!(app.config.keybinding_mode, core::KeybindingMode::Vim);
+        assert!(!app.command_palette.open);
+
+        let mut table = csv_app("name\nSkerry\n");
+        table.set_csv_preview_mode(CsvPreviewMode::Table);
+        table.open_command_palette(Some("keybindings_emacs".into()));
+        table.execute_selected_command();
+        assert_eq!(table.keymap.mode(), core::KeybindingMode::Emacs);
+    }
+
+    #[test]
+    fn backward_find_selects_last_match_and_plain_enter_stays_backward() {
+        let mut app = app_with("one two one");
+        app.handle_event(EditorEvent::FindOpenBackward);
+        app.handle_event(EditorEvent::FindQueryChanged("one".into()));
+        assert_eq!(app.active_buffer().cursor(), 8);
+        assert_eq!(
+            find_bar_translate(
+                &eframe::egui::Event::Key {
+                    key: eframe::egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: eframe::egui::Modifiers::NONE,
+                },
+                app.search.backward,
+            ),
+            Some(EditorEvent::FindPrev)
+        );
     }
 }

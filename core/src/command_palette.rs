@@ -18,9 +18,53 @@ pub struct Command {
     pub event: EditorEvent,
 }
 
+impl Command {
+    /// Binding hint for the active preset. Empty means palette-only.
+    pub fn keybinding_for(&self, mode: crate::KeybindingMode) -> &'static str {
+        use crate::KeybindingMode::{Emacs, Standard, Vim};
+        match (mode, self.id) {
+            (Standard, _) => self.keybinding,
+            (Vim, "save") => ":w",
+            (Vim, "open_file") => ":e",
+            (Vim, "close_doc" | "quit") => ":q",
+            (Vim, "undo") => "u",
+            (Vim, "redo") => "Ctrl+R",
+            (Vim, "find") => "/",
+            (Emacs, "save") => "Ctrl+X Ctrl+S",
+            (Emacs, "save_as") => "Ctrl+X Ctrl+W",
+            (Emacs, "open_file") => "Ctrl+X Ctrl+F",
+            (Emacs, "close_doc") => "Ctrl+X K",
+            (Emacs, "next_doc") => "Ctrl+X Right",
+            (Emacs, "prev_doc") => "Ctrl+X Left",
+            (Emacs, "undo") => "Ctrl+/",
+            (Emacs, "find") => "Ctrl+S",
+            (Emacs, "quit") => "Ctrl+X Ctrl+C",
+            _ => "",
+        }
+    }
+}
+
 /// All commands available in the palette. Order is the default order
 /// before filtering.
 pub const COMMANDS: &[Command] = &[
+    Command {
+        id: "keybindings_standard",
+        label: "Keybindings: Standard",
+        keybinding: "",
+        event: EditorEvent::SetKeybindingMode(crate::KeybindingMode::Standard),
+    },
+    Command {
+        id: "keybindings_vim",
+        label: "Keybindings: Vim",
+        keybinding: "",
+        event: EditorEvent::SetKeybindingMode(crate::KeybindingMode::Vim),
+    },
+    Command {
+        id: "keybindings_emacs",
+        label: "Keybindings: Emacs",
+        keybinding: "",
+        event: EditorEvent::SetKeybindingMode(crate::KeybindingMode::Emacs),
+    },
     Command {
         id: "open_file",
         label: "Open file...",

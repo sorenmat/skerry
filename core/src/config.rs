@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ViewState;
+use crate::{KeybindingMode, ViewState};
 
 const APP_CONFIG_DIR: &str = "skerry";
 const NOVA_CONFIG_DIR: &str = "nova";
@@ -22,6 +22,9 @@ const MAX_RECENT_FILES: usize = 20;
 /// User configuration and session state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
+    /// Active built-in keyboard preset. Existing configs default to Standard.
+    #[serde(default)]
+    pub keybinding_mode: KeybindingMode,
     /// Name of the active syntax-highlighting theme. `None` means use
     /// the built-in default.
     pub theme: Option<String>,
@@ -118,6 +121,7 @@ fn default_formatters() -> HashMap<String, String> {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            keybinding_mode: KeybindingMode::Standard,
             theme: None,
             ui_theme: None,
             markdown_view: None,
@@ -337,8 +341,22 @@ mod tests {
     fn missing_caret_animation_defaults_to_off() {
         let loaded: Config = serde_json::from_str("{}").unwrap();
         assert!(!loaded.caret_animation);
+        assert_eq!(loaded.keybinding_mode, KeybindingMode::Standard);
         assert_eq!(loaded.markdown_view, None);
         assert_eq!(loaded.csv_view, None);
+    }
+
+    #[test]
+    fn keybinding_modes_round_trip() {
+        for mode in KeybindingMode::ALL {
+            let config = Config {
+                keybinding_mode: mode,
+                ..Config::default()
+            };
+            let json = serde_json::to_string(&config).unwrap();
+            let loaded: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(loaded.keybinding_mode, mode);
+        }
     }
 
     #[test]

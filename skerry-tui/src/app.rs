@@ -19,6 +19,8 @@ pub struct App {
     pub active: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    /// Shared transient state for the active built-in keyboard preset.
+    pub keymap: core::KeymapState,
     /// Last rendered viewport height in lines (set during `render`).
     /// Window-global — comes from the terminal size.
     pub viewport_height: u16,
@@ -223,11 +225,13 @@ impl App {
         for doc in &mut documents {
             config.apply_document_defaults(&mut doc.view);
         }
+        let keybinding_mode = config.keybinding_mode;
         let mut app = Self {
             documents,
             active: 0,
             should_quit: false,
             status_message: None,
+            keymap: core::KeymapState::new(keybinding_mode),
             viewport_height: 0,
             search: Search::new(),
             close_confirm: None,
@@ -275,6 +279,37 @@ impl App {
     /// need to change per-document state (view, search, etc.).
     pub fn active_doc_mut(&mut self) -> &mut Document {
         &mut self.documents[self.active]
+    }
+
+    pub fn set_keybinding_mode(&mut self, mode: core::KeybindingMode) {
+        self.config.keybinding_mode = mode;
+        self.keymap.set_mode(mode);
+        for document in &mut self.documents {
+            let cursor = document.buffer.cursor();
+            document.buffer.set_cursor(cursor);
+        }
+        self.status_message = Some(format!("Keybindings: {}", mode.label()));
+    }
+
+    fn apply_keymap_output(&mut self, output: core::KeymapOutput) {
+        for event in output.events {
+            self.handle_event(event);
+        }
+        if let Some(status) = output.status {
+            self.status_message = Some(status);
+        }
+    }
+
+    fn acknowledge_active_save(&mut self) {
+        if self.file_watcher.is_none() {
+            return;
+        }
+        let path = self.active_doc().path().map(std::path::Path::to_path_buf);
+        let bytes = path.as_ref().map(|_| self.active_buffer().to_bytes());
+        if let (Some(watcher), Some(path), Some(bytes)) = (self.file_watcher.as_mut(), path, bytes)
+        {
+            watcher.acknowledge_write(&path, &bytes);
+        }
     }
 
     /// Notify the LSP manager that the active document was opened.
@@ -627,6 +662,7 @@ impl App {
         if self.pending_format_save {
             self.pending_format_save = false;
             if self.active_buffer_mut().save().is_ok() {
+                self.acknowledge_active_save();
                 self.active_doc_mut().refresh_git_gutter();
                 self.lsp_save_active();
                 self.status_message = Some("Saved + formatted.".to_string());
@@ -735,6 +771,15 @@ impl App {
             }
 
             // Render.
+            let cursor_style = if matches!(
+                self.keymap.vim_mode(),
+                Some(core::VimMode::Normal | core::VimMode::Visual | core::VimMode::VisualLine)
+            ) {
+                crossterm::cursor::SetCursorStyle::SteadyBlock
+            } else {
+                crossterm::cursor::SetCursorStyle::SteadyBar
+            };
+            crossterm::execute!(std::io::stdout(), cursor_style)?;
             terminal.draw(|frame| crate::ui::render(frame, self))?;
 
             // Poll for events.
@@ -753,7 +798,9 @@ impl App {
                         // Quit and close are application-level shortcuts.
                         // Completion and query popups must not consume them
                         // as printable input.
-                        if self.dispatch_application_shortcut(key) {
+                        if self.keymap.mode() == core::KeybindingMode::Standard
+                            && self.dispatch_application_shortcut(key)
+                        {
                             continue;
                         }
                         // LSP completion popup intercepts navigation and
@@ -795,11 +842,36 @@ impl App {
                         // Clipboard shortcuts are intercepted before
                         // generic key translation because they need
                         // direct OS access.
-                        if let Some(action) =
-                            crate::event::classify_clipboard_key(key, self.active_buffer())
-                        {
-                            self.apply_clipboard_action(&mut clipboard, action);
-                            continue;
+                        if self.keymap.mode() == core::KeybindingMode::Standard {
+                            if let Some(action) =
+                                crate::event::classify_clipboard_key(key, self.active_buffer())
+                            {
+                                self.apply_clipboard_action(&mut clipboard, action);
+                                continue;
+                            }
+                        }
+                        if self.project_tree_open && self.project_tree.is_some() {
+                            if let Some(tree_event) = crate::event::project_tree_translate(key) {
+                                self.handle_event(tree_event);
+                                continue;
+                            }
+                        }
+                        let overlay_open = self.search.bar_open
+                            || self.fuzzy_finder.open
+                            || self.command_palette.open
+                            || self.project_search.open;
+                        if !overlay_open {
+                            if let Some(input) = crate::event::keymap_input(key) {
+                                let output = self.keymap.handle(
+                                    &input,
+                                    &*self.documents[self.active].buffer,
+                                    usize::from(self.viewport_height),
+                                );
+                                if output.consumed {
+                                    self.apply_keymap_output(output);
+                                    continue;
+                                }
+                            }
                         }
                         if let Some(editor_event) = crate::event::translate_key(key, Some(self)) {
                             self.handle_event(editor_event);
@@ -1018,6 +1090,10 @@ impl App {
             None
         };
         match event {
+            EditorEvent::SetKeybindingMode(mode) => {
+                self.set_keybinding_mode(mode);
+                self.sync_config();
+            }
             EditorEvent::Insert(ch) => {
                 // Auto-pairing: only for single-cursor. With multi-cursor,
                 // skip auto-pairing and insert plainly at each.
@@ -1220,7 +1296,8 @@ impl App {
                 self.active_doc_mut().view.scroll_x_cols =
                     self.active_doc().view.scroll_x_cols.saturating_add(1);
             }
-            EditorEvent::FindOpen => {
+            EditorEvent::FindOpen | EditorEvent::FindOpenBackward => {
+                self.search.backward = matches!(event, EditorEvent::FindOpenBackward);
                 self.search.bar_open = true;
                 let sel = self.active_buffer().selection();
                 if !sel.is_collapsed() {
@@ -1482,6 +1559,7 @@ impl App {
             }
             EditorEvent::Save => match self.active_buffer_mut().save() {
                 Ok(()) => {
+                    self.acknowledge_active_save();
                     self.status_message = Some("Saved.".to_string());
                     self.active_doc_mut().refresh_git_gutter();
                     self.lsp_save_active();
@@ -1493,6 +1571,7 @@ impl App {
                         } else if self.try_external_format() {
                             let saved = self.active_buffer_mut().save().is_ok();
                             if saved {
+                                self.acknowledge_active_save();
                                 self.active_doc_mut().refresh_git_gutter();
                                 self.lsp_save_active();
                                 self.status_message = Some("Saved + formatted.".to_string());
@@ -1528,6 +1607,7 @@ impl App {
                 }
             }
             EditorEvent::NewDoc => {
+                self.keymap.reset_transient();
                 self.documents.push(Document::new_with_config(
                     Box::new(core::PieceTableBuffer::new()),
                     &self.config,
@@ -1543,30 +1623,36 @@ impl App {
                 self.sync_config();
                 self.sync_watcher();
             }
+            EditorEvent::ForceCloseDoc => self.perform_close_active(),
             EditorEvent::NextDoc => {
                 if !self.documents.is_empty() {
+                    self.keymap.reset_transient();
                     self.active = (self.active + 1) % self.documents.len();
                     self.sync_project_tree_to_active();
                 }
             }
             EditorEvent::PrevDoc => {
                 if !self.documents.is_empty() {
+                    self.keymap.reset_transient();
                     self.active = (self.active + self.documents.len() - 1) % self.documents.len();
                     self.sync_project_tree_to_active();
                 }
             }
-            EditorEvent::OpenFile(maybe_path) => match maybe_path {
-                Some(path) => {
-                    self.open_path(&path);
-                    self.sync_config();
-                }
-                None => {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+            EditorEvent::OpenFile(maybe_path) => {
+                self.keymap.reset_transient();
+                match maybe_path {
+                    Some(path) => {
                         self.open_path(&path);
                         self.sync_config();
                     }
+                    None => {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            self.open_path(&path);
+                            self.sync_config();
+                        }
+                    }
                 }
-            },
+            }
             EditorEvent::GoToLine(maybe_line) => match maybe_line {
                 Some(line) => self.go_to_line(line),
                 None => {
@@ -3036,12 +3122,29 @@ impl App {
     /// Save every dirty buffer that has a source path.
     pub fn save_all_dirty(&mut self) {
         let mut saved_any = false;
-        for doc in &mut self.documents {
-            if doc.buffer.source_path().is_none() || !doc.buffer.is_dirty() {
-                continue;
-            }
-            match doc.buffer.save() {
-                Ok(()) => saved_any = true,
+        let watcher_available = self.file_watcher.is_some();
+        for index in 0..self.documents.len() {
+            let save_result = {
+                let doc = &mut self.documents[index];
+                if doc.buffer.source_path().is_none() || !doc.buffer.is_dirty() {
+                    continue;
+                }
+                doc.buffer.save().map(|()| {
+                    (
+                        doc.path().map(std::path::Path::to_path_buf),
+                        watcher_available.then(|| doc.buffer.to_bytes()),
+                    )
+                })
+            };
+            match save_result {
+                Ok((path, bytes)) => {
+                    saved_any = true;
+                    if let (Some(watcher), Some(path), Some(bytes)) =
+                        (self.file_watcher.as_mut(), path, bytes)
+                    {
+                        watcher.acknowledge_write(&path, &bytes);
+                    }
+                }
                 Err(e) => {
                     self.status_message = Some(format!("Auto-save error: {e}"));
                     return;
@@ -3157,7 +3260,7 @@ impl App {
     pub fn handle_external_changes(&mut self) {
         let changes: Vec<core::FileChange> = self
             .file_watcher
-            .as_ref()
+            .as_mut()
             .map(|w| w.poll_changes())
             .unwrap_or_default();
         for change in changes {
@@ -3439,6 +3542,16 @@ mod tests {
         assert_eq!(app.active_buffer().to_bytes(), b"hi".to_vec());
         assert_eq!(app.active_buffer().cursor(), 2);
         assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn newline_keeps_cursor_at_insertion_site() {
+        let mut app = app_with("first\nsecond\nthird");
+        let pos = app.active_buffer().linecol_to_pos(1, 3).unwrap();
+        app.active_buffer_mut().set_cursor(pos);
+        app.handle_event(EditorEvent::Insert('\n'));
+        assert_eq!(app.active_buffer().cursor(), pos + 1);
+        assert_eq!(app.active_buffer().to_bytes(), b"first\nsec\nond\nthird");
     }
 
     #[test]

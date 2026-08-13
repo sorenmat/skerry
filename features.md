@@ -57,9 +57,39 @@ Skerry/
   supports next / prev with wrap-around.
 - **Frontend-agnostic `EditorEvent`** — the entire input surface is
   one enum consumed identically by both frontends (ADR 0005).
+- **Shared keymap state machine** — GUI and TUI normalize native keystrokes
+  into the same core `KeyInput` type. Persistent Standard, Vim, and Emacs
+  presets therefore share modes, prefixes, registers, kill-ring behavior, and
+  emitted `EditorEvent`s (ADR 0010).
 - **`Selection` model** — `anchor` + `head` byte offsets. Collapsed
   means `anchor == head`. Single selection in v1; multi-cursor
   deferred.
+
+## Keyboard presets
+
+- **Standard, Vim, and Emacs** are built-in, persistent global presets in the
+  GUI and TUI. Standard remains the backward-compatible default. Settings and
+  command-palette actions switch immediately and clear modal/prefix state and
+  multi-cursors.
+- The status bar always identifies the active state (`STANDARD`, Vim's active
+  mode, or `EMACS` with a pending `C-x` prefix). GUI Vim Normal and Visual
+  modes use a block caret.
+- **Vim** includes Normal, Insert, character Visual, and line Visual modes;
+  counts; common motions; `d`/`c`/`y` operators; common character/line edits;
+  undo/redo; an application-global unnamed register; paste; find navigation;
+  and `:w`, `:q`, `:q!`, `:wq`, `:x`, and `:e <path>`.
+- **Emacs** includes character/word/line/page movement, mark and region
+  operations, common deletion and transpose commands, a 60-entry global kill
+  ring with coalescing and yank rotation, search, undo, and `C-x` file/buffer
+  commands.
+- Dialogs, text overlays, source completion, and rendered Markdown/CSV views
+  retain input ownership. Recognized preset bindings run before ordinary
+  application shortcuts; unrecognized keys fall through, and macOS Command
+  shortcuts remain available. Internal registers never modify the system
+  clipboard.
+- Named Vim registers, text objects, marks, macros, repeat/replace modes,
+  Emacs numeric arguments and macros, recursive editing, and user-defined
+  mappings are deferred.
 
 ## Multi-buffer / tabs
 
@@ -99,7 +129,9 @@ Skerry/
   `git blame --line-porcelain HEAD`; debounced refresh (~500 ms after
   idle). Toggle via the command palette (off by default to keep the
   gutter uncluttered). Disabled for files over 5 MB and for untracked /
-  non-repo files.
+  non-repo files. In the GUI, hover an annotated gutter row to see the
+  full author, commit hash, commit summary, Git change/deletion details,
+  and any LSP diagnostic messages affecting that line.
 
 ## Markdown
 
@@ -546,10 +578,11 @@ use different conventions without re-configuring.
   `skerry`. Frontends depend on `core`; `core` depends on
   neither.
 - **Rust 1.75**, edition 2021. `unsafe_code = "deny"` workspace-wide.
-- **9 ADRs** in `docs/adr/` document the architectural decisions
+- **10 ADRs** in `docs/adr/` document the architectural decisions
   (Piece Table, mmap+delta, byte positions, linear undo, full
   frontend parity, swappable GUI renderer, cursor/selection on
-  Buffer, product naming, and the unsigned v0.1.2 release exception).
+  Buffer, product naming, the unsigned v0.1.2 release exception, and the shared
+  keymap state machine).
 - **Unit tests in every crate** — `cargo test --workspace`.
 - **Integration render tests**:
   - `skerry/tests/auto_scroll.rs` — offscreen egui render

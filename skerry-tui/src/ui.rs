@@ -495,10 +495,11 @@ fn render_command_palette_overlay(f: &mut Frame, area: Rect, app: &App) {
         if lines.len() >= items_area.height as usize {
             break;
         }
-        let label = if command.keybinding.is_empty() {
+        let binding = command.keybinding_for(app.keymap.mode());
+        let label = if binding.is_empty() {
             format!(" {}", command.label)
         } else {
-            format!(" {}  ({})", command.label, command.keybinding)
+            format!(" {}  ({binding})", command.label)
         };
         let truncated = label
             .chars()
@@ -858,9 +859,13 @@ fn render_status(app: &App, area_width: u16) -> Line<'static> {
     };
     let left = format!(" {message}  |  {pos}{wrap_indicator}{git_indicator}{lsp_indicator}");
     let theme = format!(" {theme} ", theme = app.syntax.theme_name());
+    let keymap = format!(" {} ", app.keymap.status_label());
     let tree_label = " Tree ";
     let width = area_width as usize;
-    let padding = width.saturating_sub(left.len() + tree_label.len() + theme.len());
+    let fixed_width = tree_label.chars().count() + theme.chars().count() + keymap.chars().count();
+    let left_capacity = width.saturating_sub(fixed_width);
+    let left = left.chars().take(left_capacity).collect::<String>();
+    let padding = width.saturating_sub(left.chars().count() + fixed_width);
 
     let tree_style = if app.project_tree_open {
         Style::default()
@@ -874,6 +879,7 @@ fn render_status(app: &App, area_width: u16) -> Line<'static> {
     Line::from(vec![
         Span::raw(left),
         Span::raw(" ".repeat(padding)),
+        Span::styled(keymap, Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(tree_label.to_string(), tree_style),
         Span::raw(theme),
     ])
