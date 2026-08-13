@@ -159,8 +159,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let prefix_chars = " Go to line: ".chars().count() as u16;
         let cursor_x = last.x + prefix_chars + dialog.query.chars().count() as u16;
         f.set_cursor_position(Position::new(cursor_x, last.y));
-    } else if let Some(pos) = compute_cursor_screen_pos(app, chunks[1]) {
-        f.set_cursor_position(pos);
+    } else if !app.project_tree_focused {
+        if let Some(pos) = compute_cursor_screen_pos(app, content_area) {
+            f.set_cursor_position(pos);
+        }
     }
 
     // Highlight the focused choice in the close-confirm prompt by
@@ -718,10 +720,16 @@ fn render_project_tree(app: &App, width: u16, height: u16) -> Vec<Line<'static>>
         return lines;
     }
 
-    let selected_style = Style::default()
-        .bg(Color::Rgb(60, 80, 140))
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
+    let selected_style = if app.project_tree_focused {
+        Style::default()
+            .bg(Color::Rgb(60, 80, 140))
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    };
 
     let visible_rows = usize::from(height.saturating_sub(2)).max(1);
     let max_start = rows.len().saturating_sub(visible_rows);
@@ -860,27 +868,27 @@ fn render_status(app: &App, area_width: u16) -> Line<'static> {
     let left = format!(" {message}  |  {pos}{wrap_indicator}{git_indicator}{lsp_indicator}");
     let theme = format!(" {theme} ", theme = app.syntax.theme_name());
     let keymap = format!(" {} ", app.keymap.status_label());
-    let tree_label = " Tree ";
+    let focus_label = if app.project_tree_focused {
+        " Tree "
+    } else {
+        " Editor "
+    };
     let width = area_width as usize;
-    let fixed_width = tree_label.chars().count() + theme.chars().count() + keymap.chars().count();
+    let fixed_width = focus_label.chars().count() + theme.chars().count() + keymap.chars().count();
     let left_capacity = width.saturating_sub(fixed_width);
     let left = left.chars().take(left_capacity).collect::<String>();
     let padding = width.saturating_sub(left.chars().count() + fixed_width);
 
-    let tree_style = if app.project_tree_open {
-        Style::default()
-            .bg(Color::Rgb(60, 80, 140))
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let focus_style = Style::default()
+        .bg(Color::Rgb(60, 80, 140))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
 
     Line::from(vec![
         Span::raw(left),
         Span::raw(" ".repeat(padding)),
         Span::styled(keymap, Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(tree_label.to_string(), tree_style),
+        Span::styled(focus_label.to_string(), focus_style),
         Span::raw(theme),
     ])
 }
@@ -1506,7 +1514,7 @@ fn push_syntax_spans(
     }
 }
 
-fn compute_cursor_screen_pos(app: &App, area: Rect) -> Option<Position> {
+pub(crate) fn compute_cursor_screen_pos(app: &App, area: Rect) -> Option<Position> {
     let cursor_pos = app.active_buffer().cursor();
     let (cursor_line, cursor_byte_col) = app.active_buffer().pos_to_linecol(cursor_pos)?;
     let top_line = app.active_doc().view.scroll_top_line;

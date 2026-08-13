@@ -481,6 +481,9 @@ is open.
   invalidates the highlight cache so they update immediately.
 - **Status bar** — single line at the bottom showing the latest
   status message and the cursor position `L{line}:{col} / L{total}`.
+- **TUI pane focus** — the visible project tree and editor have distinct
+  keyboard focus. `Shift+Tab` focuses the tree; `Tab` or `Esc` returns to the
+  editor. Tree-focused input never falls through into the document.
 - **GUI: monospace 14 pt font**, 2 px caret. Tab characters render
   with a 4× char-width advance (per egui's default monospace
   behaviour — see ADR-context below).

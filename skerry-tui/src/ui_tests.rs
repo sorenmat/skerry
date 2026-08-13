@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests {
     use core::{Buffer, Document, PieceTableBuffer};
-    use ratatui::backend::TestBackend;
+    use ratatui::backend::{Backend, TestBackend};
     use ratatui::Terminal;
 
     use crate::app::App;
@@ -31,6 +31,34 @@ mod tests {
         // Line numbers should appear.
         assert!(out.contains("1"), "expected line '1' in: {out:?}");
         assert!(out.contains("2"), "expected line '2' in: {out:?}");
+    }
+
+    #[test]
+    fn editor_cursor_is_offset_past_the_visible_project_tree() {
+        let dir =
+            std::env::temp_dir().join(format!("skerry_tui_cursor_offset_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        let path = dir.join("main.rs");
+        std::fs::write(&path, "hello").unwrap();
+
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path.clone()).unwrap());
+        let mut app = App::new(buf);
+        assert!(app.project_tree_open);
+        assert!(!app.project_tree_focused);
+
+        let backend = TestBackend::new(100, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+        let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+
+        assert!(
+            cursor.x >= 25,
+            "editor cursor must be right of the 25-column tree, got {cursor:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
