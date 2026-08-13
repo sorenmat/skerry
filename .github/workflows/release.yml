@@ -42,60 +42,6 @@ jobs:
           test -x target/Skerry.app/Contents/Resources/skerry
           test -x target/Skerry.app/Contents/Resources/skerry-tui
 
-      - name: Sign application bundle
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
-        run: |
-          certificate_path="$RUNNER_TEMP/developer-id.p12"
-          keychain_path="$RUNNER_TEMP/skerry-signing.keychain-db"
-          keychain_password="$(uuidgen)"
-
-          test -n "$APPLE_CERTIFICATE_BASE64"
-          test -n "$APPLE_CERTIFICATE_PASSWORD"
-          test -n "$APPLE_DEVELOPER_ID"
-
-          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$certificate_path"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign -t cert -f pkcs12 -k "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple: \
-            -k "$keychain_password" "$keychain_path"
-          security list-keychains -d user -s "$keychain_path"
-
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app/Contents/Resources/skerry
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app/Contents/Resources/skerry-tui
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app
-          codesign --verify --deep --strict --verbose=2 target/Skerry.app
-
-          rm -f "$certificate_path"
-
-      - name: Notarize application bundle
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          test -n "$APPLE_ID"
-          test -n "$APPLE_APP_PASSWORD"
-          test -n "$APPLE_TEAM_ID"
-
-          ditto -c -k --keepParent target/Skerry.app "$RUNNER_TEMP/Skerry-notarization.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/Skerry-notarization.zip" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          xcrun stapler staple target/Skerry.app
-          xcrun stapler validate target/Skerry.app
-          spctl --assess --type execute --verbose=2 target/Skerry.app
-
       - name: Package application bundle
         run: tar -czf "Skerry-macos-${{ matrix.arch }}.tar.gz" -C target Skerry.app
 
@@ -104,12 +50,6 @@ jobs:
           name: Skerry-macos-${{ matrix.arch }}
           path: Skerry-macos-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
-
-      - name: Remove signing keychain
-        if: always()
-        run: |
-          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/Skerry-notarization.zip"
-          security delete-keychain "$RUNNER_TEMP/skerry-signing.keychain-db" || true
 
   build-linux:
     name: Build Linux (x86_64)
@@ -160,8 +100,20 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
         run: |
+          release_note="⚠️ The macOS builds are ad-hoc signed and not Apple-notarized. Read the [installation guidance](https://github.com/$GH_REPO/blob/$RELEASE_TAG/INSTALL.md) before opening them."
+
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            existing_notes="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
+            if ! printf '%s' "$existing_notes" | grep -Fq -- "$release_note"; then
+              printf '%s\n\n%s\n' "$release_note" "$existing_notes" \
+                > "$RUNNER_TEMP/release-notes.md"
+              gh release edit "$RELEASE_TAG" \
+                --notes-file "$RUNNER_TEMP/release-notes.md"
+            fi
             gh release upload "$RELEASE_TAG" dist/*.tar.gz --clobber
           else
-            gh release create "$RELEASE_TAG" dist/*.tar.gz --generate-notes --verify-tag
+            gh release create "$RELEASE_TAG" dist/*.tar.gz \
+              --generate-notes \
+              --notes "$release_note" \
+              --verify-tag
           fi
