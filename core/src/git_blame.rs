@@ -5,14 +5,27 @@
 //! shelling out to `git blame --line-porcelain`. Refreshed on a debounce
 //! (same pattern as the gutter) so it doesn't run on every keystroke.
 
+use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Maximum file size for which we run `git blame`. Blame walks history
 /// per line and is expensive on large files; above this limit the blame
 /// column stays empty.
 const MAX_BLAME_BYTES: usize = 5 * 1024 * 1024;
+const MAX_BLAME_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_AUTHOR_CHARS: usize = 256;
+const MAX_SUMMARY_CHARS: usize = 1_024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameCommit {
+    pub full_hash: String,
+    pub full_author: String,
+    pub summary: String,
+}
 
 /// Per-line commit metadata from `git blame`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +36,8 @@ pub struct BlameEntry {
     pub author: String,
     /// Pre-formatted relative time (e.g. "2d", "3w", "just now").
     pub relative_time: String,
+    /// Full metadata shared by every line attributed to this commit.
+    pub commit: Arc<BlameCommit>,
 }
 
 /// Cached git-blame state for a document.
@@ -104,19 +119,33 @@ impl GitBlame {
 
 /// Run `git blame --line-porcelain HEAD -- <path>` from `repo_root`.
 fn blame_output(repo_root: &Path, rel_path: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let mut child = Command::new("git")
         .arg("blame")
         .arg("--line-porcelain")
         .arg("HEAD")
         .arg("--")
         .arg(rel_path)
         .current_dir(repo_root)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
+    let mut stdout = child.stdout.take()?;
+    let mut bytes = Vec::new();
+    stdout
+        .by_ref()
+        .take(MAX_BLAME_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_BLAME_OUTPUT_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
         return None;
     }
-    String::from_utf8(output.stdout).ok()
+    if !child.wait().ok()?.success() {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// Parse `git blame --line-porcelain` output into per-line entries.
@@ -139,6 +168,8 @@ fn parse_porcelain(output: &str, line_count: usize) -> Vec<Option<BlameEntry>> {
     let mut current_final_line: usize = 0;
     let mut current_author = String::new();
     let mut current_time: u64 = 0;
+    let mut current_summary = String::new();
+    let mut commits: HashMap<String, Arc<BlameCommit>> = HashMap::new();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -155,10 +186,21 @@ fn parse_porcelain(output: &str, line_count: usize) -> Vec<Option<BlameEntry>> {
                 } else {
                     current_hash.clone()
                 };
+                let commit = commits
+                    .entry(current_hash.clone())
+                    .or_insert_with(|| {
+                        Arc::new(BlameCommit {
+                            full_hash: current_hash.clone(),
+                            full_author: truncate_plain(&current_author, MAX_AUTHOR_CHARS),
+                            summary: truncate_plain(&current_summary, MAX_SUMMARY_CHARS),
+                        })
+                    })
+                    .clone();
                 entries[current_final_line - 1] = Some(BlameEntry {
                     short_hash,
                     author: truncate(&current_author, 12),
                     relative_time: relative_time_str(now.saturating_sub(current_time)),
+                    commit,
                 });
             }
             continue;
@@ -174,6 +216,8 @@ fn parse_porcelain(output: &str, line_count: usize) -> Vec<Option<BlameEntry>> {
             current_author = rest.to_string();
         } else if let Some(rest) = line.strip_prefix("author-time ") {
             current_time = rest.parse().unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("summary ") {
+            current_summary = rest.to_string();
         }
     }
     entries
@@ -187,6 +231,10 @@ fn truncate(s: &str, max: usize) -> String {
         let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{truncated}…")
     }
+}
+
+fn truncate_plain(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
 }
 
 /// Format a duration (in seconds) as a compact relative time string.
@@ -230,15 +278,34 @@ author-mail <bob@example.com>
 author-time 1700000600
 summary Second commit
 \tline two
+abcdef0123456789abcdef0123456789abcdef01 3 3
+author Alice
+author-mail <alice@example.com>
+author-time 1700000000
+summary Initial commit
+\tline three
 ";
-        let entries = parse_porcelain(output, 2);
-        assert_eq!(entries.len(), 2);
+        let entries = parse_porcelain(output, 3);
+        assert_eq!(entries.len(), 3);
         assert!(entries[0].is_some());
         assert_eq!(entries[0].as_ref().unwrap().short_hash, "abcdef0");
         assert_eq!(entries[0].as_ref().unwrap().author, "Alice");
+        assert_eq!(
+            entries[0].as_ref().unwrap().commit.full_hash,
+            "abcdef0123456789abcdef0123456789abcdef01"
+        );
+        assert_eq!(entries[0].as_ref().unwrap().commit.full_author, "Alice");
+        assert_eq!(
+            entries[0].as_ref().unwrap().commit.summary,
+            "Initial commit"
+        );
         assert!(entries[1].is_some());
         assert_eq!(entries[1].as_ref().unwrap().short_hash, "abcdef0");
         assert_eq!(entries[1].as_ref().unwrap().author, "Bob");
+        assert!(Arc::ptr_eq(
+            &entries[0].as_ref().unwrap().commit,
+            &entries[2].as_ref().unwrap().commit
+        ));
     }
 
     #[test]

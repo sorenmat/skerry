@@ -121,6 +121,27 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_always_shows_keymap_state_at_narrow_widths() {
+        for (mode, expected) in [
+            (core::KeybindingMode::Standard, "STANDARD"),
+            (core::KeybindingMode::Vim, "VIM NORMAL"),
+            (core::KeybindingMode::Emacs, "EMACS"),
+        ] {
+            let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::new());
+            let mut app = App::new(buf);
+            app.set_keybinding_mode(mode);
+            let backend = TestBackend::new(42, 5);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+            let out = terminal.backend().to_string();
+            assert!(
+                out.contains(expected),
+                "expected keymap state {expected:?} in status bar: {out:?}"
+            );
+        }
+    }
+
+    #[test]
     fn header_shows_tab_strip_with_multiple_docs() {
         // Three named docs → the header becomes a tab strip with all
         // three filenames visible, separated by "│". The active tab is

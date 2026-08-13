@@ -37,6 +37,243 @@ const BLAME_WIDTH: f32 = 200.0;
 /// ~70 % of the way in 3 frames (50 ms at 60 fps), which feels
 /// responsive without looking like a hard teleport.
 const CARET_ANIM_SPEED: f32 = 25.0;
+/// Gutter annotations are glanceable metadata, so reveal them sooner than
+/// egui's general-purpose 500 ms tooltip delay.
+const GUTTER_TOOLTIP_DELAY_SECONDS: f32 = 0.15;
+
+#[derive(Debug, Clone)]
+struct GutterHoverInfo {
+    line_number: usize,
+    git_status: Option<core::LineStatus>,
+    removed_count: usize,
+    removed_lines: Vec<String>,
+    blame: Option<core::BlameEntry>,
+    diagnostics: Vec<DiagnosticHover>,
+    remaining_diagnostics: usize,
+}
+
+#[derive(Debug, Clone)]
+struct DiagnosticHover {
+    severity: Option<lsp_types::DiagnosticSeverity>,
+    source: Option<String>,
+    code: Option<String>,
+    message: String,
+}
+
+fn diagnostic_overlaps_line(range: &lsp_types::Range, line_idx: usize) -> bool {
+    let start_line = range.start.line as usize;
+    let end_line = range.end.line as usize;
+    line_idx >= start_line
+        && (line_idx < end_line
+            || (line_idx == end_line && (range.end.character > 0 || start_line == end_line)))
+}
+
+fn gutter_hover_info(
+    app: &EditorApp,
+    diagnostics: &[lsp_types::Diagnostic],
+    line_idx: usize,
+) -> Option<GutterHoverInfo> {
+    let doc = app.active_doc();
+    let git_status = (doc.view.git_gutter_enabled && doc.git_gutter.enabled())
+        .then(|| doc.git_gutter.status(line_idx))
+        .filter(|status| *status != core::LineStatus::Unchanged);
+    let removed_blocks = if doc.view.git_gutter_enabled && doc.git_gutter.enabled() {
+        doc.git_gutter.removed_blocks_before(line_idx)
+    } else {
+        Vec::new()
+    };
+    let removed_count = removed_blocks.iter().map(|block| block.count).sum();
+    let removed_lines = removed_blocks
+        .iter()
+        .flat_map(|block| block.lines.iter())
+        .take(6)
+        .map(|line| truncate_hover_text(line, 160))
+        .collect();
+    let blame = (doc.view.git_blame_enabled && doc.git_blame.enabled())
+        .then(|| doc.git_blame.entry(line_idx).cloned())
+        .flatten();
+    let mut matching_diagnostics = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic_overlaps_line(&diagnostic.range, line_idx));
+    let diagnostics = matching_diagnostics
+        .by_ref()
+        .take(8)
+        .map(|diagnostic| DiagnosticHover {
+            severity: diagnostic.severity,
+            source: diagnostic
+                .source
+                .as_deref()
+                .map(|source| truncate_hover_text(source, 80)),
+            code: diagnostic
+                .code
+                .as_ref()
+                .map(|code| diagnostic_code_label(code, 80)),
+            message: truncate_hover_text(&diagnostic.message, 500),
+        })
+        .collect::<Vec<_>>();
+    let remaining_diagnostics = matching_diagnostics.count();
+
+    if git_status.is_none() && removed_count == 0 && blame.is_none() && diagnostics.is_empty() {
+        None
+    } else {
+        Some(GutterHoverInfo {
+            line_number: line_idx + 1,
+            git_status,
+            removed_count,
+            removed_lines,
+            blame,
+            diagnostics,
+            remaining_diagnostics,
+        })
+    }
+}
+
+fn diagnostic_severity_label(severity: Option<lsp_types::DiagnosticSeverity>) -> &'static str {
+    match severity {
+        Some(lsp_types::DiagnosticSeverity::ERROR) => "Error",
+        Some(lsp_types::DiagnosticSeverity::WARNING) => "Warning",
+        Some(lsp_types::DiagnosticSeverity::INFORMATION) => "Information",
+        Some(lsp_types::DiagnosticSeverity::HINT) => "Hint",
+        _ => "Diagnostic",
+    }
+}
+
+fn diagnostic_code_label(code: &lsp_types::NumberOrString, max_chars: usize) -> String {
+    match code {
+        lsp_types::NumberOrString::Number(number) => number.to_string(),
+        lsp_types::NumberOrString::String(value) => truncate_hover_text(value, max_chars),
+    }
+}
+
+fn truncate_hover_text(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let mut bounded = String::new();
+    for _ in 0..max_chars {
+        let Some(character) = chars.next() else {
+            return bounded;
+        };
+        bounded.push(character);
+    }
+    if chars.next().is_some() {
+        bounded.push('…');
+    }
+    bounded
+}
+
+fn render_gutter_hover(ui: &mut egui::Ui, info: &GutterHoverInfo, theme: &GuiTheme) {
+    ui.set_max_width(480.0);
+    ui.label(
+        egui::RichText::new(format!("Line {}", info.line_number))
+            .strong()
+            .monospace(),
+    );
+
+    if let Some(status) = info.git_status {
+        let (label, color) = match status {
+            core::LineStatus::Added => ("Git · Added line", theme.git_added),
+            core::LineStatus::Modified => ("Git · Modified line", theme.git_modified),
+            core::LineStatus::Unchanged => unreachable!("unchanged lines are filtered"),
+        };
+        ui.label(egui::RichText::new(label).color(color));
+    }
+
+    if info.removed_count > 0 {
+        ui.label(
+            egui::RichText::new(format!(
+                "Git · {} deleted line(s) above",
+                info.removed_count
+            ))
+            .color(theme.git_deleted),
+        );
+        for line in &info.removed_lines {
+            ui.label(
+                egui::RichText::new(format!("− {line}"))
+                    .monospace()
+                    .color(theme.dim_text),
+            );
+        }
+        if info.removed_count > info.removed_lines.len() {
+            ui.label(
+                egui::RichText::new(format!(
+                    "… {} more",
+                    info.removed_count - info.removed_lines.len()
+                ))
+                .small()
+                .color(theme.dim_text),
+            );
+        }
+    }
+
+    if let Some(blame) = &info.blame {
+        ui.separator();
+        ui.label(
+            egui::RichText::new(format!(
+                "Git blame · {} · {}",
+                blame.commit.full_author, blame.relative_time
+            ))
+            .strong(),
+        );
+        if !blame.commit.summary.is_empty() {
+            ui.label(truncate_hover_text(&blame.commit.summary, 300));
+        }
+        ui.label(
+            egui::RichText::new(&blame.commit.full_hash)
+                .monospace()
+                .small()
+                .color(theme.dim_text),
+        );
+    }
+
+    if !info.diagnostics.is_empty() {
+        ui.separator();
+        for diagnostic in &info.diagnostics {
+            let mut heading = diagnostic_severity_label(diagnostic.severity).to_string();
+            if let Some(source) = diagnostic.source.as_deref() {
+                heading.push_str(" · ");
+                heading.push_str(source);
+            }
+            if let Some(code) = diagnostic.code.as_deref() {
+                heading.push(' ');
+                heading.push_str(code);
+            }
+            let color = match diagnostic.severity {
+                Some(lsp_types::DiagnosticSeverity::ERROR) => theme.error,
+                Some(lsp_types::DiagnosticSeverity::WARNING) => theme.warning,
+                Some(lsp_types::DiagnosticSeverity::INFORMATION) => theme.accent,
+                _ => theme.dim_text,
+            };
+            ui.label(egui::RichText::new(heading).strong().color(color));
+            ui.label(&diagnostic.message);
+        }
+        if info.remaining_diagnostics > 0 {
+            ui.label(
+                egui::RichText::new(format!("… {} more diagnostics", info.remaining_diagnostics))
+                    .small()
+                    .color(theme.dim_text),
+            );
+        }
+    }
+}
+
+fn show_gutter_tooltip(response: egui::Response, info: &GutterHoverInfo, theme: &GuiTheme) {
+    if response.has_focus() {
+        response.show_tooltip_ui(|ui| render_gutter_hover(ui, info, theme));
+        return;
+    }
+
+    // Response tooltip timing is read from Context, not the local Ui style.
+    // Scope the faster delay synchronously and restore it immediately so all
+    // unrelated controls retain egui's normal tooltip timing.
+    let ctx = response.ctx.clone();
+    let old_delay = ctx.style().interaction.tooltip_delay;
+    ctx.style_mut(|style| {
+        style.interaction.tooltip_delay = GUTTER_TOOLTIP_DELAY_SECONDS;
+    });
+    response.on_hover_ui_at_pointer(|ui| render_gutter_hover(ui, info, theme));
+    ctx.style_mut(|style| {
+        style.interaction.tooltip_delay = old_delay;
+    });
+}
 
 /// Set the cursor icon to a pointing hand when hovering clickable UI.
 fn hand_cursor(response: &egui::Response, ctx: &egui::Context) {
@@ -249,6 +486,12 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
                     app.settings_open = !app.settings_open;
                 }
                 render_document_view_switcher(ui, app);
+                ui.label(
+                    egui::RichText::new(app.keymap.status_label())
+                        .color(theme.status_text)
+                        .monospace()
+                        .strong(),
+                );
                 if let Some(status) = lsp_status {
                     let name = core::lsp::LspManager::server_display_name(&status.language_id)
                         .unwrap_or(&status.language_id);
@@ -1246,10 +1489,11 @@ fn render_command_palette_window(ctx: &egui::Context, app: &mut EditorApp) {
                     |ui, row_range| {
                         for i in row_range {
                             let command = &app.command_palette.filtered[i];
-                            let label = if command.keybinding.is_empty() {
+                            let binding = command.keybinding_for(app.keymap.mode());
+                            let label = if binding.is_empty() {
                                 command.label.to_string()
                             } else {
-                                format!("{}  ({})", command.label, command.keybinding)
+                                format!("{}  ({binding})", command.label)
                             };
                             let is_selected = i == selected;
                             let text = egui::RichText::new(label).monospace().size(14.0);
@@ -1460,6 +1704,7 @@ fn render_settings_window(ctx: &egui::Context, app: &mut EditorApp) {
 
     let mut project_tree_open = app.project_tree_open;
     let mut caret_animation = app.config.caret_animation;
+    let mut keybinding_mode = app.keymap.mode();
     let mut auto_save = app.config.auto_save;
     let mut auto_save_on_focus_change = app.config.auto_save_on_focus_change;
     let mut auto_save_delay_ms = app.config.auto_save_delay_ms;
@@ -1551,6 +1796,14 @@ fn render_settings_window(ctx: &egui::Context, app: &mut EditorApp) {
 
                             ui.label("Cursor");
                             ui.checkbox(&mut caret_animation, "Animate vertical movement");
+                            ui.end_row();
+
+                            ui.label("Keybindings");
+                            ui.horizontal(|ui| {
+                                for mode in core::KeybindingMode::ALL {
+                                    ui.selectable_value(&mut keybinding_mode, mode, mode.label());
+                                }
+                            });
                             ui.end_row();
 
                             ui.label("Git annotations");
@@ -1653,6 +1906,10 @@ fn render_settings_window(ctx: &egui::Context, app: &mut EditorApp) {
         app.toggle_caret_animation();
         changed = true;
     }
+    if keybinding_mode != app.keymap.mode() {
+        app.set_keybinding_mode(keybinding_mode);
+        changed = true;
+    }
     if auto_save != app.config.auto_save
         || auto_save_on_focus_change != app.config.auto_save_on_focus_change
         || auto_save_delay_ms != app.config.auto_save_delay_ms
@@ -1736,62 +1993,97 @@ fn render_keybindings_help_window(ctx: &egui::Context, app: &mut EditorApp) {
                 .show(ui, |ui| {
                     let mut rows: Vec<(String, &str)> = Vec::new();
 
-                    // Editor navigation entries that are not represented
-                    // by command-palette commands.
-                    if is_mac {
-                        rows.push(("Cmd+← / Cmd+→".to_string(), "Line start / end"));
-                        rows.push(("Cmd+↑ / Cmd+↓".to_string(), "Document start / end"));
-                        rows.push(("Opt+← / Opt+→".to_string(), "Word left / right"));
-                        rows.push(("Opt+Delete".to_string(), "Delete word right"));
-                        rows.push(("Opt+Backspace".to_string(), "Delete word left"));
-                    } else {
-                        rows.push(("Home / End".to_string(), "Line start / end"));
-                        rows.push(("Ctrl+Home / Ctrl+End".to_string(), "Document start / end"));
-                        rows.push(("Ctrl+← / Ctrl+→".to_string(), "Word left / right"));
-                        rows.push(("Ctrl+Delete".to_string(), "Delete word right"));
-                        rows.push(("Ctrl+Backspace".to_string(), "Delete word left"));
+                    match app.keymap.mode() {
+                        core::KeybindingMode::Vim => {
+                            rows.extend([
+                                ("h j k l / arrows".into(), "Move in Normal/Visual mode"),
+                                (
+                                    "w b e / 0 ^ $ / gg G".into(),
+                                    "Word, line, and document motions",
+                                ),
+                                ("i a I A o O".into(), "Enter Insert mode"),
+                                ("v / V / Esc".into(), "Visual modes / Normal mode"),
+                                ("d c y + motion".into(), "Delete, change, or yank"),
+                                ("dd cc yy / x X s D C".into(), "Line and character edits"),
+                                ("u / Ctrl+R / p P".into(), "Undo, redo, and paste"),
+                                ("/ ? / n N".into(), "Search and navigate matches"),
+                                (":w :q :q! :wq :x :e".into(), "File commands"),
+                            ]);
+                        }
+                        core::KeybindingMode::Emacs => {
+                            rows.extend([
+                                ("C-f C-b C-n C-p".into(), "Move by character or line"),
+                                ("M-f M-b / C-a C-e".into(), "Move by word or line boundary"),
+                                ("M-< M-> / C-v M-v".into(), "Document and page movement"),
+                                (
+                                    "C-Space / C-x C-x / C-g".into(),
+                                    "Set, exchange, or cancel mark",
+                                ),
+                                ("C-k M-d M-Backspace C-w".into(), "Kill text"),
+                                ("M-w / C-y / M-y".into(), "Copy, yank, and rotate kill ring"),
+                                ("C-s / C-r".into(), "Search forward / backward"),
+                                ("C-x C-s / C-x C-w".into(), "Save / save as"),
+                                ("C-x C-f / C-x k / C-x C-c".into(), "Open, close, or quit"),
+                            ]);
+                        }
+                        core::KeybindingMode::Standard if is_mac => {
+                            rows.push(("Cmd+← / Cmd+→".to_string(), "Line start / end"));
+                            rows.push(("Cmd+↑ / Cmd+↓".to_string(), "Document start / end"));
+                            rows.push(("Opt+← / Opt+→".to_string(), "Word left / right"));
+                            rows.push(("Opt+Delete".to_string(), "Delete word right"));
+                            rows.push(("Opt+Backspace".to_string(), "Delete word left"));
+                        }
+                        core::KeybindingMode::Standard => {
+                            rows.push(("Home / End".to_string(), "Line start / end"));
+                            rows.push(("Ctrl+Home / Ctrl+End".to_string(), "Document start / end"));
+                            rows.push(("Ctrl+← / Ctrl+→".to_string(), "Word left / right"));
+                            rows.push(("Ctrl+Delete".to_string(), "Delete word right"));
+                            rows.push(("Ctrl+Backspace".to_string(), "Delete word left"));
+                        }
                     }
-                    rows.push(("↑ / ↓ / ← / →".to_string(), "Move cursor"));
-                    rows.push(("Shift + arrows".to_string(), "Select text"));
-                    rows.push(("PageUp / PageDown".to_string(), "Page up / down"));
-                    // Multi-cursor and editing entries.
-                    if is_mac {
-                        rows.push(("Cmd+D".to_string(), "Select next occurrence"));
-                        rows.push(("Cmd+A".to_string(), "Select all"));
-                        rows.push(("Opt+Click".to_string(), "Add cursor at click"));
-                        rows.push(("Shift+Cmd+D".to_string(), "Duplicate line"));
-                        rows.push(("Cmd+K".to_string(), "Hover documentation"));
-                    } else {
-                        rows.push(("Ctrl+D".to_string(), "Select next occurrence"));
-                        rows.push(("Ctrl+A".to_string(), "Select all"));
-                        rows.push(("Alt+Click".to_string(), "Add cursor at click"));
-                        rows.push(("Shift+Ctrl+D".to_string(), "Duplicate line"));
-                        rows.push(("Ctrl+K".to_string(), "Hover documentation"));
-                    }
-                    rows.push(("F2".to_string(), "Rename symbol"));
-                    rows.push(("F12".to_string(), "Go to definition"));
-                    rows.push(("( ) [ ] { } \" '".to_string(), "Auto-pair brackets/quotes"));
-                    rows.push(("Enter after {".to_string(), "Auto-indent"));
-                    rows.push((
-                        "Home".to_string(),
-                        "Smart Home (toggle col 0 / first non-WS)",
-                    ));
-                    if is_mac {
-                        rows.push(("Cmd+/".to_string(), "Toggle comment"));
-                    } else {
-                        rows.push(("Ctrl+/".to_string(), "Toggle comment"));
+                    if app.keymap.mode() == core::KeybindingMode::Standard {
+                        rows.push(("↑ / ↓ / ← / →".to_string(), "Move cursor"));
+                        rows.push(("Shift + arrows".to_string(), "Select text"));
+                        rows.push(("PageUp / PageDown".to_string(), "Page up / down"));
+                        if is_mac {
+                            rows.push(("Cmd+D".to_string(), "Select next occurrence"));
+                            rows.push(("Cmd+A".to_string(), "Select all"));
+                            rows.push(("Opt+Click".to_string(), "Add cursor at click"));
+                            rows.push(("Shift+Cmd+D".to_string(), "Duplicate line"));
+                            rows.push(("Cmd+K".to_string(), "Hover documentation"));
+                        } else {
+                            rows.push(("Ctrl+D".to_string(), "Select next occurrence"));
+                            rows.push(("Ctrl+A".to_string(), "Select all"));
+                            rows.push(("Alt+Click".to_string(), "Add cursor at click"));
+                            rows.push(("Shift+Ctrl+D".to_string(), "Duplicate line"));
+                            rows.push(("Ctrl+K".to_string(), "Hover documentation"));
+                        }
+                        rows.push(("F2".to_string(), "Rename symbol"));
+                        rows.push(("F12".to_string(), "Go to definition"));
+                        rows.push(("( ) [ ] { } \" '".to_string(), "Auto-pair brackets/quotes"));
+                        rows.push(("Enter after {".to_string(), "Auto-indent"));
+                        rows.push((
+                            "Home".to_string(),
+                            "Smart Home (toggle col 0 / first non-WS)",
+                        ));
+                        rows.push((
+                            if is_mac { "Cmd+/" } else { "Ctrl+/" }.to_string(),
+                            "Toggle comment",
+                        ));
                     }
 
                     // Command palette entries. Their stored keybinding
                     // strings are Windows/Linux style, so swap Ctrl for
                     // Cmd and Alt for Option on macOS.
-                    for cmd in core::COMMANDS.iter().filter(|c| !c.keybinding.is_empty()) {
-                        let key = if is_mac {
-                            cmd.keybinding
-                                .replace("Ctrl+", "Cmd+")
-                                .replace("Alt+", "Opt+")
+                    for cmd in core::COMMANDS {
+                        let binding = cmd.keybinding_for(app.keymap.mode());
+                        if binding.is_empty() {
+                            continue;
+                        }
+                        let key = if is_mac && app.keymap.mode() == core::KeybindingMode::Standard {
+                            binding.replace("Ctrl+", "Cmd+").replace("Alt+", "Opt+")
                         } else {
-                            cmd.keybinding.to_string()
+                            binding.to_string()
                         };
                         rows.push((key, cmd.label));
                     }
@@ -2203,6 +2495,31 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // the selection rectangle.
             let y = (rect.top() + line_idx as f32 * line_height).round();
 
+            // Each annotated gutter row is a focusable, non-interactive
+            // accessibility target. Pointer hover shows the tooltip beside
+            // the pointer; Tab focus shows the same details beside the row.
+            // It remains non-interactive so editor click/drag selection keeps
+            // using the enclosing response unchanged.
+            if let Some(info) = gutter_hover_info(app, &diagnostics, line_idx) {
+                let gutter_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.left(), y),
+                    egui::vec2(gw + prefix_chars as f32 * char_width, line_height),
+                );
+                let gutter_response = ui.interact(
+                    gutter_rect,
+                    egui::Id::new(("gutter_annotation", app.active, line_idx)),
+                    egui::Sense::focusable_noninteractive(),
+                );
+                gutter_response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Label,
+                        true,
+                        format!("Line {} gutter annotations", info.line_number),
+                    )
+                });
+                show_gutter_tooltip(gutter_response, &info, theme);
+            }
+
             let line_text = app
                 .active_buffer()
                 .line_text(line_idx)
@@ -2287,9 +2604,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // This makes errors unmissable even when the inline underline
             // is subtle.
             let diag_severity = diagnostics.iter().fold(None, |max_sev, d| {
-                let on_this_line = (d.range.start.line as usize) <= line_idx
-                    && (d.range.end.line as usize) >= line_idx;
-                if !on_this_line {
+                if !diagnostic_overlaps_line(&d.range, line_idx) {
                     return max_sev;
                 }
                 match (max_sev, d.severity) {
@@ -2789,7 +3104,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             for diag in &diagnostics {
                 let diag_start_line = diag.range.start.line as usize;
                 let diag_end_line = diag.range.end.line as usize;
-                if diag_start_line > line_idx || diag_end_line < line_idx {
+                if !diagnostic_overlaps_line(&diag.range, line_idx) {
                     continue;
                 }
 
@@ -2919,10 +3234,17 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             } else {
                 (rect.top() + cl as f32 * line_height).round()
             };
+            let block_caret = matches!(
+                app.keymap.vim_mode(),
+                Some(core::VimMode::Normal | core::VimMode::Visual | core::VimMode::VisualLine)
+            );
             painter.rect_filled(
                 egui::Rect::from_min_size(
                     egui::pos2(caret_x, caret_y),
-                    egui::vec2(CARET_WIDTH, line_height),
+                    egui::vec2(
+                        if block_caret { char_width } else { CARET_WIDTH },
+                        line_height,
+                    ),
                 ),
                 0.0,
                 theme.caret,
@@ -3292,7 +3614,11 @@ fn word_range_at_char_col(line_text: &str, char_col: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{project_tree_reveal_offset, render_settings_window, word_range_at_char_col};
+    use super::{
+        diagnostic_overlaps_line, project_tree_reveal_offset, render_gutter_hover,
+        render_settings_window, show_gutter_tooltip, truncate_hover_text, word_range_at_char_col,
+        DiagnosticHover, GutterHoverInfo, GUTTER_TOOLTIP_DELAY_SECONDS,
+    };
 
     #[test]
     fn project_tree_reveal_offset_accounts_for_virtual_row_spacing() {
@@ -3350,6 +3676,120 @@ mod tests {
 
         assert!(app.settings_open);
         assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn gutter_hover_renders_blame_git_and_lsp_details() {
+        let ctx = egui::Context::default();
+        let info = GutterHoverInfo {
+            line_number: 7,
+            git_status: Some(core::LineStatus::Modified),
+            removed_count: 1,
+            removed_lines: vec!["old value".to_string()],
+            blame: Some(core::BlameEntry {
+                short_hash: "abcdef0".to_string(),
+                author: "Alice".to_string(),
+                relative_time: "2d".to_string(),
+                commit: std::sync::Arc::new(core::BlameCommit {
+                    full_hash: "abcdef0123456789abcdef0123456789abcdef01".to_string(),
+                    full_author: "Alice Example".to_string(),
+                    summary: "Explain gutter annotations".to_string(),
+                }),
+            }),
+            diagnostics: vec![DiagnosticHover {
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                source: Some("rust-analyzer".to_string()),
+                code: Some("E0308".to_string()),
+                message: "mismatched types".to_string(),
+            }],
+            remaining_diagnostics: 0,
+        };
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            render_gutter_hover(ui, &info, crate::theme::GuiTheme::default_dark());
+        });
+        let output = ctx.end_pass();
+
+        assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn diagnostic_line_overlap_respects_end_exclusivity() {
+        let multi_line = lsp_types::Range::new(
+            lsp_types::Position::new(3, 2),
+            lsp_types::Position::new(5, 0),
+        );
+        assert!(diagnostic_overlaps_line(&multi_line, 3));
+        assert!(diagnostic_overlaps_line(&multi_line, 4));
+        assert!(!diagnostic_overlaps_line(&multi_line, 5));
+
+        let zero_width = lsp_types::Range::new(
+            lsp_types::Position::new(7, 4),
+            lsp_types::Position::new(7, 4),
+        );
+        assert!(diagnostic_overlaps_line(&zero_width, 7));
+    }
+
+    #[test]
+    fn hover_text_truncation_only_returns_the_bounded_prefix() {
+        assert_eq!(truncate_hover_text("short", 10), "short");
+        assert_eq!(truncate_hover_text("abcdef", 3), "abc…");
+        assert_eq!(truncate_hover_text("åßç∂", 2), "åß…");
+    }
+
+    #[test]
+    fn gutter_tooltip_uses_fast_delay_and_restores_global_style() {
+        let ctx = egui::Context::default();
+        let default_delay = ctx.style().interaction.tooltip_delay;
+        assert!(GUTTER_TOOLTIP_DELAY_SECONDS < default_delay);
+        let info = GutterHoverInfo {
+            line_number: 1,
+            git_status: Some(core::LineStatus::Modified),
+            removed_count: 0,
+            removed_lines: Vec::new(),
+            blame: None,
+            diagnostics: Vec::new(),
+            remaining_diagnostics: 0,
+        };
+        let pointer = egui::pos2(20.0, 20.0);
+
+        let mut tooltip_was_open = false;
+        for (pass, time) in [0.0, 0.05, 0.10, 0.16, 0.20, 0.25, 0.30, 0.31]
+            .into_iter()
+            .enumerate()
+        {
+            let events = if pass == 0 {
+                vec![egui::Event::PointerMoved(pointer)]
+            } else {
+                Vec::new()
+            };
+            ctx.begin_pass(egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(200.0, 120.0),
+                )),
+                events,
+                ..Default::default()
+            });
+            egui::CentralPanel::default().show(&ctx, |ui| {
+                let rect =
+                    egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(100.0, 30.0));
+                let response = ui.interact(
+                    rect,
+                    egui::Id::new("fast_gutter_tooltip_test"),
+                    egui::Sense::hover(),
+                );
+                tooltip_was_open |= response.is_tooltip_open();
+                show_gutter_tooltip(response, &info, crate::theme::GuiTheme::default_dark());
+            });
+            let _ = ctx.end_pass();
+            assert_eq!(ctx.style().interaction.tooltip_delay, default_delay);
+        }
+        assert!(
+            tooltip_was_open,
+            "tooltip should open before egui's default 500 ms delay"
+        );
     }
 
     #[test]

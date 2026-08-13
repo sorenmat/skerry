@@ -11,6 +11,97 @@
 use core::{Buffer, EditorEvent, Movement, Selection};
 use eframe::egui::{Event, Key, Modifiers};
 
+/// Normalize egui keyboard/text events for the shared keymap engine.
+pub fn keymap_input(event: &Event) -> Option<core::KeyInput> {
+    match event {
+        Event::Text(text) => text
+            .chars()
+            .next()
+            .map(|ch| core::KeyInput::Char(ch, core::KeyModifiers::default())),
+        Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } => {
+            let normalized = core::KeyModifiers {
+                ctrl: modifiers.ctrl,
+                alt: modifiers.alt,
+                shift: modifiers.shift,
+                command: modifiers.command,
+            };
+            let code = match key {
+                Key::Escape => Some(core::KeyCode::Escape),
+                Key::Enter => Some(core::KeyCode::Enter),
+                Key::Backspace => Some(core::KeyCode::Backspace),
+                Key::Delete => Some(core::KeyCode::Delete),
+                Key::Tab => Some(core::KeyCode::Tab),
+                Key::ArrowLeft => Some(core::KeyCode::Left),
+                Key::ArrowRight => Some(core::KeyCode::Right),
+                Key::ArrowUp => Some(core::KeyCode::Up),
+                Key::ArrowDown => Some(core::KeyCode::Down),
+                Key::Home => Some(core::KeyCode::Home),
+                Key::End => Some(core::KeyCode::End),
+                Key::PageUp => Some(core::KeyCode::PageUp),
+                Key::PageDown => Some(core::KeyCode::PageDown),
+                Key::Space => Some(core::KeyCode::Space),
+                _ => None,
+            };
+            if let Some(code) = code {
+                return Some(core::KeyInput::Key(code, normalized));
+            }
+            // Plain printable GUI input arrives as Event::Text. Key events
+            // are used here only for modified characters/chords.
+            if normalized.ctrl || normalized.alt || normalized.command {
+                key_to_char(*key, normalized.shift).map(|ch| core::KeyInput::Char(ch, normalized))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn key_to_char(key: Key, shift: bool) -> Option<char> {
+    let ch = match key {
+        Key::A => 'a',
+        Key::B => 'b',
+        Key::C => 'c',
+        Key::D => 'd',
+        Key::E => 'e',
+        Key::F => 'f',
+        Key::G => 'g',
+        Key::H => 'h',
+        Key::I => 'i',
+        Key::J => 'j',
+        Key::K => 'k',
+        Key::L => 'l',
+        Key::M => 'm',
+        Key::N => 'n',
+        Key::O => 'o',
+        Key::P => 'p',
+        Key::Q => 'q',
+        Key::R => 'r',
+        Key::S => 's',
+        Key::T => 't',
+        Key::U => 'u',
+        Key::V => 'v',
+        Key::W => 'w',
+        Key::X => 'x',
+        Key::Y => 'y',
+        Key::Z => 'z',
+        Key::Slash => '/',
+        Key::Comma => {
+            return Some(if shift { '<' } else { ',' });
+        }
+        Key::Period => {
+            return Some(if shift { '>' } else { '.' });
+        }
+        _ => return None,
+    };
+    Some(if shift { ch.to_ascii_uppercase() } else { ch })
+}
+
 /// Translate an egui `Event` into an `EditorEvent`.
 ///
 /// Returns `None` for events we don't bind to anything (mouse moves,
@@ -721,6 +812,37 @@ mod tests {
         assert_eq!(
             translate_event(&key_event(Key::G, true, primary())),
             Some(EditorEvent::GoToLine(None))
+        );
+    }
+
+    #[test]
+    fn keymap_normalization_preserves_modified_punctuation() {
+        let alt_shift = Modifiers {
+            alt: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            keymap_input(&key_event(Key::Comma, true, alt_shift)),
+            Some(core::KeyInput::Char(
+                '<',
+                core::KeyModifiers {
+                    alt: true,
+                    shift: true,
+                    ..Default::default()
+                }
+            ))
+        );
+        assert_eq!(
+            keymap_input(&key_event(Key::Period, true, alt_shift)),
+            Some(core::KeyInput::Char(
+                '>',
+                core::KeyModifiers {
+                    alt: true,
+                    shift: true,
+                    ..Default::default()
+                }
+            ))
         );
     }
 }

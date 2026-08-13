@@ -6,12 +6,14 @@
 //! on macOS (fsevents) and Linux (inotify), whereas watching individual
 //! files can be flaky or unsupported on some platforms.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use sha2::{Digest, Sha256};
 
 /// Best-effort canonicalization. Used so that paths obtained from the
 /// application (which may contain symlinks such as `/var` on macOS)
@@ -31,6 +33,38 @@ pub struct FileWatcher {
     tracked_files: HashSet<PathBuf>,
     /// Set of parent directories currently being watched.
     watched_dirs: HashSet<PathBuf>,
+    /// Metadata signatures for writes performed by Skerry. Directory
+    /// watchers also report our own atomic saves; matching events must not
+    /// be treated as external changes and reload the document.
+    self_writes: HashMap<PathBuf, ExpectedWrite>,
+}
+
+type ContentFingerprint = [u8; 32];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExpectedWrite {
+    len: u64,
+    fingerprint: ContentFingerprint,
+}
+
+fn content_fingerprint(bytes: &[u8]) -> ContentFingerprint {
+    Sha256::digest(bytes).into()
+}
+
+fn file_fingerprint(path: &Path, expected_len: u64) -> Option<ContentFingerprint> {
+    let mut file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() != expected_len {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut chunk).ok()?;
+        if read == 0 {
+            return Some(hasher.finalize().into());
+        }
+        hasher.update(&chunk[..read]);
+    }
 }
 
 /// A single externally detected file change.
@@ -65,7 +99,23 @@ impl FileWatcher {
             receiver,
             tracked_files: HashSet::new(),
             watched_dirs: HashSet::new(),
+            self_writes: HashMap::new(),
         })
+    }
+
+    /// Record the exact content from a successful editor save so its watcher
+    /// notifications are ignored. The expected bytes come from the buffer,
+    /// rather than a post-save disk read, so an external writer cannot be
+    /// mistaken for Skerry during the save-to-acknowledgement window.
+    pub fn acknowledge_write(&mut self, path: &Path, expected_bytes: &[u8]) {
+        let path = normalize_path(path);
+        self.self_writes.insert(
+            path,
+            ExpectedWrite {
+                len: expected_bytes.len() as u64,
+                fingerprint: content_fingerprint(expected_bytes),
+            },
+        );
     }
 
     /// Start tracking `path`. The path's parent directory is added to the
@@ -90,6 +140,7 @@ impl FileWatcher {
         if !self.tracked_files.remove(&path) {
             return;
         }
+        self.self_writes.remove(&path);
         if let Some(parent) = path.parent() {
             let parent = normalize_path(parent);
             let still_needed = self
@@ -118,12 +169,25 @@ impl FileWatcher {
 
     /// Drain all pending change notifications without blocking. Only
     /// returns changes whose path is in the tracked set.
-    pub fn poll_changes(&self) -> Vec<FileChange> {
+    pub fn poll_changes(&mut self) -> Vec<FileChange> {
         let mut changes = Vec::new();
+        let mut fingerprints = HashMap::new();
         while let Ok(change) = self.receiver.try_recv() {
             let normalized = normalize_path(&change.path);
             if self.tracked_files.contains(&normalized) || self.tracked_files.contains(&change.path)
             {
+                if let Some(expected) = self.self_writes.get(&normalized).copied() {
+                    let actual = *fingerprints
+                        .entry(normalized.clone())
+                        .or_insert_with(|| file_fingerprint(&normalized, expected.len));
+                    if actual == Some(expected.fingerprint) {
+                        continue;
+                    }
+                    // A different on-disk value is genuinely external. Drop
+                    // the stale acknowledgement before reporting it so future
+                    // events cannot be suppressed accidentally.
+                    self.self_writes.remove(&normalized);
+                }
                 changes.push(FileChange { path: normalized });
             }
         }
@@ -184,5 +248,85 @@ mod tests {
         watcher.sync_watch_list(std::slice::from_ref(&b));
         assert!(!watcher.tracked_files.contains(&canonical_a));
         assert!(watcher.tracked_files.contains(&canonical_b));
+    }
+
+    #[test]
+    fn acknowledged_editor_write_is_not_reported_as_external() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("self-save.txt");
+        fs::write(&path, "initial").unwrap();
+        let mut watcher = FileWatcher::new().unwrap();
+        watcher.watch(&path);
+        thread::sleep(Duration::from_millis(250));
+
+        let saved = b"saved by editor";
+        fs::write(&path, saved).unwrap();
+        watcher.acknowledge_write(&path, saved);
+
+        for _ in 0..20 {
+            assert!(
+                watcher.poll_changes().is_empty(),
+                "an acknowledged save must not look external"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        fs::write(&path, "a genuinely external and different update").unwrap();
+        let canonical = normalize_path(&path);
+        let mut found = false;
+        for _ in 0..100 {
+            if watcher
+                .poll_changes()
+                .iter()
+                .any(|change| change.path == canonical)
+            {
+                found = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(found, "a later external write must still be reported");
+    }
+
+    #[test]
+    fn external_overwrite_between_save_and_acknowledgement_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("save-race.txt");
+        fs::write(&path, "old value").unwrap();
+        let mut watcher = FileWatcher::new().unwrap();
+        watcher.watch(&path);
+        thread::sleep(Duration::from_millis(250));
+
+        let editor_bytes = b"editor123";
+        fs::write(&path, editor_bytes).unwrap();
+        let editor_modified = fs::metadata(&path).unwrap().modified().unwrap();
+
+        // Simulate another process winning the race before Skerry records its
+        // successful save. Keep both length and mtime unchanged to prove that
+        // suppression is based on content, not metadata.
+        fs::write(&path, "outside12").unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(editor_modified))
+            .unwrap();
+        watcher.acknowledge_write(&path, editor_bytes);
+
+        let canonical = normalize_path(&path);
+        let mut found = false;
+        for _ in 0..100 {
+            if watcher
+                .poll_changes()
+                .iter()
+                .any(|change| change.path == canonical)
+            {
+                found = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            found,
+            "the external winner must not be acknowledged as ours"
+        );
+        assert!(!watcher.self_writes.contains_key(&canonical));
     }
 }

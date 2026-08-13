@@ -15,6 +15,7 @@ mod fuzzy;
 mod git_blame;
 mod git_gutter;
 mod input;
+mod keymap;
 pub mod lsp;
 mod piece_table;
 mod project;
@@ -34,9 +35,12 @@ pub use file_watcher::{FileChange, FileWatcher};
 pub use fold::{FoldRange, FoldState};
 pub use formatter::{formatter_for_language, run_external_formatter};
 pub use fuzzy::{filter_and_rank, fuzzy_score, FuzzyMatch};
-pub use git_blame::{BlameEntry, GitBlame};
+pub use git_blame::{BlameCommit, BlameEntry, GitBlame};
 pub use git_gutter::{GitGutter, Hunk, LineStatus, RemovedBlock};
 pub use input::{EditorEvent, Movement};
+pub use keymap::{
+    KeyCode, KeyInput, KeyModifiers, KeybindingMode, KeymapOutput, KeymapState, VimMode,
+};
 pub use piece_table::{Piece, PieceSource, PieceTableBuffer};
 pub use project::{
     FsNode, Project, ProjectSearchResult, ProjectTree, ReplaceError, ReplacePreview,

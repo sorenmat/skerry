@@ -38,6 +38,10 @@ impl Drop for TerminalGuard {
         // the user's terminal is left with mouse capture enabled after
         // exit, breaking mouse clicks in their shell until `reset`.
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::cursor::SetCursorStyle::DefaultUserShape
+        );
         ratatui::restore();
     }
 }
