@@ -12,18 +12,22 @@ brew trust sorenmat/skerry
 brew install --cask skerry
 ```
 
-The current cask installs the application as `Skerry.app` and adds the `sky`
-GUI command to Homebrew's binary directory:
+The cask installs the application as `Skerry.app` and adds the `sky` GUI
+command and `skerry-tui` terminal frontend to Homebrew's binary directory:
 
 ```sh
 sky path/to/file
+skerry-tui path/to/file
 ```
 
-The next release package also contains the `skerry-tui` terminal frontend.
-It will become available from Homebrew when the matching cask update is
-published.
+On x86_64 Linux, install the formula:
 
-Linux release archives contain `skerry`, `skerry-tui`, and `sky`:
+```sh
+brew tap sorenmat/skerry
+brew install skerry
+```
+
+The formula installs `skerry`, `skerry-tui`, and `sky`:
 
 ```sh
 skerry path/to/file
@@ -31,19 +35,16 @@ sky path/to/file
 skerry-tui path/to/file
 ```
 
-A Linux formula will be added to the tap with the next release. The current
-tap does not yet support `brew install skerry` on Linux.
-
 Upgrade or uninstall with:
 
 ```sh
-brew upgrade --cask --greedy-latest skerry
+brew upgrade --cask skerry
 brew uninstall --cask skerry
+brew upgrade skerry
+brew uninstall skerry
 ```
 
-The macOS cask tracks the latest release, so macOS cask upgrades use
-`--greedy-latest`. macOS releases are currently ad-hoc signed and not
-Apple-notarized.
+macOS releases are currently ad-hoc signed and not Apple-notarized.
 
 The canonical cask and formula are maintained in the
 [sorenmat/homebrew-skerry](https://github.com/sorenmat/homebrew-skerry) tap.

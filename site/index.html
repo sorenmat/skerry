@@ -60,7 +60,7 @@
           </div>
           <ul class="hero-notes" aria-label="Supported platforms">
             <li>macOS</li>
-            <li>Linux</li>
+            <li>Linux x86_64</li>
             <li>GUI + TUI</li>
             <li>MIT / Apache-2.0</li>
           </ul>
@@ -198,10 +198,13 @@
         <div class="install-copy">
           <p class="eyebrow">Ready when you are</p>
           <h2>Install Skerry.</h2>
-          <p>Homebrew installs the native application and the <code>sky</code> command.</p>
+          <p>
+            Homebrew installs both frontends: <code>sky</code> for the GUI and
+            <code>skerry-tui</code> for the terminal.
+          </p>
           <div class="platform-tabs" aria-label="Installation platform">
             <button type="button" aria-pressed="true" aria-controls="install-command" data-platform="macos">macOS</button>
-            <button type="button" aria-pressed="false" aria-controls="install-command" data-platform="linux">Linux</button>
+            <button type="button" aria-pressed="false" aria-controls="install-command" data-platform="linux">Linux (x86_64)</button>
           </div>
           <div class="command-box" id="install-command" data-command-box>
             <pre><code data-install-command>brew tap sorenmat/skerry
