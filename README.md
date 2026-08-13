@@ -4,6 +4,9 @@ Skerry is a fast, dual-frontend text editor written in Rust. Its GUI and TUI
 share the same editing core and are designed to handle ordinary source files
 and multi-gigabyte files in the same session.
 
+Visit the [Skerry website](https://sorenmat.github.io/skerry/) for an overview,
+or continue below for installation and development details.
+
 ## Install with Homebrew
 
 ### macOS

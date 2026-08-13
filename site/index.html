@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Skerry is a fast Rust editor with native GUI and terminal frontends, Vim and Emacs keybindings, Markdown and CSV previews, Git context, and LSP support."
+    />
+    <meta name="theme-color" content="#070b12" />
+    <meta property="og:title" content="Skerry — a fast editor for GUI and terminal" />
+    <meta
+      property="og:description"
+      content="One editing core. Native GUI and terminal frontends. Built in Rust for tiny source files and multi-gigabyte data."
+    />
+    <meta
+      property="og:image"
+      content="https://sorenmat.github.io/skerry/Skerry-icon-512.png"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://sorenmat.github.io/skerry/" />
+    <title>Skerry — a fast editor for GUI and terminal</title>
+    <link rel="canonical" href="https://sorenmat.github.io/skerry/" />
+    <link rel="icon" type="image/png" href="Skerry-icon-96.png" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header" data-header>
+      <a class="brand" href="#top" aria-label="Skerry home">
+        <picture>
+          <source srcset="Skerry-icon-96.webp" type="image/webp" />
+          <img src="Skerry-icon-96.png" alt="" width="38" height="38" />
+        </picture>
+        <span>Skerry</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#features">Features</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/sorenmat/skerry">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow">A native Rust editor</p>
+          <h1>Fast where it matters.<br /><span>Quiet everywhere else.</span></h1>
+          <p class="hero-lede">
+            Skerry brings the same editing core to a native GUI and your terminal—built
+            for everyday source files and multi-gigabyte data without changing modes.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#install">Install with Homebrew</a>
+            <a class="button button-secondary" href="https://github.com/sorenmat/skerry/releases/latest">
+              Latest release
+            </a>
+          </div>
+          <ul class="hero-notes" aria-label="Supported platforms">
+            <li>macOS</li>
+            <li>Linux</li>
+            <li>GUI + TUI</li>
+            <li>MIT / Apache-2.0</li>
+          </ul>
+        </div>
+
+        <div
+          class="product-stage"
+          role="img"
+          aria-label="Skerry’s native editor showing a Rust file, project tree, Vim mode, Git blame, and CSV view controls"
+        >
+          <div aria-hidden="true">
+          <div class="glow glow-one"></div>
+          <div class="glow glow-two"></div>
+          <div class="editor-window">
+            <div class="window-bar">
+              <div class="traffic-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+              <span>Skerry</span>
+              <span class="window-mode">VIM NORMAL</span>
+            </div>
+            <div class="editor-body">
+              <aside class="file-tree" aria-label="Project files">
+                <strong>⌄ skerry</strong>
+                <span>⌄ core</span>
+                <span class="tree-file selected">keymap.rs</span>
+                <span class="tree-file">buffer.rs</span>
+                <span class="tree-file">document.rs</span>
+                <span>⌄ skerry</span>
+                <span class="tree-file">ui.rs</span>
+                <span class="tree-file">theme.rs</span>
+                <span>› docs</span>
+              </aside>
+              <div class="code-pane" aria-label="Rust source preview">
+                <div class="tab-row"><span>keymap.rs</span><span class="tab-dim">features.md</span></div>
+                <div class="code-lines" aria-hidden="true">
+                  <span><b>1</b><code><em>pub enum</em> <strong>KeybindingMode</strong> {</code></span>
+                  <span><b>2</b><code>    Standard,</code></span>
+                  <span><b>3</b><code>    Vim,</code></span>
+                  <span><b>4</b><code>    Emacs,</code></span>
+                  <span><b>5</b><code>}</code></span>
+                  <span><b>6</b><code></code></span>
+                  <span class="active-line"><b>7</b><i class="git-mark"></i><code><em>impl</em> <strong>KeymapState</strong> {</code></span>
+                  <span><b>8</b><code>    <em>pub fn</em> <mark>status</mark>(&amp;<em>self</em>) -&gt; String {</code></span>
+                  <span><b>9</b><code>        <span class="comment">// One engine, both frontends.</span></code></span>
+                  <span><b>10</b><code>        <em>self</em>.mode.label()</code></span>
+                  <span><b>11</b><code>    }</code></span>
+                  <span><b>12</b><code>}</code></span>
+                </div>
+                <div class="editor-status">
+                  <span>Ocean Dark</span><span>Rust · L7:5</span><span>⚙</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="floating-card blame-card">
+            <span class="card-kicker">Git blame · 2d</span>
+            <strong>Share keymaps across frontends</strong>
+            <small>7f13bd8 · Søren Mathiasen</small>
+          </div>
+          <div class="floating-card file-card">
+            <span class="file-icon">▦</span>
+            <div><strong>CSV table view</strong><small>Source · Table</small></div>
+          </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="manifesto section-shell">
+        <p>One buffer. Two frontends.</p>
+        <h2>Use the interface that fits the moment—not a different editor.</h2>
+      </section>
+
+      <section class="features section-shell" id="features">
+        <div class="section-heading">
+          <p class="eyebrow">Made for real files</p>
+          <h2>Small enough to stay out of your way.<br />Capable enough to stay open.</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card feature-wide">
+            <span class="feature-number">01</span>
+            <h3>GUI and terminal, in lockstep</h3>
+            <p>
+              Both frontends use the same piece-table buffer, commands, search, undo,
+              keymaps, and document state. Move between them without relearning the editor.
+            </p>
+            <div class="terminal-demo" aria-label="Terminal example">
+              <div class="terminal-bar"><i></i><i></i><i></i><span>skerry-tui</span></div>
+              <pre><span class="prompt">~</span> sky Cargo.toml
+<span class="dim">  8 │</span> <span class="blue">[workspace.package]</span>
+<span class="dim">  9 │</span> version = <span class="green">"0.1.5"</span>
+<span class="dim"> 10 │</span> edition = <span class="green">"2021"</span>
+<span class="statusline"> EMACS                              L10:19 </span></pre>
+            </div>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-number">02</span>
+            <h3>Your muscle memory</h3>
+            <p>Choose Standard, Vim, or Emacs keybindings. The active state is always visible.</p>
+            <div class="mode-stack" aria-label="Keybinding modes">
+              <span>STANDARD</span><span class="active">VIM NORMAL</span><span>EMACS C-x</span>
+            </div>
+          </article>
+
+          <article class="feature-card">
+            <span class="feature-number">03</span>
+            <h3>Read the shape of data</h3>
+            <p>Switch Markdown and CSV documents between source and rendered views in place.</p>
+            <div class="view-switcher"><span>Source</span><span>Split</span><span class="active">Preview</span></div>
+            <div class="markdown-mini">
+              <strong>Release notes</strong>
+              <p>Everything important, without leaving the editor.</p>
+              <code>cargo test --workspace</code>
+            </div>
+          </article>
+
+          <article class="feature-card feature-wide context-card">
+            <span class="feature-number">04</span>
+            <div>
+              <h3>Context, right where you look</h3>
+              <p>
+                Git change markers, blame history, and LSP diagnostics live in the gutter.
+                Hover for the detail; keep the editing surface calm.
+              </p>
+            </div>
+            <div class="context-list">
+              <span><i class="dot dot-green"></i><strong>Added line</strong><small>Git gutter</small></span>
+              <span><i class="dot dot-yellow"></i><strong>Modified line</strong><small>Git gutter</small></span>
+              <span><i class="dot dot-red"></i><strong>mismatched types</strong><small>rust-analyzer · E0308</small></span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="install section-shell" id="install">
+        <div class="install-copy">
+          <p class="eyebrow">Ready when you are</p>
+          <h2>Install Skerry.</h2>
+          <p>Homebrew installs the native application and the <code>sky</code> command.</p>
+          <div class="platform-tabs" aria-label="Installation platform">
+            <button type="button" aria-pressed="true" aria-controls="install-command" data-platform="macos">macOS</button>
+            <button type="button" aria-pressed="false" aria-controls="install-command" data-platform="linux">Linux</button>
+          </div>
+          <div class="command-box" id="install-command" data-command-box>
+            <pre><code data-install-command>brew tap sorenmat/skerry
+brew trust sorenmat/skerry
+brew install --cask skerry</code></pre>
+            <button type="button" class="copy-button" data-copy aria-label="Copy install command" aria-live="polite">Copy</button>
+          </div>
+          <p class="install-note">
+            Current macOS builds are not Apple-notarized and may require removing quarantine.
+            <a href="https://github.com/sorenmat/skerry/blob/master/INSTALL.md">Read the install notes</a>.
+          </p>
+        </div>
+        <picture>
+          <source srcset="Skerry-icon-512.webp" type="image/webp" />
+          <img
+            class="install-icon"
+            src="Skerry-icon-512.png"
+            alt="Skerry app icon"
+            width="420"
+            height="420"
+            loading="lazy"
+          />
+        </picture>
+      </section>
+    </main>
+
+    <footer class="site-footer section-shell">
+      <a class="brand" href="#top"><span>Skerry</span></a>
+      <p>Built in Rust for macOS and Linux.</p>
+      <div>
+        <a href="https://github.com/sorenmat/skerry">Source</a>
+        <a href="https://github.com/sorenmat/skerry/releases">Releases</a>
+        <a href="https://github.com/sorenmat/skerry/blob/master/features.md">Features</a>
+      </div>
+    </footer>
+  </body>
+</html>
