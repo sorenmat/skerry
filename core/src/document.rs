@@ -424,6 +424,7 @@ fn language_id_from_extension(ext: &str) -> Option<&'static str> {
         "json" => Some("json"),
         "toml" => Some("toml"),
         "md" | "markdown" => Some("markdown"),
+        "csv" => Some("csv"),
         _ => None,
     }
 }
@@ -489,6 +490,7 @@ mod tests {
             ("main.c", Some("c")),
             ("README.md", Some("markdown")),
             ("notes.markdown", Some("markdown")),
+            ("data.csv", Some("csv")),
             ("readme.txt", None),
         ];
         for (name, expected) in cases {

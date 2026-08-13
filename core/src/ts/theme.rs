@@ -68,7 +68,16 @@ impl TsTheme {
 /// The default bundled theme set, in display order. The first entry is
 /// the default selected at startup.
 pub const fn bundled_themes() -> &'static [TsTheme] {
-    &[OCEAN_DARK, GRUVBOX_DARK, SOLARIZED_LIGHT, ONE_DARK]
+    &[
+        OCEAN_DARK,
+        ONE_DARK,
+        FJORD_NIGHT,
+        AUBERGINE,
+        GRUVBOX_DARK,
+        SANDSTONE,
+        HIGH_CONTRAST,
+        SOLARIZED_LIGHT,
+    ]
 }
 
 /// Find a bundled theme by exact name.
@@ -193,6 +202,106 @@ pub const ONE_DARK: TsTheme = TsTheme {
         ("escape", c(209, 154, 102)),
         ("punctuation", c(171, 178, 191)),
         ("embedded", c(171, 178, 191)),
+    ],
+};
+
+pub const FJORD_NIGHT: TsTheme = TsTheme {
+    name: "Fjord Night",
+    colors: &[
+        ("comment", c(101, 112, 139)),
+        ("string", c(163, 190, 140)),
+        ("string.special", c(208, 135, 112)),
+        ("number", c(180, 142, 173)),
+        ("constant", c(180, 142, 173)),
+        ("keyword", c(129, 161, 193)),
+        ("operator", c(136, 192, 208)),
+        ("function", c(136, 192, 208)),
+        ("type", c(235, 203, 139)),
+        ("constructor", c(235, 203, 139)),
+        ("variable", c(216, 222, 233)),
+        ("variable.builtin", c(208, 135, 112)),
+        ("variable.parameter", c(229, 233, 240)),
+        ("property", c(143, 188, 187)),
+        ("label", c(129, 161, 193)),
+        ("attribute", c(180, 142, 173)),
+        ("escape", c(208, 135, 112)),
+        ("punctuation", c(171, 178, 191)),
+        ("embedded", c(216, 222, 233)),
+    ],
+};
+
+pub const AUBERGINE: TsTheme = TsTheme {
+    name: "Aubergine",
+    colors: &[
+        ("comment", c(137, 113, 151)),
+        ("string", c(169, 220, 170)),
+        ("string.special", c(255, 167, 123)),
+        ("number", c(244, 190, 106)),
+        ("constant", c(244, 190, 106)),
+        ("keyword", c(211, 145, 241)),
+        ("operator", c(244, 112, 144)),
+        ("function", c(130, 198, 255)),
+        ("type", c(221, 170, 255)),
+        ("constructor", c(221, 170, 255)),
+        ("variable", c(237, 230, 244)),
+        ("variable.builtin", c(244, 112, 144)),
+        ("variable.parameter", c(255, 211, 148)),
+        ("property", c(130, 198, 255)),
+        ("label", c(211, 145, 241)),
+        ("attribute", c(255, 167, 123)),
+        ("escape", c(244, 112, 144)),
+        ("punctuation", c(194, 178, 204)),
+        ("embedded", c(237, 230, 244)),
+    ],
+};
+
+pub const SANDSTONE: TsTheme = TsTheme {
+    name: "Sandstone",
+    colors: &[
+        ("comment", c(137, 124, 105)),
+        ("string", c(82, 126, 79)),
+        ("string.special", c(174, 82, 55)),
+        ("number", c(161, 91, 43)),
+        ("constant", c(161, 91, 43)),
+        ("keyword", c(151, 67, 95)),
+        ("operator", c(108, 86, 61)),
+        ("function", c(48, 103, 127)),
+        ("type", c(126, 101, 35)),
+        ("constructor", c(126, 101, 35)),
+        ("variable", c(67, 61, 52)),
+        ("variable.builtin", c(174, 82, 55)),
+        ("variable.parameter", c(126, 101, 35)),
+        ("property", c(48, 103, 127)),
+        ("label", c(151, 67, 95)),
+        ("attribute", c(174, 82, 55)),
+        ("escape", c(174, 82, 55)),
+        ("punctuation", c(100, 89, 74)),
+        ("embedded", c(67, 61, 52)),
+    ],
+};
+
+pub const HIGH_CONTRAST: TsTheme = TsTheme {
+    name: "High Contrast",
+    colors: &[
+        ("comment", c(190, 190, 190)),
+        ("string", c(100, 255, 130)),
+        ("string.special", c(255, 180, 70)),
+        ("number", c(255, 220, 70)),
+        ("constant", c(255, 220, 70)),
+        ("keyword", c(255, 120, 255)),
+        ("operator", c(0, 255, 255)),
+        ("function", c(80, 200, 255)),
+        ("type", c(255, 220, 70)),
+        ("constructor", c(255, 220, 70)),
+        ("variable", c(255, 255, 255)),
+        ("variable.builtin", c(255, 150, 70)),
+        ("variable.parameter", c(255, 230, 150)),
+        ("property", c(80, 200, 255)),
+        ("label", c(255, 120, 255)),
+        ("attribute", c(255, 180, 70)),
+        ("escape", c(255, 150, 70)),
+        ("punctuation", c(230, 230, 230)),
+        ("embedded", c(255, 255, 255)),
     ],
 };
 
