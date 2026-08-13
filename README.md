@@ -17,29 +17,31 @@ brew trust sorenmat/skerry
 brew install --cask skerry
 ```
 
-Homebrew installs `Skerry.app` and the `sky` command:
+The current cask installs `Skerry.app` and the `sky` GUI command:
 
 ```sh
 sky path/to/file
 ```
+
+The next release package also contains the `skerry-tui` terminal frontend.
+It will become available from Homebrew when the matching cask update is
+published.
 
 The cask is maintained in the
 [sorenmat/homebrew-skerry](https://github.com/sorenmat/homebrew-skerry) tap.
 
 ### Linux
 
-```sh
-brew tap sorenmat/skerry
-brew install skerry
-```
-
-The Linux formula installs the GUI, the terminal frontend, and the same `sky`
-command:
+Linux release archives contain the GUI, the terminal frontend, and the same
+`sky` GUI command:
 
 ```sh
 sky path/to/file
 skerry-tui path/to/file
 ```
+
+A Linux formula will be added to the tap with the next release. The current
+tap does not yet support `brew install skerry` on Linux.
 
 ### Opening the unsigned v0.1.2 release
 

@@ -12,35 +12,33 @@ brew trust sorenmat/skerry
 brew install --cask skerry
 ```
 
-Homebrew installs the application as `Skerry.app` and adds `sky` to its
-binary directory. Open files from a terminal with:
+The current cask installs the application as `Skerry.app` and adds the `sky`
+GUI command to Homebrew's binary directory:
 
 ```sh
 sky path/to/file
 ```
 
-On Linux, install the formula:
+The next release package also contains the `skerry-tui` terminal frontend.
+It will become available from Homebrew when the matching cask update is
+published.
+
+Linux release archives contain `skerry`, `skerry-tui`, and `sky`:
 
 ```sh
-brew tap sorenmat/skerry
-brew install skerry
-```
-
-The Linux formula installs the GUI as `skerry`, the terminal frontend as
-`skerry-tui`, and `sky` as a shortcut for the GUI:
-
-```sh
+skerry path/to/file
 sky path/to/file
 skerry-tui path/to/file
 ```
+
+A Linux formula will be added to the tap with the next release. The current
+tap does not yet support `brew install skerry` on Linux.
 
 Upgrade or uninstall with:
 
 ```sh
 brew upgrade --cask --greedy-latest skerry
 brew uninstall --cask skerry
-brew upgrade skerry
-brew uninstall skerry
 ```
 
 The macOS cask tracks the latest release, so macOS cask upgrades use
@@ -97,5 +95,5 @@ make app-bundle
 open target/Skerry.app
 ```
 
-The local bundle contains the release build of the GUI executable and can be
-moved without retaining a reference to the source checkout.
+The local bundle contains release builds of both the GUI and TUI executables
+and can be moved without retaining a reference to the source checkout.

@@ -27,7 +27,7 @@ help:
 	@echo "  make clean          cargo clean"
 	@echo ""
 	@echo "macOS app bundle:"
-	@echo "  make app-bundle     Build target/Skerry.app from the release binary"
+	@echo "  make app-bundle     Build target/Skerry.app with GUI and TUI binaries"
 	@echo "  make register-app   Build bundle and set it as default app for .rs, .go, .json"
 	@echo ""
 	@echo "Release packages:"
