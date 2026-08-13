@@ -9,53 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  release-mode:
-    name: Determine macOS signing mode
-    runs-on: ubuntu-latest
-    outputs:
-      signed: ${{ steps.mode.outputs.signed }}
-
-    steps:
-      - name: Check Apple release credentials
-        id: mode
-        env:
-          HAS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_BASE64 != '' }}
-          HAS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
-          HAS_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID != '' }}
-          HAS_APPLE_ID: ${{ secrets.APPLE_ID != '' }}
-          HAS_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD != '' }}
-          HAS_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
-        run: |
-          configured=0
-          for present in \
-            "$HAS_CERTIFICATE" \
-            "$HAS_CERTIFICATE_PASSWORD" \
-            "$HAS_DEVELOPER_ID" \
-            "$HAS_APPLE_ID" \
-            "$HAS_APP_PASSWORD" \
-            "$HAS_TEAM_ID"
-          do
-            if [ "$present" = "true" ]; then
-              configured=$((configured + 1))
-            fi
-          done
-
-          if [ "$configured" -eq 0 ]; then
-            if [ "$GITHUB_REF_NAME" != "v0.1.6" ]; then
-              echo "::error::Unsigned publishing is approved only for v0.1.6."
-              exit 1
-            fi
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-          elif [ "$configured" -eq 6 ]; then
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Configure all six Apple release secrets or remove all of them."
-            exit 1
-          fi
-
   build-macos:
     name: Build macOS (${{ matrix.arch }})
-    needs: release-mode
     strategy:
       matrix:
         include:
@@ -87,62 +42,6 @@ jobs:
           test -x target/Skerry.app/Contents/Resources/skerry
           test -x target/Skerry.app/Contents/Resources/skerry-tui
 
-      - name: Sign application bundle
-        if: needs.release-mode.outputs.signed == 'true'
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
-        run: |
-          certificate_path="$RUNNER_TEMP/developer-id.p12"
-          keychain_path="$RUNNER_TEMP/skerry-signing.keychain-db"
-          keychain_password="$(uuidgen)"
-
-          test -n "$APPLE_CERTIFICATE_BASE64"
-          test -n "$APPLE_CERTIFICATE_PASSWORD"
-          test -n "$APPLE_DEVELOPER_ID"
-
-          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$certificate_path"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign -t cert -f pkcs12 -k "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple: \
-            -k "$keychain_password" "$keychain_path"
-          security list-keychains -d user -s "$keychain_path"
-
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app/Contents/Resources/skerry
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app/Contents/Resources/skerry-tui
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app
-          codesign --verify --deep --strict --verbose=2 target/Skerry.app
-
-          rm -f "$certificate_path"
-
-      - name: Notarize application bundle
-        if: needs.release-mode.outputs.signed == 'true'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          test -n "$APPLE_ID"
-          test -n "$APPLE_APP_PASSWORD"
-          test -n "$APPLE_TEAM_ID"
-
-          ditto -c -k --keepParent target/Skerry.app "$RUNNER_TEMP/Skerry-notarization.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/Skerry-notarization.zip" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          xcrun stapler staple target/Skerry.app
-          xcrun stapler validate target/Skerry.app
-          spctl --assess --type execute --verbose=2 target/Skerry.app
-
       - name: Package application bundle
         run: tar -czf "Skerry-macos-${{ matrix.arch }}.tar.gz" -C target Skerry.app
 
@@ -151,12 +50,6 @@ jobs:
           name: Skerry-macos-${{ matrix.arch }}
           path: Skerry-macos-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
-
-      - name: Remove signing keychain
-        if: always()
-        run: |
-          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/Skerry-notarization.zip"
-          security delete-keychain "$RUNNER_TEMP/skerry-signing.keychain-db" || true
 
   build-linux:
     name: Build Linux (x86_64)
@@ -188,7 +81,6 @@ jobs:
   publish:
     name: Publish GitHub release
     needs:
-      - release-mode
       - build-macos
       - build-linux
     runs-on: ubuntu-latest
@@ -207,22 +99,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
-          SIGNED_RELEASE: ${{ needs.release-mode.outputs.signed }}
         run: |
-          release_note=""
-          if [ "$SIGNED_RELEASE" != "true" ]; then
-            release_note="⚠️ The macOS builds are ad-hoc signed and not Apple-notarized. Read the [installation guidance](https://github.com/$GH_REPO/blob/$RELEASE_TAG/INSTALL.md) before opening them."
-          fi
+          release_note="⚠️ The macOS builds are ad-hoc signed and not Apple-notarized. Read the [installation guidance](https://github.com/$GH_REPO/blob/$RELEASE_TAG/INSTALL.md) before opening them."
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            if [ -n "$release_note" ]; then
-              existing_notes="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
-              if ! printf '%s' "$existing_notes" | grep -Fq -- "$release_note"; then
-                printf '%s\n\n%s\n' "$release_note" "$existing_notes" \
-                  > "$RUNNER_TEMP/release-notes.md"
-                gh release edit "$RELEASE_TAG" \
-                  --notes-file "$RUNNER_TEMP/release-notes.md"
-              fi
+            existing_notes="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
+            if ! printf '%s' "$existing_notes" | grep -Fq -- "$release_note"; then
+              printf '%s\n\n%s\n' "$release_note" "$existing_notes" \
+                > "$RUNNER_TEMP/release-notes.md"
+              gh release edit "$RELEASE_TAG" \
+                --notes-file "$RUNNER_TEMP/release-notes.md"
             fi
             gh release upload "$RELEASE_TAG" dist/*.tar.gz --clobber
           else

@@ -45,10 +45,10 @@ tap does not yet support `brew install skerry` on Linux.
 
 ### Opening an unsigned release
 
-Unsigned Skerry releases, including v0.1.2 and v0.1.6, are ad-hoc signed but
-not Developer ID signed or Apple-notarized. If you installed one from the
-Skerry project's official `sorenmat/skerry` tap and accept that limitation,
-remove quarantine from this copy and open it with:
+Current Skerry releases are ad-hoc signed but not Developer ID signed or
+Apple-notarized. If you installed one from the Skerry project's official
+`sorenmat/skerry` tap and accept that limitation, remove quarantine from this
+copy and open it with:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Skerry.app

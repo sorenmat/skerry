@@ -1,6 +1,6 @@
 # ADR 0009: Publish v0.1.2 without Apple notarization
 
-Status: accepted
+Status: superseded by ADR 0011
 
 ## Context
 
