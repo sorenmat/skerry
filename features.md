@@ -440,9 +440,9 @@ is open.
 - **`make app-bundle`** builds the relocatable `target/Skerry.app`. The
   app contains the release `skerry` executable and an AppleScript entry
   point that handles macOS "open document" events.
-- **Homebrew** installs the app as **Skerry** and links its bundled
-  executable as **`sky`**. See `INSTALL.md` for the tap and install
-  commands.
+- **Homebrew** installs the app as **Skerry** on macOS and as Linux binaries
+  on Linux. Both packages provide the **`sky`** command. See `INSTALL.md` for
+  the tap and install commands.
 - **`make register-app`** registers the bundle with Launch Services as
   the default editor for `.rs`, `.go`, and `.json` files.
 - Double-clicking one of those files in Finder opens it in the GUI

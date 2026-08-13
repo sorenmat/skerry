@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  build-macos:
     name: Build macOS (${{ matrix.arch }})
     strategy:
       matrix:
@@ -98,9 +98,32 @@ jobs:
           rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/Skerry-notarization.zip"
           security delete-keychain "$RUNNER_TEMP/skerry-signing.keychain-db" || true
 
+  build-linux:
+    name: Build Linux (x86_64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Build Skerry
+        run: cargo build --workspace --release --locked
+
+      - name: Package Linux binaries
+        run: bash scripts/package-linux.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Skerry-linux-x86_64
+          path: Skerry-linux-x86_64.tar.gz
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub release
-    needs: build
+    needs:
+      - build-macos
+      - build-linux
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -108,7 +131,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: Skerry-macos-*
+          pattern: Skerry-*
           path: dist
           merge-multiple: true
 

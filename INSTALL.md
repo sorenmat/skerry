@@ -2,7 +2,9 @@
 
 ## Homebrew
 
-Add the Skerry Homebrew tap, then install its cask:
+Add the Skerry Homebrew tap, then install the package for your platform.
+
+On macOS, install the cask:
 
 ```sh
 brew tap sorenmat/skerry
@@ -17,18 +19,35 @@ binary directory. Open files from a terminal with:
 sky path/to/file
 ```
 
+On Linux, install the formula:
+
+```sh
+brew tap sorenmat/skerry
+brew install skerry
+```
+
+The Linux formula installs the GUI as `skerry`, the terminal frontend as
+`skerry-tui`, and `sky` as a shortcut for the GUI:
+
+```sh
+sky path/to/file
+skerry-tui path/to/file
+```
+
 Upgrade or uninstall with:
 
 ```sh
 brew upgrade --cask --greedy-latest skerry
 brew uninstall --cask skerry
+brew upgrade skerry
+brew uninstall skerry
 ```
 
-The cask tracks the latest release, so upgrades use `--greedy-latest`.
-Releases are intended to be signed; v0.1.2 is the explicit unsigned exception
-described below.
+The macOS cask tracks the latest release, so macOS cask upgrades use
+`--greedy-latest`. Releases are intended to be signed; v0.1.2 is the explicit
+unsigned exception described below.
 
-The canonical cask is maintained in the
+The canonical cask and formula are maintained in the
 [sorenmat/homebrew-skerry](https://github.com/sorenmat/homebrew-skerry) tap.
 
 ## Opening the unsigned v0.1.2 release
@@ -54,8 +73,9 @@ This trust decision applies only to the current installed copy. A later
 Homebrew upgrade may require it again until releases are Developer ID signed
 and notarized.
 
-Skerry publishes native Apple Silicon and Intel builds. A maintainer creates
-those release assets by pushing a version tag such as `v0.1.0`.
+Skerry publishes native Apple Silicon, Intel macOS, and Linux x86_64 builds. A
+maintainer creates those release assets by pushing a version tag such as
+`v0.1.0`.
 
 Release builds require these GitHub Actions secrets so Homebrew downloads pass
 Gatekeeper:

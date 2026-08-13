@@ -4,7 +4,9 @@ Skerry is a fast, dual-frontend text editor written in Rust. Its GUI and TUI
 share the same editing core and are designed to handle ordinary source files
 and multi-gigabyte files in the same session.
 
-## Install on macOS
+## Install with Homebrew
+
+### macOS
 
 ```sh
 brew tap sorenmat/skerry
@@ -20,6 +22,21 @@ sky path/to/file
 
 The cask is maintained in the
 [sorenmat/homebrew-skerry](https://github.com/sorenmat/homebrew-skerry) tap.
+
+### Linux
+
+```sh
+brew tap sorenmat/skerry
+brew install skerry
+```
+
+The Linux formula installs the GUI, the terminal frontend, and the same `sky`
+command:
+
+```sh
+sky path/to/file
+skerry-tui path/to/file
+```
 
 ### Opening the unsigned v0.1.2 release
 

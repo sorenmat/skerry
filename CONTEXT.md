@@ -6,6 +6,9 @@ The installed macOS application is named **Skerry**. Its Homebrew-provided
 command-line shortcut is **`sky`**; the packaged Rust executable remains
 `skerry` internally.
 
+On Linux, Homebrew installs release binaries instead of a cask: `skerry`,
+`skerry-tui`, and the same `sky` shortcut to the GUI executable.
+
 ## Language
 
 **Buffer**: An in-memory representation of a document being edited. Implements the `Buffer` trait; primary impl is a Piece Table. Holds no rendering state.

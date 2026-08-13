@@ -6,7 +6,7 @@
 #   make run_tui ARGS="Cargo.toml"
 #   make run_gui ARGS="src/lib.rs"
 
-.PHONY: help run_tui run_gui build build-release test check clippy fmt clean app-bundle register-app
+.PHONY: help run_tui run_gui build build-release test check clippy fmt clean app-bundle linux-package register-app
 
 help:
 	@echo "Skerry — convenience make targets"
@@ -29,6 +29,9 @@ help:
 	@echo "macOS app bundle:"
 	@echo "  make app-bundle     Build target/Skerry.app from the release binary"
 	@echo "  make register-app   Build bundle and set it as default app for .rs, .go, .json"
+	@echo ""
+	@echo "Release packages:"
+	@echo "  make linux-package  Build Skerry-linux-x86_64.tar.gz from release binaries"
 
 run_tui:
 	cargo run -p skerry-tui -- $(ARGS)
@@ -59,6 +62,9 @@ clean:
 
 app-bundle: build-release
 	@./scripts/build-app-bundle.sh
+
+linux-package: build-release
+	@bash scripts/package-linux.sh
 
 register-app: app-bundle
 	@./scripts/register-app.sh
