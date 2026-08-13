@@ -28,6 +28,12 @@ pub struct Config {
     /// Name of the active GUI chrome theme. `None` means use the built-in
     /// default (dark).
     pub ui_theme: Option<String>,
+    /// Default GUI presentation mode for Markdown documents.
+    #[serde(default)]
+    pub markdown_view: Option<String>,
+    /// Default GUI presentation mode for CSV documents.
+    #[serde(default)]
+    pub csv_view: Option<String>,
     /// Recently opened files, most recent first.
     #[serde(default)]
     pub recent_files: Vec<PathBuf>,
@@ -114,6 +120,8 @@ impl Default for Config {
         Self {
             theme: None,
             ui_theme: None,
+            markdown_view: None,
+            csv_view: None,
             recent_files: Vec::new(),
             project_tree_open: None,
             auto_save: default_auto_save(),
@@ -329,6 +337,8 @@ mod tests {
     fn missing_caret_animation_defaults_to_off() {
         let loaded: Config = serde_json::from_str("{}").unwrap();
         assert!(!loaded.caret_animation);
+        assert_eq!(loaded.markdown_view, None);
+        assert_eq!(loaded.csv_view, None);
     }
 
     #[test]

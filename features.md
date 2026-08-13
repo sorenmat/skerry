@@ -106,8 +106,10 @@ Skerry/
 - Markdown source files (`.md` and `.markdown`) receive shared Tree-sitter
   syntax highlighting in both frontends, covering block structure and inline
   constructs such as headings, lists, quotes, code, emphasis, and links.
-- Opening a `.md` or `.markdown` file exposes a **Markdown view** selector in
-  the status bar with **Source**, **Split**, and **Preview** modes.
+- Opening a `.md` or `.markdown` file exposes **Source**, **Split**, and
+  **Preview** modes through a status-bar switcher beside the settings cog.
+  The selected mode is persisted as the default and can also be changed in
+  the Settings window's Markdown section.
 - Split and preview render directly from the active in-memory buffer, so
   unsaved edits are reflected immediately. The split divider is resizable;
   Preview is read-only, while Source and Split remain editable.
@@ -124,6 +126,21 @@ Skerry/
   is fetched or executed.
 - The command palette includes **Cycle Markdown preview**. In the TUI the same
   command leaves the source view unchanged and reports that preview is GUI-only.
+
+## CSV
+
+- Opening a `.csv` file exposes **Source** and **Table** modes through a
+  status-bar switcher beside the settings cog. The selected mode is persisted
+  as the default and can also be changed in the Settings window's CSV section.
+- Table mode parses RFC 4180-style quoting, escaped delimiters, and multiline
+  fields from the active in-memory buffer, with the first record rendered as
+  resizable column headings.
+- The table is read-only, horizontally scrollable, and vertically virtualized
+  so only visible rows are rendered. Parse errors are shown inline, and Source
+  remains available for editing.
+- Preview work is bounded to 32 MiB of source, 50,000 rows, 256 columns,
+  1,000,000 stored cells, 16 MiB of displayed text, and 4,096 characters per
+  displayed cell to keep pathological files responsive.
 
 ## Editing
 
@@ -417,11 +434,19 @@ is open.
   C/C++, JSON. Files over 32 MB skip the tree to keep load fast;
   queries carry a 15 ms cancellation budget so a pathological region
   can't stall a frame.
-- **Theme selector** — active theme name shown in the status bar.
-  Click it (GUI) or press F5 (both frontends) to cycle through the
-  bundled themes (Ocean Dark, Gruvbox Dark, Solarized Light, One Dark).
-  Changing themes invalidates the highlight cache so colors update
-  immediately.
+- **Settings window** — the GUI status bar keeps a cog button in its
+  lower-right corner, preceded by a presentation switcher for Markdown and
+  CSV documents. The cog opens a dedicated settings surface for
+  coordinated interface and syntax themes, indentation, wrapping, scroll margin,
+  caret animation, git annotations, auto-save, project-tree visibility,
+  Markdown presentation, and keyboard-shortcut help. Changes apply
+  immediately and persist in the Skerry config.
+- **Expanded built-in themes** — the GUI includes Dark, Light, One Dark,
+  Fjord Night, Aubergine, Sandstone, and High Contrast palettes, each pairing
+  interface chrome with syntax colors selected for the same background.
+  The shared highlighter also retains Gruvbox Dark for the TUI. F5 cycles
+  complete themes in the GUI and syntax colors in the TUI; changing colors
+  invalidates the highlight cache so they update immediately.
 - **Status bar** — single line at the bottom showing the latest
   status message and the cursor position `L{line}:{col} / L{total}`.
 - **GUI: monospace 14 pt font**, 2 px caret. Tab characters render
@@ -537,9 +562,9 @@ use different conventions without re-configuring.
 
 ## Known limitations (shipped today)
 
-- **No custom theme files.** Bundled tree-sitter themes and the built-in
-  dark/light UI themes can be cycled at runtime, but loading a user
-  theme file is not implemented.
+- **No custom theme files.** The bundled interface and tree-sitter themes
+  can be selected at runtime, but loading a user theme file is not
+  implemented.
 - **TUI soft-wrap rendering is deferred** — the toggle changes
   state and the status bar reports the new value, but long lines do
   not yet wrap visually in the TUI. The state is preserved

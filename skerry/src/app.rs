@@ -21,6 +21,29 @@ pub enum MarkdownPreviewMode {
     Preview,
 }
 
+/// How a CSV document is presented in the GUI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CsvPreviewMode {
+    #[default]
+    Source,
+    Table,
+}
+
+impl CsvPreviewMode {
+    pub const ALL: [Self; 2] = [Self::Source, Self::Table];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Source => "Source",
+            Self::Table => "Table",
+        }
+    }
+
+    fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.label() == label)
+    }
+}
+
 impl MarkdownPreviewMode {
     pub const ALL: [Self; 3] = [Self::Source, Self::Split, Self::Preview];
 
@@ -30,6 +53,10 @@ impl MarkdownPreviewMode {
             Self::Split => "Split",
             Self::Preview => "Preview",
         }
+    }
+
+    fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.label() == label)
     }
 
     fn next(self) -> Self {
@@ -91,6 +118,10 @@ pub struct EditorApp {
     pub markdown_preview_mode: MarkdownPreviewMode,
     /// Cached parse tree for the rendered Markdown surface.
     pub(crate) markdown_preview: crate::markdown::MarkdownPreview,
+    /// GUI presentation mode used while the active document is CSV.
+    pub csv_preview_mode: CsvPreviewMode,
+    /// Cached parsed rows for the active CSV document revision.
+    pub(crate) csv_preview: crate::csv_preview::CsvPreview,
     /// The active document's project tree, including expansion state.
     pub project_tree: Option<core::ProjectTree>,
     /// Root represented by `project_tree`, used to preserve expansion state
@@ -107,6 +138,10 @@ pub struct EditorApp {
     pub project_search: ProjectSearch,
     /// Whether the keybindings help window is open.
     pub keybindings_help_open: bool,
+    /// Whether the GUI settings window is open.
+    pub settings_open: bool,
+    /// Whether Settings contains changes not yet flushed to disk.
+    pub settings_dirty: bool,
     /// Fuzzy file finder state.
     pub fuzzy_finder: FuzzyFinder,
     /// Command palette state.
@@ -323,8 +358,18 @@ impl EditorApp {
             syntax: SyntaxEngine::default_dark(),
             project_tree_open: config.project_tree_open.unwrap_or(true),
             minimap_open: false,
-            markdown_preview_mode: MarkdownPreviewMode::Source,
+            markdown_preview_mode: config
+                .markdown_view
+                .as_deref()
+                .and_then(MarkdownPreviewMode::from_label)
+                .unwrap_or_default(),
             markdown_preview: crate::markdown::MarkdownPreview::default(),
+            csv_preview_mode: config
+                .csv_view
+                .as_deref()
+                .and_then(CsvPreviewMode::from_label)
+                .unwrap_or_default(),
+            csv_preview: crate::csv_preview::CsvPreview::default(),
             project_tree: None,
             project_tree_root: None,
             project_tree_selected: 0,
@@ -332,6 +377,8 @@ impl EditorApp {
             project_tree_focused: false,
             project_search: ProjectSearch::default(),
             keybindings_help_open: false,
+            settings_open: false,
+            settings_dirty: false,
             fuzzy_finder: FuzzyFinder::default(),
             command_palette: CommandPalette::default(),
             symbol_picker: SymbolPicker::default(),
@@ -349,7 +396,9 @@ impl EditorApp {
             file_watcher: core::FileWatcher::new().ok(),
             lsp_manager: core::lsp::LspManager::new(),
         };
-        if let Some(theme) = app.config.theme.clone() {
+        if let Some(theme) = app.config.ui_theme.clone() {
+            app.set_color_theme_by_name(&theme);
+        } else if let Some(theme) = app.config.theme.clone() {
             app.syntax.set_theme_by_name(&theme);
         }
         app.refresh_project_tree();
@@ -357,16 +406,28 @@ impl EditorApp {
         app
     }
 
-    /// Switch the GUI chrome theme by name. Returns true if the name
-    /// matched a built-in theme.
-    pub fn set_ui_theme_by_name(&mut self, name: &str) -> bool {
-        if let Some(theme) = GuiTheme::by_name(name) {
-            self.theme = *theme;
-            self.config.ui_theme = Some(theme.name.to_string());
-            true
-        } else {
-            false
+    /// Apply a coordinated GUI and syntax palette. The two color systems
+    /// must move together so a light editor surface never inherits syntax
+    /// colors intended for a dark background.
+    pub fn set_color_theme_by_name(&mut self, name: &str) -> bool {
+        let Some(gui_theme) = GuiTheme::by_name(name) else {
+            return false;
+        };
+        let syntax_name = match gui_theme.name {
+            "Dark" => "Ocean Dark",
+            "Light" => "Solarized Light",
+            other => other,
+        };
+        if !self.syntax.set_theme_by_name(syntax_name) {
+            return false;
         }
+        self.theme = *gui_theme;
+        self.config.ui_theme = Some(gui_theme.name.to_owned());
+        self.config.theme = Some(syntax_name.to_owned());
+        for doc in &mut self.documents {
+            doc.syntax.invalidate();
+        }
+        true
     }
 
     /// Toggle smooth vertical caret animation in the GUI.
@@ -387,12 +448,44 @@ impl EditorApp {
             return;
         }
         self.markdown_preview_mode = mode;
+        if mode == MarkdownPreviewMode::Preview {
+            self.close_source_bound_overlays();
+        }
+        self.config.markdown_view = Some(mode.label().to_owned());
         self.status_message = Some(format!("Markdown view: {}", mode.label()));
     }
 
     /// Cycle source → split → preview for the active Markdown document.
     pub fn cycle_markdown_preview(&mut self) {
         self.set_markdown_preview_mode(self.markdown_preview_mode.next());
+    }
+
+    /// Set the CSV presentation mode when the active document supports it.
+    pub fn set_csv_preview_mode(&mut self, mode: CsvPreviewMode) {
+        if self.active_doc().language_id() != Some("csv") {
+            self.status_message = Some("CSV table view requires a .csv file.".into());
+            return;
+        }
+        self.csv_preview_mode = mode;
+        if mode == CsvPreviewMode::Table {
+            self.close_source_bound_overlays();
+        }
+        self.config.csv_view = Some(mode.label().to_owned());
+        self.status_message = Some(format!("CSV view: {}", mode.label()));
+    }
+
+    /// Close controls whose actions target the source editor before replacing
+    /// it with a read-only presentation surface.
+    fn close_source_bound_overlays(&mut self) {
+        self.search.bar_open = false;
+        self.search.replace_bar_open = false;
+        self.lsp_completion.open = false;
+        self.lsp_hover.open = false;
+        self.symbol_picker.open = false;
+        self.rename_dialog = None;
+        self.go_to_line_dialog = None;
+        self.column_select_start = None;
+        self.cmd_link.range = None;
     }
 
     /// Index of the currently focused document.
@@ -682,8 +775,35 @@ impl EditorApp {
                     continue;
                 }
 
+                // Settings is a modal surface: Esc dismisses it and other
+                // keyboard input belongs to its widgets, never the buffer.
+                if self.settings_open
+                    && matches!(
+                        event,
+                        eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
+                    )
+                {
+                    if matches!(
+                        event,
+                        eframe::egui::Event::Key {
+                            key: eframe::egui::Key::Escape,
+                            pressed: true,
+                            ..
+                        }
+                    ) {
+                        self.settings_open = false;
+                        if self.settings_dirty {
+                            self.sync_config();
+                            self.settings_dirty = false;
+                        }
+                    }
+                    continue;
+                }
+
                 let text_modal_open = self.text_modal_open();
-                if !text_modal_open {
+                let csv_table_open = self.active_doc().language_id() == Some("csv")
+                    && self.csv_preview_mode == CsvPreviewMode::Table;
+                if !text_modal_open && !csv_table_open {
                     if let Some(clip) =
                         crate::event::classify_clipboard_event(event, self.active_buffer())
                     {
@@ -966,6 +1086,14 @@ impl EditorApp {
     /// `skerry_tui::App::handle_event` so both frontends behave
     /// identically.
     pub fn handle_event(&mut self, event: EditorEvent) {
+        if self.active_doc().language_id() == Some("csv")
+            && self.csv_preview_mode == CsvPreviewMode::Table
+            && !csv_table_allows_event(&event)
+        {
+            self.status_message =
+                Some("CSV table view is read-only; switch to Source for editor commands.".into());
+            return;
+        }
         // Check whether this event modifies the buffer text — used to
         // invalidate the syntax cache after the match.
         let modifies_buffer = matches!(
@@ -1312,6 +1440,7 @@ impl EditorApp {
             }
             EditorEvent::CycleMarkdownPreview => {
                 self.cycle_markdown_preview();
+                self.sync_config();
             }
             EditorEvent::CycleTheme => {
                 self.cycle_theme();
@@ -1981,12 +2110,14 @@ impl EditorApp {
 
     /// Cycle to the next theme and invalidate the syntax cache
     /// for every open document so the new colors appear immediately.
-    /// Mirrors `skerry_tui::App::cycle_theme`.
     pub fn cycle_theme(&mut self) {
-        let name = self.syntax.cycle_theme().to_string();
-        for doc in &mut self.documents {
-            doc.syntax.invalidate();
-        }
+        let themes = GuiTheme::all();
+        let current = themes
+            .iter()
+            .position(|theme| theme.name == self.theme.name)
+            .unwrap_or(0);
+        let name = themes[(current + 1) % themes.len()].name;
+        self.set_color_theme_by_name(name);
         self.status_message = Some(format!("Theme: {name}"));
     }
 
@@ -3541,6 +3672,54 @@ impl App for EditorApp {
             self.request_close(ctx);
         }
     }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.sync_config();
+        self.settings_dirty = false;
+    }
+}
+
+fn csv_table_allows_event(event: &EditorEvent) -> bool {
+    matches!(
+        event,
+        EditorEvent::Save
+            | EditorEvent::SaveAs(_)
+            | EditorEvent::ReloadFile
+            | EditorEvent::NewDoc
+            | EditorEvent::CloseDoc
+            | EditorEvent::NextDoc
+            | EditorEvent::PrevDoc
+            | EditorEvent::OpenFile(_)
+            | EditorEvent::ToggleProjectTree
+            | EditorEvent::ProjectTreeMove { .. }
+            | EditorEvent::ProjectTreeOpen
+            | EditorEvent::ProjectSearch(_)
+            | EditorEvent::ProjectSearchQueryChanged(_)
+            | EditorEvent::ProjectSearchMove { .. }
+            | EditorEvent::ProjectSearchOpenResult
+            | EditorEvent::ProjectSearchClose
+            | EditorEvent::ProjectSearchReplaceQueryChanged(_)
+            | EditorEvent::ProjectSearchToggleFocus
+            | EditorEvent::ProjectSearchReplaceAll
+            | EditorEvent::ProjectSearchReplaceAllConfirm
+            | EditorEvent::ProjectSearchReplaceAllCancel
+            | EditorEvent::FuzzyFinder(_)
+            | EditorEvent::FuzzyFinderQueryChanged(_)
+            | EditorEvent::FuzzyFinderMove { .. }
+            | EditorEvent::FuzzyFinderExecute
+            | EditorEvent::FuzzyFinderClose
+            | EditorEvent::ToggleKeybindingsHelp
+            | EditorEvent::CycleTheme
+            | EditorEvent::ToggleGitBlame
+            | EditorEvent::ToggleGitGutter
+            | EditorEvent::RefreshGitGutter
+            | EditorEvent::CommandPalette(_)
+            | EditorEvent::CommandPaletteQueryChanged(_)
+            | EditorEvent::CommandPaletteMove { .. }
+            | EditorEvent::CommandPaletteExecute
+            | EditorEvent::CommandPaletteClose
+            | EditorEvent::Quit
+    )
 }
 
 fn is_word_char(c: char) -> bool {
@@ -3706,6 +3885,15 @@ mod tests {
         EditorApp::new(buf)
     }
 
+    fn csv_app(content: &str) -> EditorApp {
+        let path = std::env::temp_dir().join("skerry-preview-test.csv");
+        let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_bytes_with_path(
+            content.as_bytes().to_vec(),
+            path,
+        ));
+        EditorApp::new(buf)
+    }
+
     #[test]
     fn markdown_preview_cycles_through_all_views() {
         let mut app = markdown_app("# Hello");
@@ -3744,6 +3932,126 @@ mod tests {
         app.set_markdown_preview_mode(MarkdownPreviewMode::Split);
         app.handle_event(EditorEvent::Insert('!'));
         assert_eq!(app.active_doc().text(), "!before");
+    }
+
+    #[test]
+    fn entering_markdown_preview_closes_source_bound_overlays() {
+        let mut app = markdown_app("before");
+        app.search.bar_open = true;
+        app.search.replace_bar_open = true;
+        app.lsp_completion.open = true;
+        app.lsp_hover.open = true;
+        app.symbol_picker.open = true;
+        app.rename_dialog = Some(RenameDialog {
+            new_name: "after".to_owned(),
+        });
+        app.go_to_line_dialog = Some(GoToLineDialog {
+            query: "1".to_owned(),
+        });
+        let before = app.active_buffer().to_bytes();
+
+        app.set_markdown_preview_mode(MarkdownPreviewMode::Preview);
+        dispatch_key(&mut app, Key::Enter, Modifiers::default());
+
+        assert!(!app.search.bar_open);
+        assert!(!app.search.replace_bar_open);
+        assert!(!app.lsp_completion.open);
+        assert!(!app.lsp_hover.open);
+        assert!(!app.symbol_picker.open);
+        assert!(app.rename_dialog.is_none());
+        assert!(app.go_to_line_dialog.is_none());
+        assert_eq!(app.active_buffer().to_bytes(), before);
+    }
+
+    #[test]
+    fn csv_table_view_updates_config_and_is_read_only() {
+        let mut app = csv_app("name,count\nAlice,2\n");
+
+        app.set_csv_preview_mode(CsvPreviewMode::Table);
+        assert_eq!(app.csv_preview_mode, CsvPreviewMode::Table);
+        assert_eq!(app.config.csv_view.as_deref(), Some("Table"));
+
+        app.handle_event(EditorEvent::Insert('!'));
+        assert_eq!(app.active_doc().text(), "name,count\nAlice,2\n");
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("CSV table view is read-only; switch to Source for editor commands.")
+        );
+
+        app.set_csv_preview_mode(CsvPreviewMode::Source);
+        app.handle_event(EditorEvent::Insert('!'));
+        assert_eq!(app.active_doc().text(), "!name,count\nAlice,2\n");
+    }
+
+    #[test]
+    fn csv_table_view_rejects_non_csv_documents() {
+        let mut app = app_with("plain text");
+
+        app.set_csv_preview_mode(CsvPreviewMode::Table);
+
+        assert_eq!(app.csv_preview_mode, CsvPreviewMode::Source);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("CSV table view requires a .csv file.")
+        );
+    }
+
+    #[test]
+    fn csv_table_view_swallows_hidden_source_navigation_and_selection() {
+        let mut app = csv_app("name,count\nAlice,2\n");
+        app.set_csv_preview_mode(CsvPreviewMode::Table);
+        let before = app.active_buffer().selection();
+
+        dispatch_key(&mut app, Key::ArrowRight, Modifiers::default());
+        dispatch_key(&mut app, Key::A, primary_mods());
+
+        assert_eq!(app.active_buffer().selection(), before);
+        assert_eq!(app.active_buffer().cursor(), before.head);
+    }
+
+    #[test]
+    fn csv_table_view_keeps_application_shortcuts_and_overlays_working() {
+        let mut app = csv_app("name,count\nAlice,2\n");
+        app.set_csv_preview_mode(CsvPreviewMode::Table);
+        let mut palette_mods = primary_mods();
+        palette_mods.shift = true;
+
+        dispatch_key(&mut app, Key::P, palette_mods);
+        assert!(app.command_palette.open);
+        dispatch_key(&mut app, Key::Escape, Modifiers::default());
+        assert!(!app.command_palette.open);
+
+        dispatch_key(&mut app, Key::T, primary_mods());
+        assert_eq!(app.doc_count(), 2);
+    }
+
+    #[test]
+    fn entering_csv_table_view_closes_source_bound_overlays() {
+        let mut app = csv_app("name,count\nAlice,2\n");
+        app.search.bar_open = true;
+        app.search.replace_bar_open = true;
+        app.lsp_completion.open = true;
+        app.lsp_hover.open = true;
+        app.symbol_picker.open = true;
+        app.rename_dialog = Some(RenameDialog {
+            new_name: "Alice".to_owned(),
+        });
+        app.go_to_line_dialog = Some(GoToLineDialog {
+            query: "2".to_owned(),
+        });
+        let before = app.active_buffer().to_bytes();
+
+        app.set_csv_preview_mode(CsvPreviewMode::Table);
+        dispatch_key(&mut app, Key::Enter, Modifiers::default());
+
+        assert!(!app.search.bar_open);
+        assert!(!app.search.replace_bar_open);
+        assert!(!app.lsp_completion.open);
+        assert!(!app.lsp_hover.open);
+        assert!(!app.symbol_picker.open);
+        assert!(app.rename_dialog.is_none());
+        assert!(app.go_to_line_dialog.is_none());
+        assert_eq!(app.active_buffer().to_bytes(), before);
     }
 
     fn arrow_down_event() -> eframe::egui::Event {
@@ -4600,6 +4908,34 @@ mod tests {
     }
 
     #[test]
+    fn escape_closes_settings_without_changing_editor_state() {
+        let mut app = app_with("hello");
+        let selection = Selection { anchor: 1, head: 4 };
+        app.active_buffer_mut().set_selection(selection);
+        app.settings_open = true;
+
+        dispatch_key(&mut app, Key::Escape, Modifiers::default());
+
+        assert!(!app.settings_open);
+        assert_eq!(app.active_buffer().selection(), selection);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn settings_swallows_text_input_before_it_reaches_buffer() {
+        let mut app = app_with("hello");
+        app.settings_open = true;
+        let before = app.active_buffer().to_bytes();
+        let ctx = eframe::egui::Context::default();
+        ctx.input_mut(|input| input.events.push(Event::Text("x".to_string())));
+
+        app.handle_input(&ctx);
+
+        assert_eq!(app.active_buffer().to_bytes(), before);
+        assert!(app.settings_open);
+    }
+
+    #[test]
     fn escape_closes_symbol_picker_without_changing_selection() {
         let mut app = app_with("hello");
         let selection = Selection { anchor: 1, head: 4 };
@@ -4968,23 +5304,23 @@ mod tests {
     }
 
     #[test]
-    fn set_ui_theme_by_name_switches_theme_and_config() {
+    fn set_color_theme_by_name_unknown_is_noop() {
         let mut app = app_with("hello");
-        assert!(app.set_ui_theme_by_name("Light"));
-        assert_eq!(app.theme.name, "Light");
-        assert_eq!(app.config.ui_theme, Some("Light".to_string()));
-
-        assert!(app.set_ui_theme_by_name("Dark"));
+        assert!(!app.set_color_theme_by_name("Neon"));
         assert_eq!(app.theme.name, "Dark");
-        assert_eq!(app.config.ui_theme, Some("Dark".to_string()));
+        assert_eq!(app.config.ui_theme, None);
     }
 
     #[test]
-    fn set_ui_theme_by_name_unknown_is_noop() {
+    fn coordinated_theme_switch_updates_ui_syntax_and_config() {
         let mut app = app_with("hello");
-        assert!(!app.set_ui_theme_by_name("Neon"));
-        assert_eq!(app.theme.name, "Dark");
-        assert_eq!(app.config.ui_theme, None);
+
+        assert!(app.set_color_theme_by_name("Sandstone"));
+
+        assert_eq!(app.theme.name, "Sandstone");
+        assert_eq!(app.syntax.theme_name(), "Sandstone");
+        assert_eq!(app.config.ui_theme.as_deref(), Some("Sandstone"));
+        assert_eq!(app.config.theme.as_deref(), Some("Sandstone"));
     }
 
     #[test]
@@ -4996,6 +5332,33 @@ mod tests {
         let buf: Box<dyn Buffer> = Box::new(core::PieceTableBuffer::from_bytes(b"hi".to_vec()));
         let app = EditorApp::new_with_documents(vec![core::Document::new(buf)], config);
         assert_eq!(app.theme.name, "Light");
+        assert_eq!(app.syntax.theme_name(), "Solarized Light");
+    }
+
+    #[test]
+    fn app_loads_markdown_view_from_config() {
+        let config = core::Config {
+            markdown_view: Some("Preview".to_string()),
+            ..core::Config::default()
+        };
+        let buf: Box<dyn Buffer> = Box::new(core::PieceTableBuffer::from_bytes(b"hi".to_vec()));
+
+        let app = EditorApp::new_with_documents(vec![core::Document::new(buf)], config);
+
+        assert_eq!(app.markdown_preview_mode, MarkdownPreviewMode::Preview);
+    }
+
+    #[test]
+    fn app_loads_csv_view_from_config() {
+        let config = core::Config {
+            csv_view: Some("Table".to_string()),
+            ..core::Config::default()
+        };
+        let buf: Box<dyn Buffer> = Box::new(core::PieceTableBuffer::from_bytes(b"hi".to_vec()));
+
+        let app = EditorApp::new_with_documents(vec![core::Document::new(buf)], config);
+
+        assert_eq!(app.csv_preview_mode, CsvPreviewMode::Table);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use core::{
 };
 use eframe::egui;
 
-use crate::app::{CloseChoice, EditorApp, MarkdownPreviewMode};
+use crate::app::{CloseChoice, CsvPreviewMode, EditorApp, MarkdownPreviewMode};
 use crate::theme::GuiTheme;
 
 const FONT_SIZE: f32 = 14.0;
@@ -236,153 +236,56 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     egui::TopBottomPanel::bottom("status")
         .frame(egui::Frame::none().fill(theme.status_bg).inner_margin(6.0))
         .show(ctx, |ui| {
-            // Snapshot theme lists + current names as owned data so the
-            // ComboBox closures don't borrow `app`.
-            let syntax_theme_names: Vec<String> = app
-                .syntax
-                .theme_names()
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect();
-            let current_syntax_theme = app.syntax.theme_name().to_string();
-            let mut selected_syntax_theme: Option<String> = None;
-
-            let ui_theme_names: Vec<String> =
-                GuiTheme::all().iter().map(|t| t.name.to_string()).collect();
-            let current_ui_theme = app.theme.name.to_string();
-            let mut selected_ui_theme: Option<String> = None;
-
-            let mut toggle_tree = false;
-            let mut toggle_caret_animation = false;
-            let mut selected_markdown_mode = None;
-
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(" {status_message}  |  {status_pos}"))
-                        .monospace()
-                        .color(theme.status_text),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if app.active_doc().language_id() == Some("markdown") {
-                        let markdown_combo = egui::ComboBox::from_id_salt("markdown_view_selector")
-                            .selected_text(format!(
-                                "Markdown: {}",
-                                app.markdown_preview_mode.label()
-                            ))
-                            .width(150.0)
-                            .show_ui(ui, |ui| {
-                                for mode in MarkdownPreviewMode::ALL {
-                                    let response = ui.selectable_label(
-                                        app.markdown_preview_mode == mode,
-                                        mode.label(),
-                                    );
-                                    hand_cursor(&response, ui.ctx());
-                                    if response.clicked() {
-                                        selected_markdown_mode = Some(mode);
-                                    }
-                                }
-                            });
-                        hand_cursor(&markdown_combo.response, ui.ctx());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let settings = ui
+                    .selectable_label(app.settings_open, egui::RichText::new("⚙").size(16.0))
+                    .on_hover_text("Settings");
+                hand_cursor(&settings, ui.ctx());
+                if settings.clicked() {
+                    if app.settings_open && app.settings_dirty {
+                        app.sync_config();
+                        app.settings_dirty = false;
                     }
-                    let syntax_combo = egui::ComboBox::from_id_salt("syntax_theme_selector")
-                        .selected_text(&current_syntax_theme)
-                        .width(160.0)
-                        .show_ui(ui, |ui| {
-                            for name in &syntax_theme_names {
-                                let is_active = name == &current_syntax_theme;
-                                let response = ui.selectable_label(is_active, name);
-                                hand_cursor(&response, ui.ctx());
-                                if response.clicked() {
-                                    selected_syntax_theme = Some(name.clone());
-                                }
-                            }
-                        });
-                    hand_cursor(&syntax_combo.response, ui.ctx());
-                    let ui_combo = egui::ComboBox::from_id_salt("ui_theme_selector")
-                        .selected_text(&current_ui_theme)
-                        .width(100.0)
-                        .show_ui(ui, |ui| {
-                            for name in &ui_theme_names {
-                                let is_active = name == &current_ui_theme;
-                                let response = ui.selectable_label(is_active, name);
-                                hand_cursor(&response, ui.ctx());
-                                if response.clicked() {
-                                    selected_ui_theme = Some(name.clone());
-                                }
-                            }
-                        });
-                    hand_cursor(&ui_combo.response, ui.ctx());
-                    if let Some(status) = lsp_status {
-                        let name = core::lsp::LspManager::server_display_name(&status.language_id)
-                            .unwrap_or(&status.language_id);
-                        let (symbol, color) = if status.running {
-                            ("●", theme.git_added)
-                        } else {
-                            ("○", theme.error)
-                        };
-                        ui.label(
-                            egui::RichText::new(format!("{symbol} {name}"))
-                                .color(color)
-                                .monospace(),
-                        );
-                    } else if let Some(name) = lsp_fallback.as_ref() {
-                        // The language is supported but the document has not
-                        // been registered with the LSP manager yet (e.g. first
-                        // frame) or server spawn failed. Show a greyed-out
-                        // placeholder so the user still sees the language.
-                        ui.label(
-                            egui::RichText::new(format!("○ {name}"))
-                                .color(theme.error)
-                                .monospace(),
-                        );
-                    }
-                    let tree_label = if app.project_tree_open {
-                        "🌳 Tree"
+                    app.settings_open = !app.settings_open;
+                }
+                render_document_view_switcher(ui, app);
+                if let Some(status) = lsp_status {
+                    let name = core::lsp::LspManager::server_display_name(&status.language_id)
+                        .unwrap_or(&status.language_id);
+                    let (symbol, color) = if status.running {
+                        ("●", theme.git_added)
                     } else {
-                        "Tree"
+                        ("○", theme.error)
                     };
-                    let tree_btn = ui.selectable_label(app.project_tree_open, tree_label);
-                    hand_cursor(&tree_btn, ui.ctx());
-                    if tree_btn.clicked() {
-                        toggle_tree = true;
-                    }
-                    let caret_btn = ui.selectable_label(app.config.caret_animation, "Caret anim");
-                    hand_cursor(&caret_btn, ui.ctx());
-                    if caret_btn.clicked() {
-                        toggle_caret_animation = true;
-                    }
-                    let help_btn = ui.selectable_label(app.keybindings_help_open, "?");
-                    hand_cursor(&help_btn, ui.ctx());
-                    if help_btn.clicked() {
-                        app.handle_event(EditorEvent::ToggleKeybindingsHelp);
-                    }
+                    ui.label(
+                        egui::RichText::new(format!("{symbol} {name}"))
+                            .color(color)
+                            .monospace(),
+                    );
+                } else if let Some(name) = lsp_fallback.as_ref() {
+                    // The language is supported but the document has not
+                    // been registered with the LSP manager yet (e.g. first
+                    // frame) or server spawn failed. Show a greyed-out
+                    // placeholder so the user still sees the language.
+                    ui.label(
+                        egui::RichText::new(format!("○ {name}"))
+                            .color(theme.error)
+                            .monospace(),
+                    );
+                }
+                let full_status = format!(" {status_message}  |  {status_pos}");
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&full_status)
+                                .monospace()
+                                .color(theme.status_text),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(full_status);
                 });
             });
-
-            if toggle_tree {
-                app.handle_event(EditorEvent::ToggleProjectTree);
-            }
-            if toggle_caret_animation {
-                app.toggle_caret_animation();
-                app.sync_config();
-            }
-            if let Some(mode) = selected_markdown_mode {
-                app.set_markdown_preview_mode(mode);
-            }
-
-            if let Some(name) = selected_syntax_theme {
-                if app.syntax.set_theme_by_name(&name) {
-                    for doc in &mut app.documents {
-                        doc.syntax.invalidate();
-                    }
-                    app.status_message = Some(format!("Syntax theme: {name}"));
-                }
-            }
-
-            if let Some(name) = selected_ui_theme {
-                app.set_ui_theme_by_name(&name);
-                app.status_message = Some(format!("UI theme: {name}"));
-            }
         });
 
     // Find bar — appears above the status bar when open.
@@ -633,10 +536,31 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
             app.markdown_preview.refresh(preview_key, &markdown);
         }
     }
+    let csv_mode = if app.active_doc().language_id() == Some("csv") {
+        app.csv_preview_mode
+    } else {
+        CsvPreviewMode::Source
+    };
+    let csv_document_id = app.active_doc().id();
+    if csv_mode == CsvPreviewMode::Table {
+        let preview_key = (csv_document_id, app.active_buffer().revision());
+        if app.csv_preview.needs_refresh(preview_key) {
+            let byte_len = app.active_buffer().len();
+            if byte_len > crate::csv_preview::MAX_PREVIEW_BYTES {
+                app.csv_preview.reject_oversized(preview_key, byte_len);
+            } else {
+                let csv = app.active_buffer().to_bytes();
+                app.csv_preview.refresh(preview_key, &csv);
+            }
+        }
+    }
 
     // Minimap sidebar. Lives on the right, toggleable. It is hidden when
     // source text itself is hidden.
-    if app.minimap_open && markdown_mode != MarkdownPreviewMode::Preview {
+    if app.minimap_open
+        && markdown_mode != MarkdownPreviewMode::Preview
+        && csv_mode != CsvPreviewMode::Table
+    {
         render_minimap(ctx, app);
     }
 
@@ -658,12 +582,13 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
 
     egui::CentralPanel::default()
         .frame(egui::Frame::none().fill(theme.editor_bg))
-        .show(ctx, |ui| match markdown_mode {
-            MarkdownPreviewMode::Preview => {
+        .show(ctx, |ui| {
+            if csv_mode == CsvPreviewMode::Table {
+                app.csv_preview.render(ui, csv_document_id, &theme);
+            } else if markdown_mode == MarkdownPreviewMode::Preview {
                 app.markdown_preview
                     .render(ui, markdown_document_id, &theme);
-            }
-            MarkdownPreviewMode::Source | MarkdownPreviewMode::Split => {
+            } else {
                 render_text(ui, app, &theme);
             }
         });
@@ -691,11 +616,68 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     if app.keybindings_help_open {
         render_keybindings_help_window(ctx, app);
     }
+    if app.settings_open {
+        render_settings_window(ctx, app);
+    }
     if app.lsp_completion.open {
         render_lsp_completion_popup(ctx, app);
     }
     if app.lsp_hover.open {
         render_lsp_hover_tooltip(ctx, app);
+    }
+}
+
+/// Render the compact presentation-mode control beside the settings button.
+///
+/// Settings owns the persisted default; this control is the quick way to
+/// change the active Markdown or CSV presentation without opening a dialog.
+fn render_document_view_switcher(ui: &mut egui::Ui, app: &mut EditorApp) {
+    enum Selection {
+        Markdown(MarkdownPreviewMode),
+        Csv(CsvPreviewMode),
+    }
+
+    let mut selection = None;
+    ui.horizontal(|ui| match app.active_doc().language_id() {
+        Some("markdown") => {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            // This switcher lives in the status bar's right-to-left layout.
+            // Emit modes in reverse so their visible order remains natural.
+            for mode in MarkdownPreviewMode::ALL.into_iter().rev() {
+                let response = ui
+                    .selectable_label(app.markdown_preview_mode == mode, mode.label())
+                    .on_hover_text(format!("Show Markdown {} view", mode.label()));
+                hand_cursor(&response, ui.ctx());
+                if response.clicked() {
+                    selection = Some(Selection::Markdown(mode));
+                }
+            }
+        }
+        Some("csv") => {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for mode in CsvPreviewMode::ALL.into_iter().rev() {
+                let response = ui
+                    .selectable_label(app.csv_preview_mode == mode, mode.label())
+                    .on_hover_text(format!("Show CSV {} view", mode.label()));
+                hand_cursor(&response, ui.ctx());
+                if response.clicked() {
+                    selection = Some(Selection::Csv(mode));
+                }
+            }
+        }
+        _ => {}
+    });
+
+    match selection {
+        Some(Selection::Markdown(mode)) if mode != app.markdown_preview_mode => {
+            app.set_markdown_preview_mode(mode);
+            app.sync_config();
+        }
+        Some(Selection::Csv(mode)) if mode != app.csv_preview_mode => {
+            app.set_csv_preview_mode(mode);
+            app.sync_config();
+        }
+        _ => {}
     }
 }
 
@@ -1468,6 +1450,269 @@ fn render_symbol_picker_window(ctx: &egui::Context, app: &mut EditorApp) {
 
     if !open {
         app.symbol_picker.open = false;
+    }
+}
+
+fn render_settings_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+    let current_ui_theme = app.theme.name.to_owned();
+    let mut selected_ui_theme = None;
+
+    let mut project_tree_open = app.project_tree_open;
+    let mut caret_animation = app.config.caret_animation;
+    let mut auto_save = app.config.auto_save;
+    let mut auto_save_on_focus_change = app.config.auto_save_on_focus_change;
+    let mut auto_save_delay_ms = app.config.auto_save_delay_ms;
+    let view = &app.active_doc().view;
+    let mut use_spaces = view.use_spaces;
+    let mut tab_width = view.tab_width;
+    let mut soft_wrap = view.soft_wrap;
+    let mut scroll_margin_lines = view.scroll_margin_lines;
+    let mut git_gutter = view.git_gutter_enabled;
+    let mut git_blame = view.git_blame_enabled;
+    let markdown_available = app.active_doc().language_id() == Some("markdown");
+    let mut markdown_mode = app.markdown_preview_mode;
+    let csv_available = app.active_doc().language_id() == Some("csv");
+    let mut csv_mode = app.csv_preview_mode;
+    let mut show_keyboard_shortcuts = false;
+
+    egui::Window::new("Settings")
+        .collapsible(false)
+        .resizable(true)
+        .default_size([560.0, 620.0])
+        .min_width(460.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("settings_scroll")
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.heading("Appearance");
+                    ui.add_space(4.0);
+                    egui::Grid::new("settings_appearance_grid")
+                        .num_columns(2)
+                        .spacing([18.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Theme");
+                            let combo = egui::ComboBox::from_id_salt("settings_ui_theme")
+                                .selected_text(&current_ui_theme)
+                                .width(220.0)
+                                .show_ui(ui, |ui| {
+                                    for candidate in GuiTheme::all() {
+                                        ui.horizontal(|ui| {
+                                            ui.colored_label(candidate.accent, "●");
+                                            let response = ui.selectable_label(
+                                                candidate.name == current_ui_theme,
+                                                candidate.name,
+                                            );
+                                            hand_cursor(&response, ui.ctx());
+                                            if response.clicked() {
+                                                selected_ui_theme = Some(candidate.name.to_owned());
+                                            }
+                                        });
+                                    }
+                                });
+                            hand_cursor(&combo.response, ui.ctx());
+                            ui.end_row();
+                        });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.heading("Editor");
+                    ui.add_space(4.0);
+                    egui::Grid::new("settings_editor_grid")
+                        .num_columns(2)
+                        .spacing([18.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Indentation");
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(&mut use_spaces, true, "Spaces");
+                                ui.selectable_value(&mut use_spaces, false, "Tabs");
+                                ui.label("Width");
+                                ui.add(egui::DragValue::new(&mut tab_width).range(1..=16));
+                            });
+                            ui.end_row();
+
+                            ui.label("Reading");
+                            ui.vertical(|ui| {
+                                ui.checkbox(&mut soft_wrap, "Soft-wrap long lines");
+                                ui.horizontal(|ui| {
+                                    ui.label("Scroll margin");
+                                    ui.add(
+                                        egui::DragValue::new(&mut scroll_margin_lines)
+                                            .range(0..=50)
+                                            .suffix(" lines"),
+                                    );
+                                });
+                            });
+                            ui.end_row();
+
+                            ui.label("Cursor");
+                            ui.checkbox(&mut caret_animation, "Animate vertical movement");
+                            ui.end_row();
+
+                            ui.label("Git annotations");
+                            ui.vertical(|ui| {
+                                ui.checkbox(&mut git_gutter, "Show change gutter");
+                                ui.checkbox(&mut git_blame, "Show inline blame");
+                            });
+                            ui.end_row();
+                        });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.heading("Files & workspace");
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut project_tree_open, "Show project tree");
+                    ui.checkbox(&mut auto_save, "Auto-save after inactivity");
+                    ui.add_enabled_ui(auto_save, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(20.0);
+                            ui.label("Delay");
+                            ui.add(
+                                egui::DragValue::new(&mut auto_save_delay_ms)
+                                    .range(250..=30_000)
+                                    .speed(100.0)
+                                    .suffix(" ms"),
+                            );
+                        });
+                    });
+                    ui.checkbox(
+                        &mut auto_save_on_focus_change,
+                        "Save when the window loses focus",
+                    );
+
+                    if markdown_available {
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        ui.heading("Markdown");
+                        ui.horizontal(|ui| {
+                            ui.label("Default view");
+                            for mode in MarkdownPreviewMode::ALL {
+                                ui.selectable_value(&mut markdown_mode, mode, mode.label());
+                            }
+                        });
+                    }
+
+                    if csv_available {
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        ui.heading("CSV");
+                        ui.horizontal(|ui| {
+                            ui.label("Default view");
+                            for mode in CsvPreviewMode::ALL {
+                                ui.selectable_value(&mut csv_mode, mode, mode.label());
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "Table view uses the first record as column headings.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    }
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    if ui.button("Keyboard shortcuts…").clicked() {
+                        show_keyboard_shortcuts = true;
+                    }
+                    if let Some(path) = core::Config::config_path() {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Advanced formatter and snippet settings: {}",
+                                path.display()
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                    }
+                });
+        });
+
+    let mut changed = false;
+    if let Some(name) = selected_ui_theme {
+        if app.set_color_theme_by_name(&name) {
+            app.status_message = Some(format!("Theme: {name}"));
+            changed = true;
+        }
+    }
+    if project_tree_open != app.project_tree_open {
+        app.toggle_project_tree();
+        changed = true;
+    }
+    if caret_animation != app.config.caret_animation {
+        app.toggle_caret_animation();
+        changed = true;
+    }
+    if auto_save != app.config.auto_save
+        || auto_save_on_focus_change != app.config.auto_save_on_focus_change
+        || auto_save_delay_ms != app.config.auto_save_delay_ms
+    {
+        app.config.auto_save = auto_save;
+        app.config.auto_save_on_focus_change = auto_save_on_focus_change;
+        app.config.auto_save_delay_ms = auto_save_delay_ms;
+        changed = true;
+    }
+    let active_view = &app.active_doc().view;
+    if use_spaces != active_view.use_spaces || tab_width != active_view.tab_width {
+        app.set_indent_mode(use_spaces, tab_width);
+        changed = true;
+    }
+    if soft_wrap != app.active_doc().view.soft_wrap {
+        app.toggle_soft_wrap();
+        changed = true;
+    }
+    if scroll_margin_lines != app.active_doc().view.scroll_margin_lines {
+        app.active_doc_mut().view.scroll_margin_lines = scroll_margin_lines;
+        changed = true;
+    }
+    if git_gutter != app.active_doc().view.git_gutter_enabled {
+        app.active_doc_mut().view.git_gutter_enabled = git_gutter;
+        if git_gutter {
+            app.active_doc_mut().refresh_git_gutter();
+        }
+        changed = true;
+    }
+    if git_blame != app.active_doc().view.git_blame_enabled {
+        app.active_doc_mut().view.git_blame_enabled = git_blame;
+        if git_blame {
+            app.active_doc_mut().git_blame.mark_dirty();
+        }
+        changed = true;
+    }
+    if markdown_available && markdown_mode != app.markdown_preview_mode {
+        app.set_markdown_preview_mode(markdown_mode);
+        changed = true;
+    }
+    if csv_available && csv_mode != app.csv_preview_mode {
+        app.set_csv_preview_mode(csv_mode);
+        changed = true;
+    }
+    if changed {
+        app.settings_dirty = true;
+    }
+    if show_keyboard_shortcuts {
+        if app.settings_dirty {
+            app.sync_config();
+            app.settings_dirty = false;
+        }
+        app.settings_open = false;
+        app.keybindings_help_open = true;
+    } else if !open {
+        if app.settings_dirty {
+            app.sync_config();
+            app.settings_dirty = false;
+        }
+        app.settings_open = false;
     }
 }
 
@@ -3047,7 +3292,7 @@ fn word_range_at_char_col(line_text: &str, char_col: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{project_tree_reveal_offset, word_range_at_char_col};
+    use super::{project_tree_reveal_offset, render_settings_window, word_range_at_char_col};
 
     #[test]
     fn project_tree_reveal_offset_accounts_for_virtual_row_spacing() {
@@ -3083,6 +3328,28 @@ mod tests {
 
         let (actual, expected) = measured.unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn settings_window_renders_in_a_small_viewport() {
+        let ctx = egui::Context::default();
+        let buffer: Box<dyn core::Buffer> =
+            Box::new(core::PieceTableBuffer::from_bytes(b"# Settings\n".to_vec()));
+        let mut app = crate::app::EditorApp::new(buffer);
+        app.settings_open = true;
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(480.0, 360.0),
+            )),
+            ..Default::default()
+        });
+
+        render_settings_window(&ctx, &mut app);
+        let output = ctx.end_pass();
+
+        assert!(app.settings_open);
+        assert!(!output.shapes.is_empty());
     }
 
     #[test]
