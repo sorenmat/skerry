@@ -39,6 +39,10 @@ pub struct App {
     pub syntax: SyntaxEngine,
     /// Whether the project file-tree sidebar is visible.
     pub project_tree_open: bool,
+    /// Whether keyboard input belongs to the project tree rather than the
+    /// editor. Visibility and focus are deliberately separate: an open tree
+    /// must not capture edits unless the user explicitly focuses it.
+    pub project_tree_focused: bool,
     /// The active document's project tree, including expansion state.
     pub project_tree: Option<core::ProjectTree>,
     /// Root represented by `project_tree`, used to preserve expansion state
@@ -239,6 +243,7 @@ impl App {
             rename_dialog: None,
             syntax: SyntaxEngine::default_dark(),
             project_tree_open: config.project_tree_open.unwrap_or(true),
+            project_tree_focused: false,
             project_tree: None,
             project_tree_root: None,
             project_tree_selected: 0,
@@ -839,10 +844,14 @@ impl App {
                                 continue;
                             }
                         }
-                        // Clipboard shortcuts are intercepted before
-                        // generic key translation because they need
-                        // direct OS access.
-                        if self.keymap.mode() == core::KeybindingMode::Standard {
+                        if self.dispatch_pane_focus_key(key) {
+                            continue;
+                        }
+                        // Clipboard shortcuts are intercepted before generic
+                        // key translation because they need direct OS access.
+                        // Pane focus is resolved first so a tree-focused cut
+                        // can never modify the hidden document selection.
+                        if self.document_clipboard_allowed() {
                             if let Some(action) =
                                 crate::event::classify_clipboard_key(key, self.active_buffer())
                             {
@@ -850,16 +859,7 @@ impl App {
                                 continue;
                             }
                         }
-                        if self.project_tree_open && self.project_tree.is_some() {
-                            if let Some(tree_event) = crate::event::project_tree_translate(key) {
-                                self.handle_event(tree_event);
-                                continue;
-                            }
-                        }
-                        let overlay_open = self.search.bar_open
-                            || self.fuzzy_finder.open
-                            || self.command_palette.open
-                            || self.project_search.open;
+                        let overlay_open = self.overlay_owns_input();
                         if !overlay_open {
                             if let Some(input) = crate::event::keymap_input(key) {
                                 let output = self.keymap.handle(
@@ -878,6 +878,9 @@ impl App {
                         }
                     }
                     Event::Mouse(mouse) => {
+                        if self.update_pane_focus_from_mouse(mouse) {
+                            continue;
+                        }
                         if let Some(editor_event) = crate::event::translate_mouse(mouse, self) {
                             self.handle_event(editor_event);
                         }
@@ -991,6 +994,97 @@ impl App {
         };
         self.handle_event(event);
         true
+    }
+
+    /// Route pane-focus keys before either pane can mutate editor state.
+    ///
+    /// Shift+Tab focuses a visible project tree. While the tree owns focus,
+    /// Tab or Escape returns to the editor, arrows/Enter operate on the tree,
+    /// and every other key is consumed so typing cannot leak into the hidden
+    /// source cursor.
+    fn dispatch_pane_focus_key(&mut self, key: cxevent::KeyEvent) -> bool {
+        use cxevent::{KeyCode, KeyModifiers};
+
+        if self.overlay_owns_input() {
+            return false;
+        }
+
+        let tree_available = self.project_tree_open && self.project_tree.is_some();
+        if !tree_available {
+            self.project_tree_focused = false;
+            return false;
+        }
+
+        if !self.project_tree_focused {
+            let focus_tree = key.code == KeyCode::BackTab
+                || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT));
+            if focus_tree {
+                self.project_tree_focused = true;
+                self.status_message =
+                    Some("Project tree focused — Tab or Esc returns to editor.".into());
+                return true;
+            }
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc => {
+                self.project_tree_focused = false;
+                self.status_message =
+                    Some("Editor focused — Shift+Tab focuses project tree.".into());
+            }
+            KeyCode::Up => self.handle_event(EditorEvent::ProjectTreeMove { delta: -1 }),
+            KeyCode::Down => self.handle_event(EditorEvent::ProjectTreeMove { delta: 1 }),
+            KeyCode::Enter => self.handle_event(EditorEvent::ProjectTreeOpen),
+            KeyCode::F(8) => self.handle_event(EditorEvent::ToggleProjectTree),
+            _ => {}
+        }
+        true
+    }
+
+    /// Whether a visible text/navigation surface owns keyboard input ahead of
+    /// both editor panes. None of these overlays currently implements document
+    /// clipboard operations, so Ctrl+X/V must never reach the hidden buffer.
+    fn overlay_owns_input(&self) -> bool {
+        self.search.bar_open
+            || self.fuzzy_finder.open
+            || self.command_palette.open
+            || self.project_search.open
+            || self.lsp_completion.open
+    }
+
+    fn document_clipboard_allowed(&self) -> bool {
+        self.keymap.mode() == core::KeybindingMode::Standard
+            && !self.overlay_owns_input()
+            && !self.project_tree_focused
+    }
+
+    /// Focus the pane under a left press/drag. Tree clicks are consumed here
+    /// so their coordinates can never be interpreted as editor positions.
+    fn update_pane_focus_from_mouse(&mut self, mouse: cxevent::MouseEvent) -> bool {
+        use cxevent::{MouseButton, MouseEventKind};
+
+        if !matches!(
+            mouse.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+        ) {
+            return false;
+        }
+        if self.overlay_owns_input()
+            || self.close_confirm.is_some()
+            || self.go_to_line_dialog.is_some()
+        {
+            return true;
+        }
+        if mouse.row == 0 || usize::from(mouse.row - 1) >= usize::from(self.viewport_height) {
+            return false;
+        }
+        if self.project_tree_open && mouse.column < self.tree_width {
+            self.project_tree_focused = self.project_tree.is_some();
+            return true;
+        }
+        self.project_tree_focused = false;
+        false
     }
 
     fn apply_clipboard_action(
@@ -2911,6 +3005,7 @@ impl App {
             self.project_tree = None;
             self.project_tree_root = None;
             self.project_tree_selected = 0;
+            self.project_tree_focused = false;
         }
     }
 
@@ -2949,6 +3044,8 @@ impl App {
         self.project_tree_open = !self.project_tree_open;
         if self.project_tree_open {
             self.refresh_project_tree();
+        } else {
+            self.project_tree_focused = false;
         }
     }
 
@@ -2979,6 +3076,7 @@ impl App {
         } else if let Some(project) = self.active_doc().project.clone() {
             let path = project.root.join(rel_path);
             self.open_or_switch_to_path(&path);
+            self.project_tree_focused = false;
         }
     }
 
@@ -5252,6 +5350,7 @@ mod tests {
         let mut app = App::new(buf);
 
         assert!(app.project_tree_open);
+        assert!(!app.project_tree_focused);
         let rows: Vec<String> = app
             .project_tree_rows()
             .into_iter()
@@ -5264,6 +5363,78 @@ mod tests {
         assert!(!app.project_tree_open);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn project_tree_focus_never_leaks_typing_into_the_document() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let dir =
+            std::env::temp_dir().join(format!("skerry_tui_proj_focus_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]").unwrap();
+        let path = dir.join("main.rs");
+        std::fs::write(&path, "original").unwrap();
+
+        let buf: Box<dyn Buffer> = Box::new(
+            PieceTableBuffer::from_path(path.clone()).expect("project test document should open"),
+        );
+        let mut app = App::new(buf);
+
+        assert!(app.dispatch_pane_focus_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT,)));
+        assert!(app.project_tree_focused);
+
+        assert!(app.dispatch_pane_focus_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE,)));
+        assert_eq!(app.active_buffer().to_bytes(), b"original");
+
+        assert!(app.dispatch_pane_focus_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE,)));
+        assert!(!app.project_tree_focused);
+        assert!(
+            !app.dispatch_pane_focus_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE,))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_project_tree_returns_focus_to_editor() {
+        let mut app = app_with("text");
+        app.project_tree_focused = true;
+        app.toggle_project_tree();
+        assert!(!app.project_tree_open);
+        assert!(!app.project_tree_focused);
+    }
+
+    #[test]
+    fn overlays_and_tree_focus_block_hidden_document_clipboard_actions() {
+        let mut app = app_with("selected");
+
+        app.search.bar_open = true;
+        assert!(!app.document_clipboard_allowed());
+        app.search.bar_open = false;
+
+        app.fuzzy_finder.open = true;
+        assert!(!app.document_clipboard_allowed());
+        app.fuzzy_finder.open = false;
+
+        app.command_palette.open = true;
+        assert!(!app.document_clipboard_allowed());
+        app.command_palette.open = false;
+
+        app.project_search.open = true;
+        assert!(!app.document_clipboard_allowed());
+        app.project_search.open = false;
+
+        app.lsp_completion.open = true;
+        assert!(!app.document_clipboard_allowed());
+        app.lsp_completion.open = false;
+
+        app.project_tree_focused = true;
+        assert!(!app.document_clipboard_allowed());
+        app.project_tree_focused = false;
+
+        assert!(app.document_clipboard_allowed());
     }
 
     #[test]

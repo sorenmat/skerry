@@ -81,16 +81,6 @@ pub fn translate_key(key: KeyEvent, app: Option<&App>) -> Option<EditorEvent> {
             }
             // Unmapped keys (Ctrl+S, Ctrl+Z, Ctrl+Q, etc.) fall through
             // to the normal buffer bindings instead of being swallowed.
-        } else if app.project_tree_open && app.project_tree.is_some() {
-            // Only intercept keys for the project tree when it's open
-            // AND a project is actually loaded. Without this guard, the
-            // default project_tree_open=true silently swallows ALL keys
-            // (typing, Ctrl+S, etc.) on startup before any project is
-            // opened — making the editor appear non-functional.
-            if let Some(tree_event) = project_tree_translate(key) {
-                return Some(tree_event);
-            }
-            // Unmapped keys fall through to the normal buffer bindings.
         }
     }
     translate_buffer_key(key)
@@ -157,16 +147,6 @@ fn replace_bar_translate(key: KeyEvent, app: &App) -> Option<EditorEvent> {
             q.push(c);
             Some(EditorEvent::ReplaceQueryChanged(q))
         }
-        _ => None,
-    }
-}
-
-pub(crate) fn project_tree_translate(key: KeyEvent) -> Option<EditorEvent> {
-    match key.code {
-        KeyCode::Esc => Some(EditorEvent::ToggleProjectTree),
-        KeyCode::Up => Some(EditorEvent::ProjectTreeMove { delta: -1 }),
-        KeyCode::Down => Some(EditorEvent::ProjectTreeMove { delta: 1 }),
-        KeyCode::Enter => Some(EditorEvent::ProjectTreeOpen),
         _ => None,
     }
 }
