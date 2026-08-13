@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs",
  "lsp-types",
@@ -3313,7 +3313,7 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "skerry"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "core",
  "csv",
@@ -3328,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "skerry-tui"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "arboard",
  "core",

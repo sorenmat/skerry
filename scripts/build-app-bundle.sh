@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$PROJECT_ROOT/target/Skerry.app"
 BIN="${SKERRY_BINARY:-$PROJECT_ROOT/target/release/skerry}"
+TUI_BIN="${SKERRY_TUI_BINARY:-$PROJECT_ROOT/target/release/skerry-tui}"
 SCRIPT="$PROJECT_ROOT/scripts/Skerry.applescript"
 ICON_SOURCE="$PROJECT_ROOT/assets/Skerry-icon.png"
 ICONSET_DIR="$PROJECT_ROOT/target/Skerry.iconset"
@@ -17,6 +18,12 @@ fi
 
 if [ ! -x "$BIN" ]; then
     echo "error: Skerry binary not found or not executable: $BIN" >&2
+    echo "       Run 'make build-release' first." >&2
+    exit 1
+fi
+
+if [ ! -x "$TUI_BIN" ]; then
+    echo "error: Skerry TUI binary not found or not executable: $TUI_BIN" >&2
     echo "       Run 'make build-release' first." >&2
     exit 1
 fi
@@ -39,6 +46,7 @@ fi
 rm -rf "$APP_DIR"
 osacompile -o "$APP_DIR" "$SCRIPT"
 install -m 755 "$BIN" "$APP_DIR/Contents/Resources/skerry"
+install -m 755 "$TUI_BIN" "$APP_DIR/Contents/Resources/skerry-tui"
 
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"
@@ -122,6 +130,7 @@ plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP_DIR/Contents
 plutil -replace CFBundleVersion -string "$VERSION" "$APP_DIR/Contents/Info.plist"
 
 codesign --force --sign - "$APP_DIR/Contents/Resources/skerry"
+codesign --force --sign - "$APP_DIR/Contents/Resources/skerry-tui"
 codesign --force --sign - "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 

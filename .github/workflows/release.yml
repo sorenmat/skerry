@@ -25,11 +25,22 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify release version
+        run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "skerry") | .version')"
+          test "$GITHUB_REF_NAME" = "v$version"
+
       - name: Build Skerry
         run: cargo build --workspace --release --locked
 
       - name: Build application bundle
         run: ./scripts/build-app-bundle.sh
+
+      - name: Verify application bundle contents
+        run: |
+          test -x target/Skerry.app/Contents/Resources/skerry
+          test -x target/Skerry.app/Contents/Resources/skerry-tui
 
       - name: Sign application bundle
         env:
@@ -57,6 +68,8 @@ jobs:
 
           codesign --force --options runtime --timestamp \
             --sign "$APPLE_DEVELOPER_ID" target/Skerry.app/Contents/Resources/skerry
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_DEVELOPER_ID" target/Skerry.app/Contents/Resources/skerry-tui
           codesign --force --options runtime --timestamp \
             --sign "$APPLE_DEVELOPER_ID" target/Skerry.app
           codesign --verify --deep --strict --verbose=2 target/Skerry.app
@@ -106,6 +119,12 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+
+      - name: Verify release version
+        run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "skerry") | .version')"
+          test "$GITHUB_REF_NAME" = "v$version"
 
       - name: Build Skerry
         run: cargo build --workspace --release --locked
