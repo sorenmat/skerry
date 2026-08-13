@@ -43,11 +43,12 @@ skerry-tui path/to/file
 A Linux formula will be added to the tap with the next release. The current
 tap does not yet support `brew install skerry` on Linux.
 
-### Opening the unsigned v0.1.2 release
+### Opening an unsigned release
 
-Skerry v0.1.2 is ad-hoc signed but not Developer ID signed or Apple-notarized.
-If you installed it from the Skerry project's official `sorenmat/skerry` tap
-and accept that limitation, remove quarantine from this copy and open it with:
+Unsigned Skerry releases, including v0.1.2 and v0.1.6, are ad-hoc signed but
+not Developer ID signed or Apple-notarized. If you installed one from the
+Skerry project's official `sorenmat/skerry` tap and accept that limitation,
+remove quarantine from this copy and open it with:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Skerry.app

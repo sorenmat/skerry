@@ -42,18 +42,19 @@ brew uninstall --cask skerry
 ```
 
 The macOS cask tracks the latest release, so macOS cask upgrades use
-`--greedy-latest`. Releases are intended to be signed; v0.1.2 is the explicit
-unsigned exception described below.
+`--greedy-latest`. Releases are intended to be signed; release notes identify
+any unsigned exception.
 
 The canonical cask and formula are maintained in the
 [sorenmat/homebrew-skerry](https://github.com/sorenmat/homebrew-skerry) tap.
 
-## Opening the unsigned v0.1.2 release
+## Opening an unsigned release
 
-Skerry v0.1.2 is ad-hoc signed but not Developer ID signed or Apple-notarized,
-so macOS Gatekeeper may refuse to open it. If you installed it from the Skerry
-project's official `sorenmat/skerry` tap and accept that limitation, remove
-quarantine only from the installed Skerry application and open it:
+Unsigned Skerry releases, including v0.1.2 and v0.1.6, are ad-hoc signed but
+not Developer ID signed or Apple-notarized, so macOS Gatekeeper may refuse to
+open them. If you installed one from the Skerry project's official
+`sorenmat/skerry` tap and accept that limitation, remove quarantine only from
+the installed Skerry application and open it:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Skerry.app
@@ -75,8 +76,8 @@ Skerry publishes native Apple Silicon, Intel macOS, and Linux x86_64 builds. A
 maintainer creates those release assets by pushing a version tag such as
 `v0.1.0`.
 
-Release builds require these GitHub Actions secrets so Homebrew downloads pass
-Gatekeeper:
+Signed release builds use these GitHub Actions secrets so Homebrew downloads
+pass Gatekeeper:
 
 - `APPLE_CERTIFICATE_BASE64`: base64-encoded Developer ID Application `.p12`
 - `APPLE_CERTIFICATE_PASSWORD`: password for that `.p12`
@@ -85,8 +86,11 @@ Gatekeeper:
 - `APPLE_APP_PASSWORD`: app-specific password for that account
 - `APPLE_TEAM_ID`: Apple Developer team identifier
 
-The release workflow fails before publishing if signing, notarization,
-stapling, or Gatekeeper assessment fails.
+When all six secrets are configured, the workflow fails before publishing if
+signing, notarization, stapling, or Gatekeeper assessment fails. v0.1.6 is an
+explicitly labelled exception that may publish ad-hoc-signed when none are
+configured. A partial credential configuration, or missing credentials for a
+later release, always fails.
 
 ## Build locally
 

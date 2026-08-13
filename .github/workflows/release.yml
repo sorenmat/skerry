@@ -9,8 +9,53 @@ permissions:
   contents: read
 
 jobs:
+  release-mode:
+    name: Determine macOS signing mode
+    runs-on: ubuntu-latest
+    outputs:
+      signed: ${{ steps.mode.outputs.signed }}
+
+    steps:
+      - name: Check Apple release credentials
+        id: mode
+        env:
+          HAS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_BASE64 != '' }}
+          HAS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          HAS_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID != '' }}
+          HAS_APPLE_ID: ${{ secrets.APPLE_ID != '' }}
+          HAS_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD != '' }}
+          HAS_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+        run: |
+          configured=0
+          for present in \
+            "$HAS_CERTIFICATE" \
+            "$HAS_CERTIFICATE_PASSWORD" \
+            "$HAS_DEVELOPER_ID" \
+            "$HAS_APPLE_ID" \
+            "$HAS_APP_PASSWORD" \
+            "$HAS_TEAM_ID"
+          do
+            if [ "$present" = "true" ]; then
+              configured=$((configured + 1))
+            fi
+          done
+
+          if [ "$configured" -eq 0 ]; then
+            if [ "$GITHUB_REF_NAME" != "v0.1.6" ]; then
+              echo "::error::Unsigned publishing is approved only for v0.1.6."
+              exit 1
+            fi
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          elif [ "$configured" -eq 6 ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Configure all six Apple release secrets or remove all of them."
+            exit 1
+          fi
+
   build-macos:
     name: Build macOS (${{ matrix.arch }})
+    needs: release-mode
     strategy:
       matrix:
         include:
@@ -43,6 +88,7 @@ jobs:
           test -x target/Skerry.app/Contents/Resources/skerry-tui
 
       - name: Sign application bundle
+        if: needs.release-mode.outputs.signed == 'true'
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -77,6 +123,7 @@ jobs:
           rm -f "$certificate_path"
 
       - name: Notarize application bundle
+        if: needs.release-mode.outputs.signed == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -141,6 +188,7 @@ jobs:
   publish:
     name: Publish GitHub release
     needs:
+      - release-mode
       - build-macos
       - build-linux
     runs-on: ubuntu-latest
@@ -159,9 +207,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
+          SIGNED_RELEASE: ${{ needs.release-mode.outputs.signed }}
         run: |
+          release_note=""
+          if [ "$SIGNED_RELEASE" != "true" ]; then
+            release_note="⚠️ The macOS builds are ad-hoc signed and not Apple-notarized. Read the [installation guidance](https://github.com/$GH_REPO/blob/$RELEASE_TAG/INSTALL.md) before opening them."
+          fi
+
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            if [ -n "$release_note" ]; then
+              existing_notes="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
+              if ! printf '%s' "$existing_notes" | grep -Fq -- "$release_note"; then
+                printf '%s\n\n%s\n' "$release_note" "$existing_notes" \
+                  > "$RUNNER_TEMP/release-notes.md"
+                gh release edit "$RELEASE_TAG" \
+                  --notes-file "$RUNNER_TEMP/release-notes.md"
+              fi
+            fi
             gh release upload "$RELEASE_TAG" dist/*.tar.gz --clobber
           else
-            gh release create "$RELEASE_TAG" dist/*.tar.gz --generate-notes --verify-tag
+            gh release create "$RELEASE_TAG" dist/*.tar.gz \
+              --generate-notes \
+              --notes "$release_note" \
+              --verify-tag
           fi
