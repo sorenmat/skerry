@@ -405,6 +405,49 @@ pub fn column_selections(
     sels
 }
 
+/// Build one selection per occurrence of `needle` in `text`, for the
+/// select-all-occurrences (multi-cursor) command. When `whole_word` is
+/// set, matches that sit inside a larger word are skipped — callers use
+/// this when the needle was derived from the word under the cursor
+/// (VS Code semantics: word-derived needles match whole words only,
+/// explicit selections match the exact string).
+///
+/// Capped at [`crate::search::MAX_STORED_MATCHES`] so a pathological
+/// needle (e.g. selecting one space in an indented file) can't build a
+/// million-selection list.
+pub fn all_occurrence_selections(
+    text: &str,
+    needle: &str,
+    whole_word: bool,
+) -> Vec<Selection> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut sels = Vec::new();
+    for start in memchr::memmem::find_iter(text.as_bytes(), needle.as_bytes()) {
+        if sels.len() >= crate::search::MAX_STORED_MATCHES {
+            break;
+        }
+        let end = start + needle.len();
+        if whole_word && !word_boundary(text.as_bytes(), start, end) {
+            continue;
+        }
+        sels.push(Selection {
+            anchor: start,
+            head: end,
+        });
+    }
+    sels
+}
+
+/// True when `[start, end)` in `bytes` is not immediately preceded or
+/// followed by a word character.
+fn word_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    (start == 0 || !is_word(bytes[start - 1]))
+        && (end == bytes.len() || !is_word(bytes[end]))
+}
+
 /// The line-comment prefix for a language ID, if known.
 /// Returns `None` for languages without a line comment syntax (JSON).
 pub fn line_comment_prefix(language_id: &str) -> Option<&'static str> {

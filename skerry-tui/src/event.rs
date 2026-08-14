@@ -269,6 +269,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('k') => Some(EditorEvent::DeleteLine),
             KeyCode::Char('d') => Some(EditorEvent::SelectNextOccurrence),
             KeyCode::Char('t') => Some(EditorEvent::NewDoc),
+            KeyCode::Char('n') => Some(EditorEvent::NewDoc),
             KeyCode::Char('w') => Some(EditorEvent::CloseDoc),
             KeyCode::Char('o') => Some(EditorEvent::OpenFile(None)),
             KeyCode::Char('g') => Some(EditorEvent::GoToLine(None)),
@@ -300,15 +301,18 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Up => Some(EditorEvent::PrevHunk),
             KeyCode::Down => Some(EditorEvent::NextHunk),
             KeyCode::Char('D') => Some(EditorEvent::DuplicateLine),
+            KeyCode::Char('L') => Some(EditorEvent::SelectAllOccurrences),
             _ => None,
         };
     }
 
-    // Alt-modified keys (line move).
+    // Alt-modified keys (line move; horizontal scroll).
     if key.modifiers.contains(KeyModifiers::ALT) && !ctrl && !shift {
         return match key.code {
             KeyCode::Up => Some(EditorEvent::MoveLineUp),
             KeyCode::Down => Some(EditorEvent::MoveLineDown),
+            KeyCode::Left => Some(EditorEvent::ScrollLeft),
+            KeyCode::Right => Some(EditorEvent::ScrollRight),
             _ => None,
         };
     }
@@ -329,8 +333,6 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
         KeyCode::F(5) => Some(EditorEvent::CycleTheme),
         KeyCode::F(8) => Some(EditorEvent::ToggleProjectTree),
         KeyCode::F(12) => Some(EditorEvent::LspGoToDefinition),
-        KeyCode::Left if shift => Some(EditorEvent::ScrollLeft),
-        KeyCode::Right if shift => Some(EditorEvent::ScrollRight),
         KeyCode::Left => Some(movement(Movement::Left, select)),
         KeyCode::Right => Some(movement(Movement::Right, select)),
         KeyCode::Up => Some(movement(Movement::Up, select)),
@@ -500,7 +502,7 @@ mod tests {
 
     #[test]
     fn shift_arrows_extend_selection() {
-        // Shift+Up/Down still extend selection.
+        // Shift+arrows extend the selection in all four directions.
         assert_eq!(
             translate_key(key_shift(KeyCode::Up), None),
             Some(EditorEvent::SelectExtend(Movement::Up))
@@ -509,16 +511,24 @@ mod tests {
             translate_key(key_shift(KeyCode::Down), None),
             Some(EditorEvent::SelectExtend(Movement::Down))
         );
-    }
-
-    #[test]
-    fn shift_left_right_scrolls_horizontally() {
         assert_eq!(
             translate_key(key_shift(KeyCode::Left), None),
-            Some(EditorEvent::ScrollLeft)
+            Some(EditorEvent::SelectExtend(Movement::Left))
         );
         assert_eq!(
             translate_key(key_shift(KeyCode::Right), None),
+            Some(EditorEvent::SelectExtend(Movement::Right))
+        );
+    }
+
+    #[test]
+    fn alt_left_right_scrolls_horizontally() {
+        assert_eq!(
+            translate_key(key_alt(KeyCode::Left), None),
+            Some(EditorEvent::ScrollLeft)
+        );
+        assert_eq!(
+            translate_key(key_alt(KeyCode::Right), None),
             Some(EditorEvent::ScrollRight)
         );
     }
@@ -526,6 +536,24 @@ mod tests {
     #[test]
     fn ctrl_s_saves() {
         assert_eq!(translate_key(key_ctrl('s'), None), Some(EditorEvent::Save));
+    }
+
+    #[test]
+    fn ctrl_n_opens_new_doc() {
+        assert_eq!(
+            translate_key(key_ctrl('n'), None),
+            Some(EditorEvent::NewDoc)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_l_selects_all_occurrences() {
+        let mut ev = key_ctrl('L');
+        ev.modifiers |= KeyModifiers::SHIFT;
+        assert_eq!(
+            translate_key(ev, None),
+            Some(EditorEvent::SelectAllOccurrences)
+        );
     }
 
     #[test]

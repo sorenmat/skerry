@@ -86,7 +86,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: "new_doc",
         label: "New document",
-        keybinding: "Ctrl+T",
+        keybinding: "Ctrl+N",
         event: EditorEvent::NewDoc,
     },
     Command {
@@ -226,6 +226,12 @@ pub const COMMANDS: &[Command] = &[
         label: "Select next occurrence",
         keybinding: "Ctrl+D",
         event: EditorEvent::SelectNextOccurrence,
+    },
+    Command {
+        id: "select_all_occurrences",
+        label: "Select all occurrences",
+        keybinding: "Ctrl+Shift+L",
+        event: EditorEvent::SelectAllOccurrences,
     },
     Command {
         id: "select_all",

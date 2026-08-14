@@ -62,8 +62,8 @@ Skerry/
   presets therefore share modes, prefixes, registers, kill-ring behavior, and
   emitted `EditorEvent`s (ADR 0010).
 - **`Selection` model** — `anchor` + `head` byte offsets. Collapsed
-  means `anchor == head`. Single selection in v1; multi-cursor
-  deferred.
+  means `anchor == head`. A buffer holds a list of selections
+  (multi-cursor); element 0 is the primary.
 
 ## Keyboard presets
 
@@ -98,7 +98,8 @@ Skerry/
 - **Tab strip UI** in both frontends. Filename + dirty marker per
   tab, active tab highlighted with a coloured background. Click an
   inactive tab to focus it.
-- **New document** (Cmd/Ctrl+T) — opens a fresh unsaved buffer.
+- **New document** (Cmd/Ctrl+N, also Cmd/Ctrl+T) — opens a fresh
+  unsaved buffer.
 - **Close document** (Cmd/Ctrl+W) — closes the active document.
   Triggers the close-confirm dialog if the buffer is dirty.
 - **Next / previous document** (Cmd/Ctrl+Tab / Cmd/Ctrl+Shift+Tab) —
@@ -182,10 +183,12 @@ Skerry/
   a non-collapsed selection instead of inserting at the cursor
   head. Standard 1995-era editor behaviour.
 - **Multi-cursor** — Cmd/Ctrl+D selects the next occurrence of the
-  current word; Alt/Opt+click adds a cursor; Alt+drag selects a
-  rectangular (column) region with a cursor per line. Typing, deleting,
-  and moving all operate on every cursor simultaneously. Escape
-  collapses to a single cursor.
+  current word; Cmd/Ctrl+Shift+L selects **every** occurrence at once
+  (whole-word when derived from the word under the cursor, exact string
+  when there's an explicit selection — VS Code semantics); Alt/Opt+click
+  adds a cursor; Alt+drag selects a rectangular (column) region with a
+  cursor per line. Typing, deleting, and moving all operate on every
+  cursor simultaneously. Escape collapses to a single cursor.
 - **Auto-pairing** — typing `(`, `[`, `{`, `"`, `'` auto-inserts the
   closing pair and leaves the cursor between them. Typing a closing
   char when the cursor is before its match skips over instead of
@@ -232,15 +235,16 @@ Skerry/
 ## Navigation
 
 - **Arrow keys** — char-wise movement. Shift+Arrow extends the
-  selection (Shift+Up / Shift+Down on TUI confirmed).
+  selection in all four directions.
 - **Word movement** (Ctrl+Left / Ctrl+Right) — Ctrl+Arrow on TUI;
   plain Ctrl+Arrow on GUI is the same word-move event.
 - **Line start / end** (Home / End).
 - **Page up / down** (PageUp / PageDown) — page size derived from
   the current viewport height.
 - **Document start / end** (Ctrl+Home / Ctrl+End).
-- **Horizontal scroll** (Shift+Left / Shift+Right) — scrolls the
-  viewport one column at a time.
+- **Horizontal scroll** (Alt+Left / Alt+Right on TUI) — scrolls the
+  viewport one column at a time; the GUI scrolls horizontally with
+  Shift+wheel.
 - **GUI: Shift+wheel** — horizontal scroll. egui's ScrollArea eats
   the wheel for vertical scroll; the modifier hijacks it to scroll
   horizontally using `char_width`.
@@ -409,7 +413,8 @@ Skerry/
 - **Save** (Cmd/Ctrl+S) — writes the buffer back to its
   `source_path`. Reports "Saved." or "Save error: ..." in the status
   bar.
-- **New document** (Cmd/Ctrl+T) — opens a fresh empty buffer.
+- **New document** (Cmd/Ctrl+N, also Cmd/Ctrl+T) — opens a fresh
+  empty buffer.
 
 ## Close-on-dirty
 
@@ -607,8 +612,6 @@ use different conventions without re-configuring.
   not yet wrap visually in the TUI. The state is preserved
   per-document so the implementation can land later without losing
   user settings.
-- **Single selection only.** Multi-cursor is explicitly out of v1
-  scope (CONTEXT.md).
 - **Project-wide search is literal only.** Single-file search supports
   regex; project-wide search still uses `memmem` substring matching.
 - **LSP is opt-in per language.** Rust, Go, JavaScript/TypeScript,

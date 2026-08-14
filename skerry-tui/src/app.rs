@@ -595,6 +595,37 @@ impl App {
         self.status_message = Some("No more occurrences.".to_string());
     }
 
+    /// Select every occurrence of the word under the primary cursor (or
+    /// of the selected text), replacing the selection list with one
+    /// selection per match — VS Code's Cmd/Ctrl+Shift+L. A word-derived
+    /// needle matches whole words only; an explicit selection matches
+    /// the exact string.
+    fn select_all_occurrences(&mut self) {
+        let buf = self.active_buffer();
+        let primary = buf.selection();
+        let (needle, whole_word) = if primary.is_collapsed() {
+            (self.word_at_cursor(), true)
+        } else {
+            (buf.slice(primary.range()), false)
+        };
+        let Some(needle) = needle else {
+            self.status_message = Some("No word to search.".to_string());
+            return;
+        };
+        if needle.is_empty() {
+            return;
+        }
+        let content = String::from_utf8_lossy(&buf.to_bytes()).to_string();
+        let sels = core::all_occurrence_selections(&content, &needle, whole_word);
+        if sels.is_empty() {
+            self.status_message = Some("No occurrences.".to_string());
+            return;
+        }
+        let count = sels.len();
+        self.active_buffer_mut().set_selections(sels);
+        self.status_message = Some(format!("{count} occurrences selected."));
+    }
+
     pub fn format_active_document(&mut self) {
         let Some(uri) = self.active_doc().uri() else {
             return;
@@ -1589,6 +1620,9 @@ impl App {
             EditorEvent::SelectNextOccurrence => {
                 self.select_next_occurrence();
             }
+            EditorEvent::SelectAllOccurrences => {
+                self.select_all_occurrences();
+            }
             EditorEvent::SelectAll => {
                 let len = self.active_buffer().len();
                 self.active_buffer_mut().set_selections(vec![Selection {
@@ -2082,6 +2116,15 @@ impl App {
             let range = sel.range();
             match self.active_buffer_mut().delete(range.clone()) {
                 Ok(new_pos) => {
+                    // Cursors collected for earlier (rightward) deletions
+                    // shift left by this deletion's width: we delete
+                    // right-to-left, so every deletion to follow is to the
+                    // left of the ones already collected. Without this the
+                    // rebuilt cursors go stale (out of bounds) and the next
+                    // insert at them silently fails.
+                    for p in new_cursors.iter_mut() {
+                        *p = p.saturating_sub(range.len());
+                    }
                     new_cursors.push(new_pos);
                     any_deleted = true;
                 }
@@ -3756,6 +3799,43 @@ mod tests {
 
         assert_eq!(app.active_buffer().selection(), Selection::collapsed(4));
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn select_all_occurrences_selects_every_match() {
+        let mut app = app_with("cat hat cat catalog");
+        app.active_buffer_mut().set_cursor(0);
+        app.handle_event(EditorEvent::SelectAllOccurrences);
+        let sels = app.active_buffer().selections();
+        // Whole-word: the "cat" inside "catalog" must NOT match.
+        assert_eq!(sels.len(), 2);
+        assert_eq!(sels[0].range(), 0..3);
+        assert_eq!(sels[1].range(), 8..11);
+    }
+
+    #[test]
+    fn select_all_occurrences_then_type_replaces_all() {
+        let mut app = app_with("cat hat cat");
+        app.active_buffer_mut().set_cursor(0);
+        app.handle_event(EditorEvent::SelectAllOccurrences);
+        assert_eq!(app.active_buffer().selections().len(), 2);
+        app.handle_event(EditorEvent::Insert('b'));
+        app.handle_event(EditorEvent::Insert('a'));
+        app.handle_event(EditorEvent::Insert('t'));
+        assert_eq!(app.active_buffer().to_bytes(), b"bat hat bat".to_vec());
+    }
+
+    #[test]
+    fn select_all_occurrences_explicit_selection_is_substring() {
+        // With an explicit selection the needle matches exactly,
+        // including inside larger words ("cat" in "catalog").
+        let mut app = app_with("cat hat catalog");
+        app.active_buffer_mut()
+            .set_selection(Selection { anchor: 0, head: 3 });
+        app.handle_event(EditorEvent::SelectAllOccurrences);
+        let sels = app.active_buffer().selections();
+        assert_eq!(sels.len(), 2);
+        assert_eq!(sels[1].range(), 8..11);
     }
 
     #[test]
