@@ -3771,6 +3771,11 @@ impl EditorApp {
 
 impl App for EditorApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Documentation self-capture mode (SKERRY_SCREENSHOT=<path>): no-op
+        // unless the env var is set.
+        #[cfg(target_os = "macos")]
+        crate::screenshot::maybe_capture_and_exit(ctx);
+
         // Apply the active GUI chrome theme before any widgets are drawn.
         self.theme.apply(ctx);
 

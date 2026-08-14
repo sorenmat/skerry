@@ -20,6 +20,8 @@ mod event;
 mod ui;
 
 #[cfg(test)]
+mod screenshot;
+#[cfg(test)]
 mod ui_tests;
 
 use app::App;

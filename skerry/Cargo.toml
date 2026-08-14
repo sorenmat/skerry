@@ -18,5 +18,10 @@ rfd = "0.15"
 lsp-types = "0.95"
 url = "2"
 
-[lints]
-workspace = true
+# The workspace denies `unsafe_code` via [workspace.lints] (command-line
+# precedence, so #[allow] in source cannot override it). This crate needs
+# one scoped exception for the macOS self-capture FFI in src/screenshot.rs.
+# Keep the crate-wide deny in src/lib.rs (`#![deny(unsafe_code)]`), which
+# source-level #[allow] in screenshot.rs can override narrowly.
+[lints.rust]
+unsafe_code = "allow"
