@@ -91,7 +91,9 @@ h1 span { color: #8290a4; }
   top: 5%;
   left: 0;
   width: 103%;
-  overflow: hidden;
+  /* Overflow visible so the floating cards anchored to the window can
+     spill past its edges; the shot rounds its own bottom corners. */
+  overflow: visible;
   border: 1px solid rgba(137, 171, 218, .27);
   border-radius: 15px;
   background: #0c121d;
@@ -105,7 +107,7 @@ h1 span { color: #8290a4; }
 .traffic-lights i, .terminal-bar i { width: 9px; height: 9px; border-radius: 50%; background: #ff5f57; }
 .traffic-lights i:nth-child(2), .terminal-bar i:nth-child(2) { background: #febc2e; }
 .traffic-lights i:nth-child(3), .terminal-bar i:nth-child(3) { background: #28c840; }
-.window-shot { display: block; width: 100%; height: auto; }
+.window-shot { display: block; width: 100%; height: auto; border-radius: 0 0 14px 14px; }
 .floating-card { position: absolute; z-index: 2; border: 1px solid var(--line-strong); background: rgba(15, 24, 37, .92); box-shadow: 0 20px 52px rgba(0,0,0,.45); backdrop-filter: blur(18px); }
 .blame-card { right: -8%; bottom: 3%; display: flex; flex-direction: column; gap: .35rem; width: 280px; padding: 1rem; border-radius: 11px; }
 .card-kicker { color: var(--cyan); font: .62rem ui-monospace, monospace; text-transform: uppercase; letter-spacing: .08em; }

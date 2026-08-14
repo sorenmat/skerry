@@ -25,8 +25,8 @@ mod tests {
     use crate::app::App;
     use crate::ui;
 
-    const WIDTH: u16 = 120;
-    const HEIGHT: u16 = 34;
+    const WIDTH: u16 = 90;
+    const HEIGHT: u16 = 30;
 
     fn color_hex(c: Color) -> String {
         match c {
