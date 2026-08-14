@@ -2838,7 +2838,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                         theme.text,
                     );
                 } else {
-                    // Walk segments, drawing each in its color.
+                    // Walk segments, drawing each in its color. Each chunk
+                    // must be offset by the width of everything before it —
+                    // painter.text doesn't advance a cursor, so drawing
+                    // every chunk at text_x stacks them on top of each
+                    // other (the garbled-selection bug).
                     let mut char_cursor = 0usize;
                     for seg in &segments {
                         let seg_lo = byte_to_char_col(&line_text, seg.range.start);
@@ -2850,8 +2854,13 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                                 .take(seg_lo - char_cursor)
                                 .collect();
                             if !gap.is_empty() {
+                                let gap_x = (text_x
+                                    + width_of(
+                                        &line_text.chars().take(char_cursor).collect::<String>(),
+                                    ))
+                                .round();
                                 painter.text(
-                                    egui::pos2(text_x, y),
+                                    egui::pos2(gap_x, y),
                                     egui::Align2::LEFT_TOP,
                                     gap,
                                     font_id.clone(),
@@ -2865,9 +2874,12 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                             .take(seg_hi - seg_lo)
                             .collect();
                         if !text.is_empty() {
+                            let seg_x = (text_x
+                                + width_of(&line_text.chars().take(seg_lo).collect::<String>()))
+                            .round();
                             let c = seg.color;
                             painter.text(
-                                egui::pos2(text_x, y),
+                                egui::pos2(seg_x, y),
                                 egui::Align2::LEFT_TOP,
                                 text,
                                 font_id.clone(),
@@ -2875,6 +2887,25 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                             );
                         }
                         char_cursor = seg_hi;
+                    }
+                    // Trailing gap after the last segment.
+                    let total_chars = line_text.chars().count();
+                    if char_cursor < total_chars {
+                        let tail: String = line_text.chars().skip(char_cursor).collect();
+                        if !tail.is_empty() {
+                            let tail_x = (text_x
+                                + width_of(
+                                    &line_text.chars().take(char_cursor).collect::<String>(),
+                                ))
+                            .round();
+                            painter.text(
+                                egui::pos2(tail_x, y),
+                                egui::Align2::LEFT_TOP,
+                                tail,
+                                font_id.clone(),
+                                theme.text,
+                            );
+                        }
                     }
                 }
             } else if match_highlights.is_empty() {
