@@ -252,7 +252,7 @@ fn compiled_query(grammar: &Grammar) -> Option<&'static Query> {
 /// Mirrors the constructors in `grammar.rs`; kept here so the highlight
 /// module owns its query compilation without grammar.rs depending on it.
 fn all_grammars() -> Vec<Grammar> {
-    use super::grammar::{c, go, javascript, json, markdown, python, rust, tsx, typescript};
+    use super::grammar::{c, go, javascript, json, markdown, python, rust, tsx, typescript, yaml};
     vec![
         rust(),
         go(),
@@ -262,6 +262,7 @@ fn all_grammars() -> Vec<Grammar> {
         python(),
         c(),
         json(),
+        yaml(),
         markdown(),
     ]
 }
@@ -430,6 +431,21 @@ mod tests {
         let (tree, g) = parse(src, "json");
         let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
         assert!(!segs.is_empty(), "json should highlight");
+    }
+
+    #[test]
+    fn highlight_yaml_keys_and_values() {
+        // Guards against the `all_grammars()` omission: the grammar must be
+        // registered *and* its query must compile into the highlighter cache,
+        // otherwise `highlight_range` silently returns an empty Vec.
+        let src = "name: skerry\nversion: 42\n";
+        let (tree, g) = parse(src, "yaml");
+        let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
+        assert!(!segs.is_empty(), "yaml should highlight");
+        for s in &segs {
+            assert!(s.range.start < s.range.end, "segment must be non-empty");
+            assert!(s.range.end <= src.len(), "segment must be in bounds");
+        }
     }
 
     #[test]
