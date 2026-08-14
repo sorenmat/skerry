@@ -177,6 +177,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::K => Some(EditorEvent::DeleteLine),
             Key::D => Some(EditorEvent::SelectNextOccurrence),
             Key::T => Some(EditorEvent::NewDoc),
+            Key::N => Some(EditorEvent::NewDoc),
             Key::O => Some(EditorEvent::OpenFile(None)),
             Key::G => Some(EditorEvent::GoToLine(None)),
             Key::P => Some(EditorEvent::FuzzyFinder(None)),
@@ -203,7 +204,9 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
 
     // Cmd/Ctrl+Shift-modified keys. Tab cycles the other direction;
     // Shift+W toggles soft-wrap (W alone is close); Shift+F opens
-    // project-wide search; Shift+P opens the command palette.
+    // project-wide search; Shift+P opens the command palette;
+    // Shift+Left/Right selects to line start/end (Shift+Up/Down stays
+    // on git-hunk navigation).
     if primary && shift {
         return match key {
             Key::Tab => Some(EditorEvent::PrevDoc),
@@ -212,9 +215,12 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::P => Some(EditorEvent::CommandPalette(None)),
             Key::S => Some(EditorEvent::SaveAs(None)),
             Key::R => Some(EditorEvent::ReloadFile),
+            Key::ArrowLeft => Some(movement(Movement::LineStart, true)),
+            Key::ArrowRight => Some(movement(Movement::LineEnd, true)),
             Key::ArrowUp => Some(EditorEvent::PrevHunk),
             Key::ArrowDown => Some(EditorEvent::NextHunk),
             Key::D => Some(EditorEvent::DuplicateLine),
+            Key::L => Some(EditorEvent::SelectAllOccurrences),
             Key::O => Some(EditorEvent::GoToSymbol),
             _ => None,
         };
@@ -250,8 +256,6 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
         Key::K if shift && !modifiers.ctrl && !modifiers.alt && !primary => {
             Some(EditorEvent::LspHover)
         }
-        Key::ArrowLeft if shift => Some(EditorEvent::ScrollLeft),
-        Key::ArrowRight if shift => Some(EditorEvent::ScrollRight),
         Key::ArrowLeft => Some(movement(Movement::Left, select)),
         Key::ArrowRight => Some(movement(Movement::Right, select)),
         Key::ArrowUp => Some(movement(Movement::Up, select)),
@@ -504,7 +508,7 @@ mod tests {
 
     #[test]
     fn shift_arrow_extends_selection() {
-        // Shift+Up / Shift+Down still extend selection.
+        // Shift+arrows extend the selection in all four directions.
         assert_eq!(
             translate_event(&key_event(Key::ArrowUp, true, shift())),
             Some(EditorEvent::SelectExtend(Movement::Up))
@@ -513,20 +517,13 @@ mod tests {
             translate_event(&key_event(Key::ArrowDown, true, shift())),
             Some(EditorEvent::SelectExtend(Movement::Down))
         );
-    }
-
-    #[test]
-    fn shift_left_right_scrolls_horizontally() {
-        // Shift+Left / Shift+Right now scroll horizontally rather
-        // than extending the selection (which was ambiguous anyway —
-        // Ctrl+Left/Right already does word-wise movement).
         assert_eq!(
             translate_event(&key_event(Key::ArrowLeft, true, shift())),
-            Some(EditorEvent::ScrollLeft)
+            Some(EditorEvent::SelectExtend(Movement::Left))
         );
         assert_eq!(
             translate_event(&key_event(Key::ArrowRight, true, shift())),
-            Some(EditorEvent::ScrollRight)
+            Some(EditorEvent::SelectExtend(Movement::Right))
         );
     }
 
@@ -747,6 +744,61 @@ mod tests {
         assert_eq!(
             translate_event(&key_event(Key::T, true, primary())),
             Some(EditorEvent::NewDoc)
+        );
+    }
+
+    #[test]
+    fn primary_n_opens_new_doc() {
+        assert_eq!(
+            translate_event(&key_event(Key::N, true, primary())),
+            Some(EditorEvent::NewDoc)
+        );
+    }
+
+    #[test]
+    fn primary_shift_l_selects_all_occurrences() {
+        let mods = Modifiers {
+            shift: true,
+            ..primary()
+        };
+        assert_eq!(
+            translate_event(&key_event(Key::L, true, mods)),
+            Some(EditorEvent::SelectAllOccurrences)
+        );
+    }
+
+    #[test]
+    fn primary_shift_left_right_selects_to_line_edges() {
+        let mods = Modifiers {
+            shift: true,
+            ..primary()
+        };
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowLeft, true, mods.clone())),
+            Some(EditorEvent::SelectExtend(Movement::LineStart))
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowRight, true, mods)),
+            Some(EditorEvent::SelectExtend(Movement::LineEnd))
+        );
+    }
+
+    #[test]
+    fn primary_shift_up_down_stay_on_hunk_navigation() {
+        // Shift+Up/Down with the primary modifier is git-hunk
+        // navigation, not selection — select-to-line-edge is on
+        // Left/Right only.
+        let mods = Modifiers {
+            shift: true,
+            ..primary()
+        };
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowUp, true, mods.clone())),
+            Some(EditorEvent::PrevHunk)
+        );
+        assert_eq!(
+            translate_event(&key_event(Key::ArrowDown, true, mods)),
+            Some(EditorEvent::NextHunk)
         );
     }
 

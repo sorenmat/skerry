@@ -121,6 +121,15 @@ pub(crate) fn json() -> Grammar {
     }
 }
 
+pub(crate) fn yaml() -> Grammar {
+    Grammar {
+        name: "yaml",
+        language: tree_sitter_yaml::LANGUAGE.into(),
+        highlights_query: tree_sitter_yaml::HIGHLIGHTS_QUERY,
+        inline: None,
+    }
+}
+
 pub(crate) fn markdown() -> Grammar {
     Grammar {
         name: "markdown",
@@ -170,6 +179,8 @@ pub fn grammar_for_extension(ext: &str) -> Option<Grammar> {
             ("hpp", c),
             ("json", json),
             ("jsonc", json),
+            ("yaml", yaml),
+            ("yml", yaml),
             ("md", markdown),
             ("markdown", markdown),
         ]
@@ -196,7 +207,8 @@ mod tests {
     #[test]
     fn known_extensions_resolve() {
         for ext in [
-            "rs", "go", "js", "ts", "tsx", "py", "c", "cpp", "json", "md", "markdown",
+            "rs", "go", "js", "ts", "tsx", "py", "c", "cpp", "json", "yaml", "yml", "md",
+            "markdown",
         ] {
             let g = grammar_for_extension(ext);
             assert!(g.is_some(), "extension .{ext} should resolve to a grammar");

@@ -19,8 +19,8 @@ pub type BytePos = usize;
 
 /// A range selection on the `Buffer` — anchor and head, both byte offsets.
 ///
-/// `anchor == head` means collapsed (cursor only, no range). Single selection
-/// only in v0.1; multi-cursor is deferred.
+/// `anchor == head` means collapsed (cursor only, no range). A buffer holds
+/// a list of selections (multi-cursor); element 0 is the primary.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     /// Where the selection started (byte offset).

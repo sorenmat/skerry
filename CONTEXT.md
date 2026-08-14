@@ -59,7 +59,7 @@ It can combine a Git change marker, inline Git blame ownership, and an LSP
 diagnostic stripe. In the GUI, gutter hover expands every annotation affecting
 that row into one tooltip; it does not issue a new LSP hover request.
 
-**Selection**: A range on the `Buffer` represented as `Selection { anchor: usize, head: usize }`, both UTF-8 byte offsets. Single selection in v0.1; multi-cursor deferred.
+**Selection**: A range on the `Buffer` represented as `Selection { anchor: usize, head: usize }`, both UTF-8 byte offsets. A buffer holds a list of selections (multi-cursor); element 0 is the primary used for status, LSP, and scrolling.
 
 **Workload (Mixed)**: The editor must handle source files (1KB–100KB) and multi-GB files in the same session with no mode switch. Optimised for the common (small-file) case without breaking the tail.
 

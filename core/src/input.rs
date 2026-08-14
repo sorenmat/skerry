@@ -148,6 +148,10 @@ pub enum EditorEvent {
     /// Select the next occurrence of the current word/selection (multi-
     /// cursor). Adds a cursor at the next match.
     SelectNextOccurrence,
+    /// Select every occurrence of the current word/selection at once
+    /// (multi-cursor). Replaces the selection list with one selection
+    /// per match. Default binding: Cmd/Ctrl+Shift+L.
+    SelectAllOccurrences,
     /// Select all text in the document.
     SelectAll,
     /// Toggle line comments on the selected lines.
@@ -443,6 +447,7 @@ mod tests {
             to_col: 0,
         };
         let _ = EditorEvent::SelectNextOccurrence;
+        let _ = EditorEvent::SelectAllOccurrences;
         let _ = EditorEvent::SelectAll;
         let _ = EditorEvent::ToggleComment;
         let _ = EditorEvent::CollapseCursors;

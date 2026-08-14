@@ -79,3 +79,8 @@ cargo run -p skerry-tui -- path/to/file
 
 See [features.md](features.md) for the implemented feature set and
 [CONTEXT.md](CONTEXT.md) for the architecture and shared terminology.
+
+## Contributing
+
+To add syntax highlighting and LSP support for a new file type, see
+[docs/adding-a-language.md](docs/adding-a-language.md).

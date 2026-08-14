@@ -422,6 +422,7 @@ fn language_id_from_extension(ext: &str) -> Option<&'static str> {
         "cpp" | "cc" | "cxx" | "hpp" => Some("cpp"),
         "h" => Some("c"),
         "json" => Some("json"),
+        "yaml" | "yml" => Some("yaml"),
         "toml" => Some("toml"),
         "md" | "markdown" => Some("markdown"),
         "csv" => Some("csv"),
