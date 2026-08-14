@@ -236,6 +236,9 @@ Skerry/
 
 - **Arrow keys** — char-wise movement. Shift+Arrow extends the
   selection in all four directions.
+- **Select to line start / end** (Cmd/Ctrl+Shift+Left / Right) —
+  Shift+Home / Shift+End extend there as well. Shift+Up/Down with the
+  primary modifier stays on git-hunk navigation.
 - **Word movement** (Ctrl+Left / Ctrl+Right) — Ctrl+Arrow on TUI;
   plain Ctrl+Arrow on GUI is the same word-move event.
 - **Line start / end** (Home / End).

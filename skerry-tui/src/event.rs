@@ -289,7 +289,8 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
 
     // Ctrl+Shift-modified keys. Tab cycles the other direction; Shift+W
     // toggles soft-wrap (W alone is close); Shift+F opens project search;
-    // Shift+P opens the command palette.
+    // Shift+P opens the command palette; Shift+Left/Right selects to line
+    // start/end (Shift+Up/Down stays on git-hunk navigation).
     if ctrl && shift {
         return match key.code {
             KeyCode::Tab => Some(EditorEvent::PrevDoc),
@@ -298,6 +299,8 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('P') => Some(EditorEvent::CommandPalette(None)),
             KeyCode::Char('S') => Some(EditorEvent::SaveAs(None)),
             KeyCode::Char('R') => Some(EditorEvent::ReloadFile),
+            KeyCode::Left => Some(movement(Movement::LineStart, true)),
+            KeyCode::Right => Some(movement(Movement::LineEnd, true)),
             KeyCode::Up => Some(EditorEvent::PrevHunk),
             KeyCode::Down => Some(EditorEvent::NextHunk),
             KeyCode::Char('D') => Some(EditorEvent::DuplicateLine),
@@ -553,6 +556,20 @@ mod tests {
         assert_eq!(
             translate_key(ev, None),
             Some(EditorEvent::SelectAllOccurrences)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_left_right_selects_to_line_edges() {
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(
+            translate_key(left, None),
+            Some(EditorEvent::SelectExtend(Movement::LineStart))
+        );
+        assert_eq!(
+            translate_key(right, None),
+            Some(EditorEvent::SelectExtend(Movement::LineEnd))
         );
     }
 
