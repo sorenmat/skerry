@@ -98,33 +98,14 @@ h1 span { color: #8290a4; }
   box-shadow: 0 42px 90px rgba(0,0,0,.48), inset 0 1px rgba(255,255,255,.05);
   transform: rotateY(-4deg) rotateX(2deg);
 }
-.window-bar, .tab-row, .editor-status { display: flex; align-items: center; }
-.window-bar { height: 42px; padding: 0 .8rem; border-bottom: 1px solid var(--line); background: #121a27; color: var(--muted); font-size: .73rem; }
+.window-bar { display: flex; align-items: center; height: 42px; padding: 0 .8rem; border-bottom: 1px solid var(--line); background: #121a27; color: var(--muted); font-size: .73rem; }
 .window-bar > span:nth-child(2) { margin: auto; }
 .window-mode { font: 600 .63rem ui-monospace, monospace; letter-spacing: .08em; }
 .traffic-lights { display: flex; gap: 6px; }
 .traffic-lights i, .terminal-bar i { width: 9px; height: 9px; border-radius: 50%; background: #ff5f57; }
 .traffic-lights i:nth-child(2), .terminal-bar i:nth-child(2) { background: #febc2e; }
 .traffic-lights i:nth-child(3), .terminal-bar i:nth-child(3) { background: #28c840; }
-.editor-body { display: grid; grid-template-columns: 150px 1fr; min-height: 440px; }
-.file-tree { display: flex; flex-direction: column; gap: .58rem; padding: 1.05rem .65rem; border-right: 1px solid var(--line); background: #0e1521; color: #8e9bae; font: .69rem ui-monospace, SFMono-Regular, Menlo, monospace; }
-.file-tree strong { color: #dce5ef; }
-.tree-file { padding-left: 1.1rem; }
-.tree-file.selected { margin-left: -.35rem; padding: .3rem .35rem .3rem 1.45rem; border-radius: 5px; background: rgba(54, 137, 239, .25); color: #e8f2ff; }
-.code-pane { min-width: 0; }
-.tab-row { height: 34px; gap: 1.5rem; padding: 0 .9rem; border-bottom: 1px solid var(--line); color: #d7e1ed; font: .68rem ui-monospace, monospace; }
-.tab-dim { color: #647288; }
-.code-lines { padding: 1rem 0; font: .76rem/1.85 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.code-lines > span { position: relative; display: grid; grid-template-columns: 35px 1fr; min-height: 1.85em; padding-right: 1rem; }
-.code-lines b { color: #48566b; text-align: right; padding-right: 12px; font-weight: 400; user-select: none; }
-.code-lines code { color: #d6dee9; white-space: pre; }
-.code-lines em { color: #c792ea; font-style: normal; }
-.code-lines strong { color: #80cbc4; font-weight: 500; }
-.code-lines mark { background: none; color: #82aaff; }
-.code-lines .comment { color: #62738a; }
-.code-lines .active-line { background: rgba(97, 120, 151, .10); }
-.git-mark { position: absolute; left: 1px; top: 4px; width: 3px; height: calc(100% - 8px); border-radius: 3px; background: var(--yellow); }
-.editor-status { justify-content: space-between; height: 29px; margin-top: 2rem; padding: 0 .8rem; border-top: 1px solid var(--line); background: #101824; color: #75849a; font: .63rem ui-monospace, monospace; }
+.window-shot { display: block; width: 100%; height: auto; }
 .floating-card { position: absolute; z-index: 2; border: 1px solid var(--line-strong); background: rgba(15, 24, 37, .92); box-shadow: 0 20px 52px rgba(0,0,0,.45); backdrop-filter: blur(18px); }
 .blame-card { right: -8%; bottom: 3%; display: flex; flex-direction: column; gap: .35rem; width: 280px; padding: 1rem; border-radius: 11px; }
 .card-kicker { color: var(--cyan); font: .62rem ui-monospace, monospace; text-transform: uppercase; letter-spacing: .08em; }
@@ -153,11 +134,7 @@ h1 span { color: #8290a4; }
 .terminal-bar { display: flex; gap: 6px; align-items: center; height: 34px; padding: 0 .75rem; border-bottom: 1px solid var(--line); background: #111927; }
 .terminal-bar i { width: 7px; height: 7px; }
 .terminal-bar span { margin-left: auto; color: #66758a; font: .6rem ui-monospace, monospace; }
-.terminal-demo pre { margin: 0; padding: 1.1rem; color: #d5dfeb; font: .72rem/1.8 ui-monospace, monospace; }
-.prompt, .green { color: var(--green); }
-.dim { color: #536178; }
-.blue { color: #82aaff; }
-.statusline { display: block; margin: 1rem -1.1rem -1.1rem; padding: .15rem .6rem; background: #1e6d96; color: white; }
+.terminal-shot { display: block; width: 100%; height: auto; }
 .mode-stack { display: grid; gap: .55rem; max-width: 250px; margin-top: 3.6rem; }
 .mode-stack span, .view-switcher span { padding: .65rem .8rem; border: 1px solid var(--line); border-radius: 7px; color: #67768c; font: .65rem ui-monospace, monospace; }
 .mode-stack span.active, .view-switcher span.active { border-color: rgba(67,166,255,.55); background: rgba(43, 127, 229, .18); color: #dcecff; box-shadow: 0 0 28px rgba(43,127,229,.12); }

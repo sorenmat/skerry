@@ -78,41 +78,19 @@
             <div class="window-bar">
               <div class="traffic-lights" aria-hidden="true"><i></i><i></i><i></i></div>
               <span>Skerry</span>
-              <span class="window-mode">VIM NORMAL</span>
+              <span class="window-mode">STANDARD</span>
             </div>
-            <div class="editor-body">
-              <aside class="file-tree" aria-label="Project files">
-                <strong>⌄ skerry</strong>
-                <span>⌄ core</span>
-                <span class="tree-file selected">keymap.rs</span>
-                <span class="tree-file">buffer.rs</span>
-                <span class="tree-file">document.rs</span>
-                <span>⌄ skerry</span>
-                <span class="tree-file">ui.rs</span>
-                <span class="tree-file">theme.rs</span>
-                <span>› docs</span>
-              </aside>
-              <div class="code-pane" aria-label="Rust source preview">
-                <div class="tab-row"><span>keymap.rs</span><span class="tab-dim">features.md</span></div>
-                <div class="code-lines" aria-hidden="true">
-                  <span><b>1</b><code><em>pub enum</em> <strong>KeybindingMode</strong> {</code></span>
-                  <span><b>2</b><code>    Standard,</code></span>
-                  <span><b>3</b><code>    Vim,</code></span>
-                  <span><b>4</b><code>    Emacs,</code></span>
-                  <span><b>5</b><code>}</code></span>
-                  <span><b>6</b><code></code></span>
-                  <span class="active-line"><b>7</b><i class="git-mark"></i><code><em>impl</em> <strong>KeymapState</strong> {</code></span>
-                  <span><b>8</b><code>    <em>pub fn</em> <mark>status</mark>(&amp;<em>self</em>) -&gt; String {</code></span>
-                  <span><b>9</b><code>        <span class="comment">// One engine, both frontends.</span></code></span>
-                  <span><b>10</b><code>        <em>self</em>.mode.label()</code></span>
-                  <span><b>11</b><code>    }</code></span>
-                  <span><b>12</b><code>}</code></span>
-                </div>
-                <div class="editor-status">
-                  <span>Ocean Dark</span><span>Rust · L7:5</span><span>⚙</span>
-                </div>
-              </div>
-            </div>
+            <picture>
+              <source srcset="skerry-gui-hero.webp" type="image/webp" />
+              <img
+                class="window-shot"
+                src="skerry-gui-hero.png"
+                alt="Skerry GUI editing keymap.rs: project tree, syntax-highlighted Rust, line numbers, LSP status bar"
+                width="1600"
+                height="1070"
+                loading="lazy"
+              />
+            </picture>
           </div>
           <div class="floating-card blame-card">
             <span class="card-kicker">Git blame · 2d</span>
@@ -145,13 +123,19 @@
               Both frontends use the same piece-table buffer, commands, search, undo,
               keymaps, and document state. Move between them without relearning the editor.
             </p>
-            <div class="terminal-demo" aria-label="Terminal example">
+            <div class="terminal-demo" aria-label="Skerry TUI session">
               <div class="terminal-bar"><i></i><i></i><i></i><span>skerry-tui</span></div>
-              <pre><span class="prompt">~</span> sky Cargo.toml
-<span class="dim">  8 │</span> <span class="blue">[workspace.package]</span>
-<span class="dim">  9 │</span> version = <span class="green">"0.1.7"</span>
-<span class="dim"> 10 │</span> edition = <span class="green">"2021"</span>
-<span class="statusline"> EMACS                              L10:19 </span></pre>
+              <picture>
+                <source srcset="skerry-tui.webp" type="image/webp" />
+                <img
+                  class="terminal-shot"
+                  src="skerry-tui.png"
+                  alt="skerry-tui editing keymap.rs: project tree, tabs, syntax highlighting, and a status bar"
+                  width="1400"
+                  height="1048"
+                  loading="lazy"
+                />
+              </picture>
             </div>
           </article>
 
