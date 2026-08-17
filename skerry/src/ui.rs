@@ -2960,78 +2960,55 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                         theme.text,
                     );
                 } else {
-                    // Walk segments left-to-right, drawing each
-                    // in its theme color. Since segments
-                    // cover the entire line (no gaps), we just
-                    // draw each one sequentially.
-                    let mut char_cursor = 0usize;
+                    // Batch the whole line into ONE LayoutJob: a single
+                    // galley (cached by egui across frames) instead of
+                    // one painter.text call per segment. Syntax-dense
+                    // lines (e.g. minified JSON) produce hundreds of
+                    // segments; drawing each separately cost tens of ms
+                    // per frame and made large files unusable.
+                    let mut job = egui::text::LayoutJob::default();
+                    let mut byte_cursor = 0usize;
                     for seg in &segments {
-                        let seg_lo = byte_to_char_col(&line_text, seg.range.start);
-                        let seg_hi = byte_to_char_col(&line_text, seg.range.end);
-                        // Draw gap before this segment (shouldn't
-                        // happen — segments cover the full line —
-                        // but kept as a safety net).
-                        if seg_lo > char_cursor {
-                            let gap: String = line_text
-                                .chars()
-                                .skip(char_cursor)
-                                .take(seg_lo - char_cursor)
-                                .collect();
-                            if !gap.is_empty() {
-                                let gap_x = (text_x
-                                    + width_of(
-                                        &line_text.chars().take(char_cursor).collect::<String>(),
-                                    ))
-                                .round();
-                                painter.text(
-                                    egui::pos2(gap_x, y),
-                                    egui::Align2::LEFT_TOP,
-                                    gap,
-                                    font_id.clone(),
-                                    theme.text,
-                                );
-                            }
+                        let seg_start = seg.range.start.min(line_text.len());
+                        let seg_end = seg.range.end.min(line_text.len());
+                        if seg_start > byte_cursor {
+                            job.append(
+                                &line_text[byte_cursor..seg_start],
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: font_id.clone(),
+                                    color: theme.text,
+                                    ..Default::default()
+                                },
+                            );
                         }
-                        // Draw the colored segment.
-                        let text: String = line_text
-                            .chars()
-                            .skip(seg_lo)
-                            .take(seg_hi - seg_lo)
-                            .collect();
-                        if !text.is_empty() {
-                            let seg_x = (text_x
-                                + width_of(&line_text.chars().take(seg_lo).collect::<String>()))
-                            .round();
+                        if seg_end > seg_start {
                             let c = seg.color;
-                            painter.text(
-                                egui::pos2(seg_x, y),
-                                egui::Align2::LEFT_TOP,
-                                text,
-                                font_id.clone(),
-                                egui::Color32::from_rgb(c.r, c.g, c.b),
+                            job.append(
+                                &line_text[seg_start..seg_end],
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: font_id.clone(),
+                                    color: egui::Color32::from_rgb(c.r, c.g, c.b),
+                                    ..Default::default()
+                                },
                             );
-                        }
-                        char_cursor = seg_hi;
-                    }
-                    // Trailing gap after last segment.
-                    let total_chars = line_text.chars().count();
-                    if char_cursor < total_chars {
-                        let tail: String = line_text.chars().skip(char_cursor).collect();
-                        if !tail.is_empty() {
-                            let tail_x = (text_x
-                                + width_of(
-                                    &line_text.chars().take(char_cursor).collect::<String>(),
-                                ))
-                            .round();
-                            painter.text(
-                                egui::pos2(tail_x, y),
-                                egui::Align2::LEFT_TOP,
-                                tail,
-                                font_id.clone(),
-                                theme.text,
-                            );
+                            byte_cursor = seg_end;
                         }
                     }
+                    if byte_cursor < line_text.len() {
+                        job.append(
+                            &line_text[byte_cursor..],
+                            0.0,
+                            egui::TextFormat {
+                                font_id: font_id.clone(),
+                                color: theme.text,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    let galley = ui.fonts(|f| f.layout_job(job));
+                    painter.galley(egui::pos2(text_x, y), galley, theme.text);
                 }
             } else {
                 // Multi-match highlights. Walk the line text

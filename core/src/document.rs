@@ -153,6 +153,11 @@ pub struct Document {
     pub git_blame: crate::GitBlame,
     /// Per-document code-fold state (which ranges are folded).
     pub folds: crate::FoldState,
+    /// Memoized full-text copy of the buffer, keyed by buffer revision.
+    /// Tree-sitter queries and incremental reparses need contiguous
+    /// bytes, and the renderer issues one highlight query per visible
+    /// line — without this cache each query paid a full-document memcpy.
+    source_cache: Option<(u64, std::sync::Arc<Vec<u8>>)>,
 }
 
 impl Document {
@@ -180,6 +185,7 @@ impl Document {
             git_gutter: crate::GitGutter::new(),
             git_blame: crate::GitBlame::new(),
             folds: crate::FoldState::new(),
+            source_cache: None,
         };
         doc.init_ts_tree();
         if doc.path().is_some() {
@@ -223,10 +229,28 @@ impl Document {
         let Some(mut tree) = crate::ts::DocTree::new(grammar) else {
             return;
         };
-        // to_bytes allocates the full buffer; acceptable for the one-time
-        // initial parse. Incremental updates avoid it.
-        tree.parse(&self.buffer.to_bytes());
+        // Fill the source cache with the parse copy so the first batch
+        // of highlight queries reuses it instead of re-copying.
+        let source = self.source_bytes();
+        tree.parse(&source);
         self.ts_tree = Some(tree);
+    }
+
+    /// The full buffer contents as one contiguous byte string, memoized
+    /// on the buffer revision. The piece table can be scattered across
+    /// pieces (especially after edits to a memmapped file), so repeated
+    /// `to_bytes` calls are full-document copies; tree-sitter needs a
+    /// contiguous slice, so callers share this cached copy.
+    fn source_bytes(&mut self) -> std::sync::Arc<Vec<u8>> {
+        let rev = self.buffer.revision();
+        if let Some((cached_rev, bytes)) = &self.source_cache {
+            if *cached_rev == rev {
+                return bytes.clone();
+            }
+        }
+        let bytes = std::sync::Arc::new(self.buffer.to_bytes());
+        self.source_cache = Some((rev, bytes.clone()));
+        bytes
     }
 
     /// Apply a buffer edit to the parse tree and re-parse incrementally.
@@ -234,11 +258,14 @@ impl Document {
     /// delta that describes the change in the coordinates of the
     /// pre-edit buffer. No-op when the document has no tree-sitter tree.
     pub fn apply_ts_edit(&mut self, delta: crate::ts::EditDelta) {
-        if let Some(tree) = self.ts_tree.as_mut() {
-            // to_bytes after the edit: the tree-sitter parser needs the
-            // post-edit source. The incremental edit has already shifted
-            // the old tree, so re-parsing reuses unchanged nodes.
-            tree.apply_edit(delta, &self.buffer.to_bytes());
+        if self.ts_tree.is_some() {
+            // The tree-sitter parser needs the post-edit source. The
+            // incremental edit has already shifted the old tree, so
+            // re-parsing reuses unchanged nodes.
+            let source = self.source_bytes();
+            if let Some(tree) = self.ts_tree.as_mut() {
+                tree.apply_edit(delta, &source);
+            }
         }
     }
 
@@ -256,7 +283,7 @@ impl Document {
     /// One query for the viewport is cheaper than one-per-line and is how
     /// tree-sitter queries are meant to be used.
     pub fn highlight_lines_ts(
-        &self,
+        &mut self,
         start_line: usize,
         end_line: usize,
         theme: &crate::ts::TsTheme,
@@ -264,9 +291,6 @@ impl Document {
         let count = end_line.saturating_sub(start_line);
         let mut per_line = vec![Vec::new(); count];
 
-        let Some(tree) = self.ts_tree.as_ref() else {
-            return (per_line, true);
-        };
         let Some(grammar) = crate::ts::grammar_for_path(self.path()) else {
             return (per_line, true);
         };
@@ -282,7 +306,10 @@ impl Document {
             .line_byte_range(end_line)
             .map(|r| r.end)
             .unwrap_or_else(|| self.buffer.len());
-        let source = self.buffer.to_bytes();
+        let source = self.source_bytes();
+        let Some(tree) = self.ts_tree.as_ref() else {
+            return (per_line, true);
+        };
         let result = crate::ts::highlight_doc_range(
             tree,
             &grammar,
