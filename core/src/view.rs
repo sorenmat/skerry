@@ -252,6 +252,62 @@ pub fn matching_open(ch: char) -> Option<char> {
     }
 }
 
+/// What to do when the user types `ch` at a collapsed cursor. Returned by
+/// [`auto_pair_action`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoPairAction {
+    /// Insert `ch` together with the given closer, cursor between them.
+    Pair(char),
+    /// The identical char is already after the cursor and the context
+    /// reads as closing — move past it without inserting anything.
+    SkipOver,
+    /// Insert `ch` on its own, with no pairing.
+    Plain,
+}
+
+/// Decide how a typed character should be inserted with respect to
+/// auto-pairing. Brackets always pair (and closers always skip over an
+/// identical following char). Quotes are ambiguous — the same character
+/// opens and closes — so they use word-context heuristics:
+///
+/// - skip over a following identical quote only when the char before the
+///   cursor suggests closing intent (a word char or the same quote);
+/// - never pair directly before or after a word char, so typing `'` in
+///   `don|t` or `"` around existing text inserts a single quote;
+/// - typing a quote right before an existing quote (opening intent)
+///   inserts a single quote rather than swallowing the keystroke.
+pub fn auto_pair_action(buffer: &dyn Buffer, pos: usize, ch: char) -> AutoPairAction {
+    let is_quote = ch == '"' || ch == '\'';
+    let before = char_before(buffer, pos);
+    let after = char_after(buffer, pos);
+
+    if matching_open(ch).is_some() && after == Some(ch) {
+        if is_quote {
+            let closing_intent =
+                before == Some(ch) || before.is_some_and(|c| c.is_alphanumeric());
+            return if closing_intent {
+                AutoPairAction::SkipOver
+            } else {
+                AutoPairAction::Plain
+            };
+        }
+        return AutoPairAction::SkipOver;
+    }
+    if let Some(close) = matching_close(ch) {
+        if is_quote {
+            let next_to_word = [before, after]
+                .into_iter()
+                .flatten()
+                .any(|c| c.is_alphanumeric());
+            if next_to_word || after == Some(ch) {
+                return AutoPairAction::Plain;
+            }
+        }
+        return AutoPairAction::Pair(close);
+    }
+    AutoPairAction::Plain
+}
+
 /// The character immediately before the cursor, if any. Handles UTF-8
 /// boundaries by walking left to the previous char start.
 pub fn char_before(buffer: &dyn Buffer, pos: usize) -> Option<char> {

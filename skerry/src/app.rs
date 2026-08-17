@@ -1244,21 +1244,21 @@ impl EditorApp {
                     && self.active_buffer().selection().is_collapsed();
                 if single_cursor {
                     let pos = self.active_buffer().cursor();
-                    // Skip-over: typing ')' when ')' is already next.
-                    if let Some(open) = core::matching_open(ch) {
-                        let _ = open;
-                        if core::char_after(self.active_buffer(), pos) == Some(ch) {
+                    match core::auto_pair_action(self.active_buffer(), pos, ch) {
+                        // Skip-over: typing ')' when ')' is already next.
+                        core::AutoPairAction::SkipOver => {
                             let new_pos = core::move_right_by_char(self.active_buffer(), pos);
                             self.active_buffer_mut().set_cursor(new_pos);
                             self.active_buffer_mut()
                                 .set_selection(Selection::collapsed(new_pos));
                             return;
                         }
-                    }
-                    // Auto-pair: typing '(' inserts '()'.
-                    if let Some(close) = core::matching_close(ch) {
-                        self.insert_paired(ch, close);
-                        return;
+                        // Auto-pair: typing '(' inserts '()'.
+                        core::AutoPairAction::Pair(close) => {
+                            self.insert_paired(ch, close);
+                            return;
+                        }
+                        core::AutoPairAction::Plain => {}
                     }
                 }
                 // Auto-indent: pressing Enter copies the current line's
@@ -2144,11 +2144,11 @@ impl EditorApp {
     fn insert_paired(&mut self, open: char, close: char) {
         let pos = self.active_buffer().cursor();
         let pair: String = format!("{open}{close}");
-        if self.active_buffer_mut().insert(pos, &pair).is_ok() {
-            // Cursor lands after the pair (after `close`); move it back
-            // one char so it sits between `open` and `close`.
-            let between =
-                core::move_left_by_char(self.active_buffer(), self.active_buffer().cursor());
+        // `insert` returns the position after the pair but does not move
+        // the cursor, so step back one char from the returned position to
+        // land between `open` and `close`.
+        if let Ok(after_pair) = self.active_buffer_mut().insert(pos, &pair) {
+            let between = core::move_left_by_char(self.active_buffer(), after_pair);
             self.active_buffer_mut().set_cursor(between);
             self.active_buffer_mut()
                 .set_selection(Selection::collapsed(between));
@@ -6107,5 +6107,78 @@ mod tests {
             ),
             Some(EditorEvent::FindPrev)
         );
+    }
+
+    #[test]
+    fn quote_pairs_in_empty_buffer() {
+        let mut app = app_with("");
+        app.handle_event(EditorEvent::Insert('"'));
+        assert_eq!(app.active_buffer().to_bytes(), b"\"\"".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 1);
+    }
+
+    #[test]
+    fn typing_closing_quote_skips_over_paired_quote() {
+        let mut app = app_with("");
+        app.handle_event(EditorEvent::Insert('"'));
+        app.handle_event(EditorEvent::Insert('"'));
+        assert_eq!(app.active_buffer().to_bytes(), b"\"\"".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 2);
+    }
+
+    #[test]
+    fn quote_pairs_inside_brackets() {
+        let mut app = app_with("()");
+        app.active_buffer_mut().set_cursor(1);
+        app.handle_event(EditorEvent::Insert('"'));
+        assert_eq!(app.active_buffer().to_bytes(), b"(\"\")".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 2);
+    }
+
+    #[test]
+    fn quote_after_word_char_does_not_pair() {
+        let mut app = app_with("foo");
+        app.active_buffer_mut().set_cursor(3);
+        app.handle_event(EditorEvent::Insert('"'));
+        assert_eq!(app.active_buffer().to_bytes(), b"foo\"".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 4);
+    }
+
+    #[test]
+    fn apostrophe_inside_word_does_not_pair() {
+        let mut app = app_with("dont");
+        app.active_buffer_mut().set_cursor(3);
+        app.handle_event(EditorEvent::Insert('\''));
+        assert_eq!(app.active_buffer().to_bytes(), b"don't".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 4);
+    }
+
+    #[test]
+    fn quote_before_word_char_does_not_pair() {
+        let mut app = app_with("foo");
+        app.active_buffer_mut().set_cursor(0);
+        app.handle_event(EditorEvent::Insert('"'));
+        assert_eq!(app.active_buffer().to_bytes(), b"\"foo".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 1);
+    }
+
+    #[test]
+    fn quote_before_existing_quote_is_not_swallowed() {
+        let mut app = app_with("\"foo\"");
+        app.active_buffer_mut().set_cursor(0);
+        app.handle_event(EditorEvent::Insert('"'));
+        assert_eq!(app.active_buffer().to_bytes(), b"\"\"foo\"".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 1);
+    }
+
+    #[test]
+    fn brackets_still_pair_and_skip_over() {
+        let mut app = app_with("");
+        app.handle_event(EditorEvent::Insert('('));
+        assert_eq!(app.active_buffer().to_bytes(), b"()".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 1);
+        app.handle_event(EditorEvent::Insert(')'));
+        assert_eq!(app.active_buffer().to_bytes(), b"()".to_vec());
+        assert_eq!(app.active_buffer().cursor(), 2);
     }
 }
