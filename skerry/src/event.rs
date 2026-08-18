@@ -299,35 +299,46 @@ pub enum ClipboardAction {
 /// Returns `None` for plain text input, paste events, or non-clipboard
 /// keys — those go through `translate_event` as usual.
 ///
+/// egui-winit intercepts the platform copy/cut shortcuts (Cmd/Ctrl+C/X)
+/// before delivering them and emits [`Event::Copy`] / [`Event::Cut`]
+/// in place of the raw key events, so in practice copy and cut arrive
+/// in that form. The raw `Key::C` / `Key::X` patterns below are kept
+/// for backends and tests that deliver key events directly.
+///
 /// `Paste` events are translated to `EditorEvent::Paste` directly, so
 /// they never reach this function in practice (they're handled by
 /// `translate_event`); included here for completeness if a caller wants
 /// to inspect clipboard-related events independently.
 pub fn classify_clipboard_event(event: &Event, buffer: &dyn Buffer) -> Option<ClipboardAction> {
-    let Event::Key {
-        key,
-        pressed: true,
-        modifiers,
-        ..
-    } = event
-    else {
-        return None;
+    let want_cut = match event {
+        Event::Copy => false,
+        Event::Cut => true,
+        Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } => {
+            if !is_primary_modifier(modifiers) || modifiers.shift {
+                return None;
+            }
+            match key {
+                Key::C => false,
+                Key::X => true,
+                _ => return None,
+            }
+        }
+        _ => return None,
     };
-    if !is_primary_modifier(modifiers) || modifiers.shift {
-        return None;
-    }
-    if *key != Key::C && *key != Key::X {
-        return None;
-    }
     let sel: Selection = buffer.selection();
     if sel.is_collapsed() {
         return None;
     }
     let text = buffer.slice(sel.range())?;
-    if *key == Key::C {
-        Some(ClipboardAction::Copy(text))
-    } else {
+    if want_cut {
         Some(ClipboardAction::Cut(text))
+    } else {
+        Some(ClipboardAction::Copy(text))
     }
 }
 
@@ -735,6 +746,31 @@ mod tests {
         let mut buf = buffer_with("hello");
         buf.set_selection(Selection { anchor: 0, head: 5 });
         assert!(classify_clipboard_event(&Event::Paste("x".into()), &buf).is_none());
+    }
+
+    #[test]
+    fn egui_copy_event_with_selection_returns_copy_action() {
+        // egui-winit intercepts Cmd/Ctrl+C and emits Event::Copy instead
+        // of the raw key event — this is the form copy arrives in.
+        let mut buf = buffer_with("hello world");
+        buf.set_selection(Selection { anchor: 0, head: 5 });
+        let action = classify_clipboard_event(&Event::Copy, &buf);
+        assert_eq!(action, Some(ClipboardAction::Copy("hello".to_string())));
+    }
+
+    #[test]
+    fn egui_cut_event_with_selection_returns_cut_action() {
+        let mut buf = buffer_with("hello world");
+        buf.set_selection(Selection { anchor: 0, head: 5 });
+        let action = classify_clipboard_event(&Event::Cut, &buf);
+        assert_eq!(action, Some(ClipboardAction::Cut("hello".to_string())));
+    }
+
+    #[test]
+    fn egui_copy_event_without_selection_returns_none() {
+        let buf = buffer_with("hello");
+        assert!(classify_clipboard_event(&Event::Copy, &buf).is_none());
+        assert!(classify_clipboard_event(&Event::Cut, &buf).is_none());
     }
 
     // ----- multi-buffer key bindings -----
