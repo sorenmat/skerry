@@ -149,6 +149,8 @@ pub struct EditorApp {
     /// Command palette state.
     pub command_palette: CommandPalette,
     pub symbol_picker: SymbolPicker,
+    /// LSP code-action (quick fix) picker state.
+    pub code_action_picker: CodeActionPicker,
     /// LSP completion popup state.
     pub lsp_completion: LspCompletionState,
     /// LSP hover tooltip state.
@@ -245,6 +247,19 @@ pub struct SymbolPicker {
     pub items: Vec<lsp_types::DocumentSymbol>,
     pub filtered: Vec<usize>,
     pub selected: usize,
+}
+
+/// State for the LSP code-action (quick fix) picker.
+#[derive(Debug, Clone, Default)]
+pub struct CodeActionPicker {
+    /// Whether the picker window is visible.
+    pub open: bool,
+    /// Actions from the language server (empty while pending).
+    pub items: Vec<lsp_types::CodeActionOrCommand>,
+    /// Index of the selected item.
+    pub selected: usize,
+    /// True when a request has been fired but no response has arrived.
+    pub pending: bool,
 }
 
 /// State for the LSP completion popup.
@@ -385,6 +400,7 @@ impl EditorApp {
             fuzzy_finder: FuzzyFinder::default(),
             command_palette: CommandPalette::default(),
             symbol_picker: SymbolPicker::default(),
+            code_action_picker: CodeActionPicker::default(),
             lsp_completion: LspCompletionState::default(),
             lsp_hover: LspHoverState::default(),
             lsp_definition: LspDefinitionState::default(),
@@ -770,6 +786,7 @@ impl EditorApp {
             || self.command_palette.open
             || self.project_search.open
             || self.symbol_picker.open
+            || self.code_action_picker.open
             || self.search.bar_open
             || self.search.replace_bar_open
             || self.rename_dialog.is_some()
@@ -853,6 +870,36 @@ impl EditorApp {
                         crate::event::classify_clipboard_event(event, self.active_buffer())
                     {
                         clipboard_events.push(clip);
+                        continue;
+                    }
+                }
+                if self.code_action_picker.open {
+                    if let eframe::egui::Event::Key {
+                        key, pressed: true, ..
+                    } = event
+                    {
+                        match *key {
+                            eframe::egui::Key::Escape => {
+                                self.handle_event(EditorEvent::CodeActionsClose)
+                            }
+                            eframe::egui::Key::ArrowUp => {
+                                self.handle_event(EditorEvent::CodeActionsMove { delta: -1 })
+                            }
+                            eframe::egui::Key::ArrowDown => {
+                                self.handle_event(EditorEvent::CodeActionsMove { delta: 1 })
+                            }
+                            eframe::egui::Key::Enter => {
+                                self.handle_event(EditorEvent::CodeActionsExecute)
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Swallow all key/text events so nothing leaks into
+                    // the buffer while the picker is open.
+                    if matches!(
+                        event,
+                        eframe::egui::Event::Key { .. } | eframe::egui::Event::Text(_)
+                    ) {
                         continue;
                     }
                 }
@@ -1844,6 +1891,17 @@ impl EditorApp {
                     self.symbol_picker.filtered.clear();
                     self.lsp_manager.request_document_symbols(&uri);
                 }
+            }
+            EditorEvent::CodeActions => self.open_code_actions(),
+            EditorEvent::CodeActionsMove { delta } => {
+                self.move_code_action_selection(delta);
+            }
+            EditorEvent::CodeActionsExecute => {
+                self.execute_selected_code_action();
+            }
+            EditorEvent::CodeActionsClose => {
+                self.code_action_picker.open = false;
+                self.code_action_picker.pending = false;
             }
             EditorEvent::ToggleProjectTree => {
                 self.toggle_project_tree();
@@ -3078,6 +3136,25 @@ impl EditorApp {
                 self.lsp_definition.request_pos = None;
             }
         }
+
+        if self.code_action_picker.pending {
+            if let Some((uri, _)) = self.lsp_cursor_position() {
+                if let Some(actions) = self.lsp_manager.take_code_action_result(&uri) {
+                    self.code_action_picker.pending = false;
+                    if actions.is_empty() {
+                        self.code_action_picker.open = false;
+                        self.status_message = Some("LSP: no code actions available.".into());
+                    } else {
+                        self.code_action_picker.items = actions;
+                        self.code_action_picker.selected = 0;
+                        self.status_message = None;
+                    }
+                }
+            } else {
+                self.code_action_picker.pending = false;
+                self.code_action_picker.open = false;
+            }
+        }
     }
 
     /// Open or focus the file containing an LSP definition target and
@@ -3369,6 +3446,81 @@ impl EditorApp {
         let event = command.event.clone();
         self.command_palette.open = false;
         self.handle_event(event);
+    }
+
+    // ----- LSP code actions -----
+
+    /// Open the code-action picker and request quick fixes at the
+    /// cursor. The list fills in when the server responds (picked up in
+    /// `process_lsp_responses`).
+    pub fn open_code_actions(&mut self) {
+        let Some((uri, position)) = self.lsp_cursor_position() else {
+            self.status_message = Some("LSP: no document for code actions.".into());
+            return;
+        };
+        if !self.lsp_manager.supports_code_actions(&uri) {
+            self.status_message = Some("LSP: code actions not available.".into());
+            return;
+        }
+        self.code_action_picker.open = true;
+        self.code_action_picker.items.clear();
+        self.code_action_picker.selected = 0;
+        self.code_action_picker.pending = true;
+        self.lsp_manager.request_code_action(&uri, position);
+        self.status_message = Some("LSP: requesting code actions...".into());
+    }
+
+    /// Move the code-action selection by `delta` rows, wrapping at the
+    /// ends.
+    pub fn move_code_action_selection(&mut self, delta: isize) {
+        let len = self.code_action_picker.items.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.code_action_picker.selected as isize;
+        let next = (current + delta).rem_euclid(len as isize);
+        self.code_action_picker.selected = next as usize;
+    }
+
+    /// Apply the selected code action and close the picker. Edit-bearing
+    /// actions apply client-side; command-only actions are forwarded to
+    /// the server via `workspace/executeCommand`.
+    pub fn execute_selected_code_action(&mut self) {
+        let Some(action) = self
+            .code_action_picker
+            .items
+            .get(self.code_action_picker.selected)
+            .cloned()
+        else {
+            self.code_action_picker.open = false;
+            return;
+        };
+        self.code_action_picker.open = false;
+        self.code_action_picker.pending = false;
+        match action {
+            lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
+                if let Some(edit) = &code_action.edit {
+                    let count = self.apply_workspace_edit(edit);
+                    self.status_message =
+                        Some(format!("Code action applied ({count} edit{}).", if count == 1 { "" } else { "s" }));
+                } else if let Some(command) = &code_action.command {
+                    if let Some((uri, _)) = self.lsp_cursor_position() {
+                        self.lsp_manager.request_execute_command(&uri, command);
+                    }
+                    self.status_message =
+                        Some(format!("Sent code action command: {}.", command.command));
+                } else {
+                    self.status_message =
+                        Some(format!("Applied {} (no edit payload).", code_action.title));
+                }
+            }
+            lsp_types::CodeActionOrCommand::Command(command) => {
+                if let Some((uri, _)) = self.lsp_cursor_position() {
+                    self.lsp_manager.request_execute_command(&uri, &command);
+                }
+                self.status_message = Some(format!("Sent code action command: {}.", command.command));
+            }
+        }
     }
 
     // ----- fuzzy file finder -----
@@ -4693,6 +4845,78 @@ mod tests {
         app.handle_event(EditorEvent::Insert('a'));
         app.handle_event(EditorEvent::Insert('t'));
         assert_eq!(app.active_buffer().to_bytes(), b"bat hat bat".to_vec());
+    }
+
+    #[test]
+    fn code_action_execute_applies_edit_and_closes_picker() {
+        // Seed the picker with a quick fix that replaces the buffer via
+        // a WorkspaceEdit and verify execute applies it and closes.
+        // The edit's changes key must match the active document's URI —
+        // apply_workspace_edit only touches the active doc.
+        let path = std::env::temp_dir().join("skerry_code_action.rs");
+        let mut app = app_with_path("hello world", path.clone());
+        let uri = url::Url::from_file_path(&path).unwrap();
+        app.code_action_picker.open = true;
+        app.code_action_picker.items = vec![lsp_types::CodeActionOrCommand::CodeAction(
+            lsp_types::CodeAction {
+                title: "Replace all".into(),
+                kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                diagnostics: None,
+                edit: Some(lsp_types::WorkspaceEdit {
+                    changes: Some([(
+                        uri,
+                        vec![lsp_types::TextEdit {
+                            range: lsp_types::Range::new(
+                                lsp_types::Position::new(0, 0),
+                                lsp_types::Position::new(0, 11),
+                            ),
+                            new_text: "goodbye".into(),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect()),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                command: None,
+                is_preferred: None,
+                disabled: None,
+                data: None,
+            },
+        )];
+        app.handle_event(EditorEvent::CodeActionsExecute);
+        assert!(!app.code_action_picker.open);
+        assert_eq!(app.active_buffer().to_bytes(), b"goodbye".to_vec());
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Code action applied"));
+    }
+
+    #[test]
+    fn code_action_move_wraps_and_close_resets() {
+        let mut app = app_with("hi");
+        app.code_action_picker.open = true;
+        app.code_action_picker.items = vec![
+            lsp_types::CodeActionOrCommand::Command(lsp_types::Command {
+                title: "a".into(),
+                command: "a".into(),
+                arguments: None,
+            }),
+            lsp_types::CodeActionOrCommand::Command(lsp_types::Command {
+                title: "b".into(),
+                command: "b".into(),
+                arguments: None,
+            }),
+        ];
+        app.handle_event(EditorEvent::CodeActionsMove { delta: 1 });
+        assert_eq!(app.code_action_picker.selected, 1);
+        // Wraps at the ends.
+        app.handle_event(EditorEvent::CodeActionsMove { delta: 1 });
+        assert_eq!(app.code_action_picker.selected, 0);
+        app.handle_event(EditorEvent::CodeActionsClose);
+        assert!(!app.code_action_picker.open);
     }
 
     #[test]

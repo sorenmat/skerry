@@ -856,6 +856,9 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     if app.symbol_picker.open {
         render_symbol_picker_window(ctx, app);
     }
+    if app.code_action_picker.open {
+        render_code_action_window(ctx, app);
+    }
     if app.keybindings_help_open {
         render_keybindings_help_window(ctx, app);
     }
@@ -1694,6 +1697,81 @@ fn render_symbol_picker_window(ctx: &egui::Context, app: &mut EditorApp) {
 
     if !open {
         app.symbol_picker.open = false;
+    }
+}
+
+/// Centered picker for LSP code actions (quick fixes). No query box —
+/// servers return a short, already-relevant list for the cursor line.
+fn render_code_action_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+
+    egui::Window::new("Code Actions")
+        .collapsible(false)
+        .resizable(false)
+        .default_size([420.0, 220.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let selected = app.code_action_picker.selected;
+            let items: Vec<String> = app
+                .code_action_picker
+                .items
+                .iter()
+                .map(code_action_label)
+                .collect();
+            let item_count = items.len();
+
+            egui::ScrollArea::vertical()
+                .id_salt("code_action_items")
+                .auto_shrink([false; 2])
+                .show_rows(
+                    ui,
+                    ui.text_style_height(&egui::TextStyle::Body),
+                    item_count,
+                    |ui, row_range| {
+                        for row in row_range {
+                            let Some(label) = items.get(row) else {
+                                continue;
+                            };
+                            let is_selected = row == selected;
+                            let text = egui::RichText::new(label).monospace().size(14.0);
+                            let response = if is_selected {
+                                ui.selectable_label(true, text.strong())
+                            } else {
+                                ui.selectable_label(false, text)
+                            };
+                            hand_cursor(&response, ui.ctx());
+                            if response.clicked() {
+                                app.code_action_picker.selected = row;
+                                app.execute_selected_code_action();
+                            }
+                        }
+                    },
+                );
+
+            ui.separator();
+            let footer = if app.code_action_picker.pending {
+                "requesting... · Esc to close".to_string()
+            } else {
+                format!("{item_count} actions · Enter to apply · Esc to close")
+            };
+            ui.label(egui::RichText::new(footer).small().weak());
+        });
+
+    if !open {
+        app.handle_event(core::EditorEvent::CodeActionsClose);
+    }
+}
+
+/// Display label for a code action or command: its title, optionally
+/// suffixed with the kind ("quickfix", "refactor", ...).
+fn code_action_label(action: &lsp_types::CodeActionOrCommand) -> String {
+    match action {
+        lsp_types::CodeActionOrCommand::CodeAction(a) => match &a.kind {
+            Some(kind) => format!("{}  [{}]", a.title, kind.as_str()),
+            None => a.title.clone(),
+        },
+        lsp_types::CodeActionOrCommand::Command(c) => c.title.clone(),
     }
 }
 

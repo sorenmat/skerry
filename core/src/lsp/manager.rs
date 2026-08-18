@@ -8,12 +8,14 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, CompletionList, CompletionParams, Diagnostic,
+    ClientCapabilities, ClientInfo, CodeActionContext, CodeActionParams, CodeActionResponse,
+    CodeActionTriggerKind, Command as LspCommand, CompletionList, CompletionParams, Diagnostic,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentSymbolParams, GotoDefinitionResponse, Hover, HoverContents,
-    InitializeParams, MarkedString, Position, RenameParams, ServerCapabilities,
-    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-    TextDocumentPositionParams, VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceFolder,
+    DidSaveTextDocumentParams, DocumentSymbolParams, ExecuteCommandParams,
+    GotoDefinitionResponse, Hover, HoverContents, InitializeParams, MarkedString, Position, Range,
+    RenameParams, ServerCapabilities, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
+    VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceFolder,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -50,6 +52,7 @@ pub struct LspManager {
     rename_results: HashMap<Url, (WorkspaceEdit, Position)>,
     formatting_results: HashMap<Url, Vec<lsp_types::TextEdit>>,
     symbol_results: HashMap<Url, Vec<lsp_types::DocumentSymbol>>,
+    code_action_results: HashMap<Url, CodeActionResponse>,
     pending_change: Option<(Url, Instant, String)>,
     last_status: Option<String>,
     server_spawn_failures: HashMap<ServerKey, Instant>,
@@ -94,6 +97,8 @@ enum PendingRequest {
     Rename(Url, Position),
     Formatting(Url),
     DocumentSymbols(Url),
+    CodeActions(Url),
+    ExecuteCommand,
 }
 
 impl Default for LspManager {
@@ -117,6 +122,7 @@ impl LspManager {
             rename_results: HashMap::new(),
             formatting_results: HashMap::new(),
             symbol_results: HashMap::new(),
+            code_action_results: HashMap::new(),
             pending_change: None,
             last_status: None,
             server_spawn_failures: HashMap::new(),
@@ -375,6 +381,7 @@ impl LspManager {
         self.rename_results.remove(uri);
         self.formatting_results.remove(uri);
         self.symbol_results.remove(uri);
+        self.code_action_results.remove(uri);
         if let Some(server) = self.servers.get(&doc.server_key) {
             server.client.notify(
                 "textDocument/didClose",
@@ -685,6 +692,100 @@ impl LspManager {
         self.symbol_results.remove(uri)
     }
 
+    /// True if the server for `uri` advertises code-action support.
+    pub fn supports_code_actions(&self, uri: &Url) -> bool {
+        let Some(doc) = self.docs.get(uri) else {
+            return false;
+        };
+        let Some(server) = self.servers.get(&doc.server_key) else {
+            return false;
+        };
+        let Some(caps) = &server.capabilities else {
+            return false;
+        };
+        caps.code_action_provider.is_some()
+    }
+
+    /// Request code actions (quick fixes) at the given position. The
+    /// result lands asynchronously; poll [`Self::code_action_result`].
+    /// The stored diagnostics for the document are passed as context so
+    /// servers can offer fixes for errors on the line.
+    pub fn request_code_action(
+        &mut self,
+        uri: &Url,
+        position: Position,
+    ) -> Option<&CodeActionResponse> {
+        let doc = self.docs.get(uri)?;
+        let server = self.servers.get(&doc.server_key)?;
+        if self
+            .pending
+            .values()
+            .any(|p| matches!(p, PendingRequest::CodeActions(u) if u == uri))
+        {
+            return self.code_action_result(uri);
+        }
+        let id = server.client.request(
+            "textDocument/codeAction",
+            serde_json::to_value(CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: Range {
+                    start: position,
+                    end: position,
+                },
+                context: CodeActionContext {
+                    diagnostics: self.diagnostics(uri).to_vec(),
+                    only: None,
+                    trigger_kind: Some(CodeActionTriggerKind::INVOKED),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .unwrap_or_default(),
+        );
+        self.pending
+            .insert(id, PendingRequest::CodeActions(uri.clone()));
+        self.code_action_result(uri)
+    }
+
+    /// Peek at the code actions for `uri` if they've arrived.
+    pub fn code_action_result(&self, uri: &Url) -> Option<&CodeActionResponse> {
+        self.code_action_results.get(uri)
+    }
+
+    /// Consume the code actions for `uri`.
+    pub fn take_code_action_result(&mut self, uri: &Url) -> Option<CodeActionResponse> {
+        self.code_action_results.remove(uri)
+    }
+
+    /// Run a server command (used for code actions that carry a command
+    /// instead of an edit). The response carries no payload we need, so
+    /// nothing is stored; the pending entry is simply retired when the
+    /// response arrives.
+    ///
+    /// Limitation: command-only actions are best-effort. If the server
+    /// answers with a `workspace/applyEdit` request, it is dropped
+    /// (server-initiated requests are not handled today), so the edit
+    /// never lands. Edit-bearing actions — the common case — apply
+    /// client-side and work fully.
+    pub fn request_execute_command(&mut self, uri: &Url, command: &LspCommand) {
+        let Some(doc) = self.docs.get(uri) else {
+            return;
+        };
+        let Some(server) = self.servers.get(&doc.server_key) else {
+            return;
+        };
+        let id = server.client.request(
+            "workspace/executeCommand",
+            serde_json::to_value(ExecuteCommandParams {
+                command: command.command.clone(),
+                arguments: command.arguments.clone().unwrap_or_default(),
+                work_done_progress_params: Default::default(),
+            })
+            .unwrap_or_default(),
+        );
+        self.pending.insert(id, PendingRequest::ExecuteCommand);
+    }
+
     /// Drain incoming messages and apply debounced changes. Frontends
     /// should call this once per frame.
     pub fn poll(&mut self) {
@@ -846,6 +947,16 @@ impl LspManager {
                                 self.symbol_results.insert(uri, symbols);
                             }
                         }
+                        PendingRequest::CodeActions(uri) => {
+                            if let Some(result) = resp.result {
+                                let actions: CodeActionResponse =
+                                    serde_json::from_value(result).unwrap_or_default();
+                                self.code_action_results.insert(uri, actions);
+                            }
+                        }
+                        PendingRequest::ExecuteCommand => {
+                            // Response carries no payload we use; retired.
+                        }
                     }
                 }
             }
@@ -904,7 +1015,10 @@ fn server_command(language_id: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsp_types::{Location, MarkedString, MarkupContent, MarkupKind, Position, Range, Url};
+    use lsp_types::{
+        CodeActionOrCommand, Location, MarkedString, MarkupContent, MarkupKind, Position, Range,
+        Url,
+    };
 
     #[test]
     fn hover_text_extracts_plain_string() {
@@ -980,6 +1094,44 @@ mod tests {
         );
         assert!(manager.definition_result(&uri, pos).is_some());
         assert!(manager.definition_result(&uri, other_pos).is_none());
+    }
+
+    #[test]
+    fn code_action_response_decodes_and_takes() {
+        // The wire shape servers return for textDocument/codeAction is a
+        // JSON array of CodeAction objects. Verify the response arm's
+        // serde_json::from_value::<CodeActionResponse> decode path.
+        let mut manager = LspManager::new();
+        let uri = Url::parse("file:///tmp/test.rs").unwrap();
+        let raw = serde_json::json!([{
+            "title": "Remove unused import",
+            "kind": "quickfix",
+            "edit": {
+                "changes": {
+                    uri.as_str(): [{
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 20 }
+                        },
+                        "newText": ""
+                    }]
+                }
+            }
+        }]);
+        let actions: CodeActionResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            CodeActionOrCommand::CodeAction(action) => {
+                assert_eq!(action.title, "Remove unused import");
+                assert!(action.edit.is_some());
+            }
+            other => panic!("expected CodeAction, got {other:?}"),
+        }
+        manager.code_action_results.insert(uri.clone(), actions);
+        assert!(manager.code_action_result(&uri).is_some());
+        let taken = manager.take_code_action_result(&uri).unwrap();
+        assert_eq!(taken.len(), 1);
+        assert!(manager.code_action_result(&uri).is_none());
     }
 
     #[test]

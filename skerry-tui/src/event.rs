@@ -274,6 +274,7 @@ fn translate_buffer_key(key: KeyEvent) -> Option<EditorEvent> {
             KeyCode::Char('o') => Some(EditorEvent::OpenFile(None)),
             KeyCode::Char('g') => Some(EditorEvent::GoToLine(None)),
             KeyCode::Char('p') => Some(EditorEvent::FuzzyFinder(None)),
+            KeyCode::Char('.') => Some(EditorEvent::CodeActions),
             KeyCode::Tab => Some(EditorEvent::NextDoc),
             KeyCode::Char('/') => Some(EditorEvent::ToggleComment),
             KeyCode::Backspace => Some(EditorEvent::DeleteWordLeft),
@@ -546,6 +547,14 @@ mod tests {
         assert_eq!(
             translate_key(key_ctrl('n'), None),
             Some(EditorEvent::NewDoc)
+        );
+    }
+
+    #[test]
+    fn ctrl_period_opens_code_actions() {
+        assert_eq!(
+            translate_key(key_ctrl('.'), None),
+            Some(EditorEvent::CodeActions)
         );
     }
 

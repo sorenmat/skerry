@@ -309,6 +309,15 @@ pub enum EditorEvent {
     CommandPaletteExecute,
     /// Close the command palette.
     CommandPaletteClose,
+    /// Request LSP code actions (quick fixes) at the cursor and open
+    /// the picker. Default binding: Cmd/Ctrl+Period.
+    CodeActions,
+    /// Move the code-action picker selection up or down by `delta`.
+    CodeActionsMove { delta: isize },
+    /// Apply the currently-selected code action.
+    CodeActionsExecute,
+    /// Close the code-action picker.
+    CodeActionsClose,
     /// Quit the editor. Frontend may prompt to save dirty buffers.
     Quit,
 }
@@ -448,6 +457,10 @@ mod tests {
         };
         let _ = EditorEvent::SelectNextOccurrence;
         let _ = EditorEvent::SelectAllOccurrences;
+        let _ = EditorEvent::CodeActions;
+        let _ = EditorEvent::CodeActionsMove { delta: 1 };
+        let _ = EditorEvent::CodeActionsExecute;
+        let _ = EditorEvent::CodeActionsClose;
         let _ = EditorEvent::SelectAll;
         let _ = EditorEvent::ToggleComment;
         let _ = EditorEvent::CollapseCursors;
