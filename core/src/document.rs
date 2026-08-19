@@ -202,7 +202,8 @@ impl Document {
     /// Recompute the git gutter from the current buffer and path.
     pub fn refresh_git_gutter(&mut self) {
         let path = self.path().map(|p| p.to_path_buf());
-        self.git_gutter.refresh(path.as_deref(), &*self.buffer);
+        let source = self.source_bytes();
+        self.git_gutter.refresh(path.as_deref(), &source);
     }
 
     /// Build the per-document tree-sitter parse tree from the buffer's
@@ -241,7 +242,7 @@ impl Document {
     /// pieces (especially after edits to a memmapped file), so repeated
     /// `to_bytes` calls are full-document copies; tree-sitter needs a
     /// contiguous slice, so callers share this cached copy.
-    fn source_bytes(&mut self) -> std::sync::Arc<Vec<u8>> {
+    pub fn source_bytes(&mut self) -> std::sync::Arc<Vec<u8>> {
         let rev = self.buffer.revision();
         if let Some((cached_rev, bytes)) = &self.source_cache {
             if *cached_rev == rev {
@@ -330,11 +331,17 @@ impl Document {
             line_starts.push(start);
         }
         for seg in result.segments {
-            // Find which line this segment starts on.
+            // Find which line this segment starts on. `line_starts` is
+            // sorted, so this is a binary search, not a per-segment
+            // linear scan.
             let rel = seg.range.start.saturating_sub(first_range.start);
-            let line_offset = match line_starts.iter().position(|&s| s > seg.range.start) {
-                Some(idx) => idx.saturating_sub(1),
-                None => count.saturating_sub(1),
+            let idx = line_starts.partition_point(|&s| s <= seg.range.start);
+            let line_offset = if idx == 0 {
+                0
+            } else if idx == line_starts.len() {
+                count - 1
+            } else {
+                idx - 1
             };
             let _ = rel; // kept for clarity; line_offset is what we use
             if line_offset >= count {

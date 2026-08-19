@@ -819,7 +819,7 @@ mod tests {
             ..primary()
         };
         assert_eq!(
-            translate_event(&key_event(Key::ArrowLeft, true, mods.clone())),
+            translate_event(&key_event(Key::ArrowLeft, true, mods)),
             Some(EditorEvent::SelectExtend(Movement::LineStart))
         );
         assert_eq!(
@@ -838,7 +838,7 @@ mod tests {
             ..primary()
         };
         assert_eq!(
-            translate_event(&key_event(Key::ArrowUp, true, mods.clone())),
+            translate_event(&key_event(Key::ArrowUp, true, mods)),
             Some(EditorEvent::PrevHunk)
         );
         assert_eq!(

@@ -18,7 +18,7 @@ mod tests {
     use std::path::PathBuf;
 
     use core::{Buffer, Document, PieceTableBuffer};
-    use ratatui::backend::{Backend, TestBackend};
+    use ratatui::backend::TestBackend;
     use ratatui::style::{Color, Modifier};
     use ratatui::Terminal;
 

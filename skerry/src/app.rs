@@ -474,10 +474,15 @@ impl EditorApp {
             return;
         }
         let path = self.active_doc().path().map(std::path::Path::to_path_buf);
-        let bytes = path.as_ref().map(|_| self.active_buffer().to_bytes());
-        if let (Some(watcher), Some(path), Some(bytes)) = (self.file_watcher.as_mut(), path, bytes)
+        let expected = path.as_ref().and_then(|p| {
+            std::fs::metadata(p)
+                .ok()
+                .map(|meta| core::ExpectedWrite::new(self.active_doc_mut().source_bytes(), &meta))
+        });
+        if let (Some(watcher), Some(path), Some(expected)) =
+            (self.file_watcher.as_mut(), path, expected)
         {
-            watcher.acknowledge_write(&path, &bytes);
+            watcher.acknowledge_write(&path, expected);
         }
     }
 
@@ -1472,7 +1477,8 @@ impl EditorApp {
             }
             EditorEvent::FindQueryChanged(q) => {
                 self.search.query = q;
-                self.search.refresh(&self.active_buffer().to_bytes());
+                let source = self.active_doc_mut().source_bytes();
+                self.search.refresh(&source);
                 if let Some(pos) = self.search.current_match() {
                     self.active_buffer_mut().set_cursor(pos);
                     self.active_buffer_mut()
@@ -1500,7 +1506,8 @@ impl EditorApp {
             }
             EditorEvent::ToggleFindRegex => {
                 self.search.regex_mode = !self.search.regex_mode;
-                self.search.refresh(&self.active_buffer().to_bytes());
+                let source = self.active_doc_mut().source_bytes();
+                self.search.refresh(&source);
                 if let Some(pos) = self.search.current_match() {
                     self.active_buffer_mut().set_cursor(pos);
                     self.active_buffer_mut()
@@ -1509,7 +1516,8 @@ impl EditorApp {
             }
             EditorEvent::ToggleFindCaseSensitive => {
                 self.search.case_sensitive = !self.search.case_sensitive;
-                self.search.refresh(&self.active_buffer().to_bytes());
+                let source = self.active_doc_mut().source_bytes();
+                self.search.refresh(&source);
                 if let Some(pos) = self.search.current_match() {
                     self.active_buffer_mut().set_cursor(pos);
                     self.active_buffer_mut()
@@ -1518,7 +1526,8 @@ impl EditorApp {
             }
             EditorEvent::ToggleFindWholeWord => {
                 self.search.whole_word = !self.search.whole_word;
-                self.search.refresh(&self.active_buffer().to_bytes());
+                let source = self.active_doc_mut().source_bytes();
+                self.search.refresh(&source);
                 if let Some(pos) = self.search.current_match() {
                     self.active_buffer_mut().set_cursor(pos);
                     self.active_buffer_mut()
@@ -2470,14 +2479,15 @@ impl EditorApp {
             self.status_message = Some("Replace: invalid regex.".to_string());
             return;
         }
-        let text = match String::from_utf8(self.active_buffer().to_bytes()) {
+        let source = self.active_doc_mut().source_bytes();
+        let text = match std::str::from_utf8(&source) {
             Ok(text) => text,
             Err(_) => {
                 self.status_message = Some("Replace: buffer is not valid UTF-8.".to_string());
                 return;
             }
         };
-        let Some((pos, end, replacement)) = self.search.current_replacement(&text) else {
+        let Some((pos, end, replacement)) = self.search.current_replacement(text) else {
             self.status_message = Some("Replace: no current match.".to_string());
             return;
         };
@@ -2485,7 +2495,8 @@ impl EditorApp {
             self.status_message = Some(format!("Replace error: {e}"));
             return;
         }
-        self.search.refresh(&self.active_buffer().to_bytes());
+        let source = self.active_doc_mut().source_bytes();
+        self.search.refresh(&source);
         self.active_buffer_mut().set_cursor(pos);
         self.active_buffer_mut()
             .set_selection(Selection::collapsed(pos));
@@ -2524,14 +2535,15 @@ impl EditorApp {
             return;
         }
         let count = self.search.matches.len();
-        let text = match String::from_utf8(self.active_buffer().to_bytes()) {
+        let source = self.active_doc_mut().source_bytes();
+        let text = match std::str::from_utf8(&source) {
             Ok(text) => text,
             Err(_) => {
                 self.status_message = Some("Replace all: buffer is not valid UTF-8.".to_string());
                 return;
             }
         };
-        let Some(new_text) = self.search.replace_all_text(&text) else {
+        let Some(new_text) = self.search.replace_all_text(text) else {
             self.status_message = Some("Replace all: invalid regex.".to_string());
             return;
         };
@@ -2543,7 +2555,8 @@ impl EditorApp {
             self.status_message = Some(format!("Replace error: {e}"));
             return;
         }
-        self.search.refresh(&self.active_buffer().to_bytes());
+        let source = self.active_doc_mut().source_bytes();
+        self.search.refresh(&source);
         self.active_buffer_mut().set_cursor(0);
         self.active_buffer_mut()
             .set_selection(Selection::collapsed(0));
@@ -3741,19 +3754,23 @@ impl EditorApp {
                     continue;
                 }
                 doc.buffer.save().map(|()| {
-                    (
-                        doc.path().map(std::path::Path::to_path_buf),
-                        watcher_available.then(|| doc.buffer.to_bytes()),
-                    )
+                    let expected = watcher_available
+                        .then(|| {
+                            let p = doc.path()?;
+                            let meta = std::fs::metadata(p).ok()?;
+                            Some(core::ExpectedWrite::new(doc.source_bytes(), &meta))
+                        })
+                        .flatten();
+                    (doc.path().map(std::path::Path::to_path_buf), expected)
                 })
             };
             match save_result {
-                Ok((path, bytes)) => {
+                Ok((path, expected)) => {
                     saved_any = true;
-                    if let (Some(watcher), Some(path), Some(bytes)) =
-                        (self.file_watcher.as_mut(), path, bytes)
+                    if let (Some(watcher), Some(path), Some(expected)) =
+                        (self.file_watcher.as_mut(), path, expected)
                     {
-                        watcher.acknowledge_write(&path, &bytes);
+                        watcher.acknowledge_write(&path, expected);
                     }
                 }
                 Err(e) => {
@@ -5575,7 +5592,7 @@ mod tests {
     fn cycle_theme_changes_theme_and_invalidates_cache() {
         let mut app = app_with("let x = 42;");
         // Pre-warm the cache.
-        app.active_doc_mut().syntax.lines.insert(0, Vec::new());
+        app.active_doc_mut().syntax.lines.insert(0, std::rc::Rc::new(Vec::new()));
         app.active_doc_mut().syntax.dirty = false;
         assert!(!app.active_doc().syntax.lines.is_empty());
 

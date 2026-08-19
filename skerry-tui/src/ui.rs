@@ -1048,8 +1048,8 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         let git_enabled =
             app.active_doc().view.git_gutter_enabled && app.active_doc().git_gutter.enabled();
         let status = app.active_doc().git_gutter.status(line_idx);
-        let removed = app.active_doc().git_gutter.removed_blocks_before(line_idx);
-        let marker = if git_enabled && !removed.is_empty() {
+        let removed = app.active_doc().git_gutter.removed_count_before(line_idx);
+        let marker = if git_enabled && removed > 0 {
             '▲'
         } else if git_enabled {
             match status {
@@ -1190,7 +1190,9 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
         } else {
             None
         };
-        let syntax_segments: Vec<core::ColorSegment> = match cached {
+        // `Rc` handle, not a copied `Vec`: a cache hit bumps a refcount
+        // instead of re-allocating the line's segments every frame.
+        let syntax_segments: std::rc::Rc<Vec<core::ColorSegment>> = match cached {
             Some(s) => s,
             None => {
                 let syntax_theme = syntax_engine.ts_theme();
@@ -1200,15 +1202,16 @@ fn render_content(app: &mut App, viewport_width: u16) -> Vec<Line<'static>> {
                     syntax_theme,
                 );
                 let segs = per_line.into_iter().next().unwrap_or_default();
+                let cached_segs = std::rc::Rc::new(segs);
                 let doc = &mut app.documents[app.active];
                 if complete {
                     if doc.syntax.dirty {
                         doc.syntax.lines.clear();
                         doc.syntax.dirty = false;
                     }
-                    doc.syntax.lines.insert(line_idx, segs.clone());
+                    doc.syntax.lines.insert(line_idx, cached_segs.clone());
                 }
-                segs
+                cached_segs
             }
         };
 

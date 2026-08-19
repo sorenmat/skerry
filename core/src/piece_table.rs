@@ -643,10 +643,10 @@ impl PieceTableBuffer {
                 self.pieces.insert(start_p, l);
             }
         } else {
-            // Multi-piece delete.
-            for _ in start_p..=end_p {
-                self.pieces.remove(start_p);
-            }
+            // Multi-piece delete. Draining the span at once is O(pieces)
+            // instead of O(pieces^2) — removing one piece at a time
+            // re-memmoves the tail for every removed piece.
+            self.pieces.drain(start_p..=end_p);
             // Insert left_part then right_part at start_p.
             if let Some(r) = right_part {
                 self.pieces.insert(start_p, r);
@@ -1251,6 +1251,28 @@ mod tests {
         // Delete range that spans all three pieces.
         buf.delete(1..9).unwrap(); // remove "befghijX" — leaves "a" + "YZ"
         assert_eq!(reconstruct_str(&buf), "aYZ");
+    }
+
+    #[test]
+    fn delete_across_many_pieces_matches_string_semantics() {
+        // Fragment the buffer into ~200 pieces with single-character
+        // inserts, then delete a wide range spanning most of them. The
+        // drain-based multi-piece delete must produce exactly the same
+        // text as performing the same operation on a plain String.
+        let mut expected = "01234567890123456789".repeat(20);
+        let mut buf = PieceTableBuffer::from_bytes(expected.clone().into_bytes());
+        for i in (0..400).step_by(2) {
+            buf.insert(i, "x").unwrap();
+            expected.insert(i, 'x');
+        }
+        assert!(buf.pieces.len() > 100);
+        assert_eq!(reconstruct_str(&buf), expected);
+
+        let (start, end) = (37, 371);
+        buf.delete(start..end).unwrap();
+        expected.replace_range(start..end, "");
+        assert_eq!(reconstruct_str(&buf), expected);
+        assert_eq!(buf.to_bytes(), expected.as_bytes().to_vec());
     }
 
     #[test]

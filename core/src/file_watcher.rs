@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sha2::{Digest, Sha256};
@@ -33,18 +34,47 @@ pub struct FileWatcher {
     tracked_files: HashSet<PathBuf>,
     /// Set of parent directories currently being watched.
     watched_dirs: HashSet<PathBuf>,
-    /// Metadata signatures for writes performed by Skerry. Directory
-    /// watchers also report our own atomic saves; matching events must not
-    /// be treated as external changes and reload the document.
+    /// Signatures for writes performed by Skerry. Directory watchers
+    /// also report our own atomic saves; matching events must not be
+    /// treated as external changes and reload the document.
     self_writes: HashMap<PathBuf, ExpectedWrite>,
 }
 
 type ContentFingerprint = [u8; 32];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExpectedWrite {
+/// Signature of a write Skerry itself performed. The common case is
+/// settled from metadata alone (length + mtime — a couple of cheap
+/// stat syscalls, no file read); the expected bytes are kept so a
+/// SHA-256 content comparison can fall back when the metadata
+/// disagrees. They are shared through an `Arc`, so the save path pays
+/// no copy and no hashing.
+#[derive(Clone)]
+pub struct ExpectedWrite {
+    bytes: Arc<Vec<u8>>,
     len: u64,
-    fingerprint: ContentFingerprint,
+    modified: Option<SystemTime>,
+}
+
+impl ExpectedWrite {
+    /// Build a signature from the bytes the editor just saved and the
+    /// file metadata read immediately after the save.
+    pub fn new(bytes: Arc<Vec<u8>>, metadata: &std::fs::Metadata) -> Self {
+        Self {
+            bytes,
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        }
+    }
+}
+
+// Documents can be many gigabytes; never print their bytes in logs.
+impl std::fmt::Debug for ExpectedWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExpectedWrite")
+            .field("len", &self.len)
+            .field("modified", &self.modified)
+            .finish()
+    }
 }
 
 fn content_fingerprint(bytes: &[u8]) -> ContentFingerprint {
@@ -65,6 +95,25 @@ fn file_fingerprint(path: &Path, expected_len: u64) -> Option<ContentFingerprint
         }
         hasher.update(&chunk[..read]);
     }
+}
+
+/// Whether the on-disk state of `path` still matches `expected` — i.e.
+/// the pending change is our own save rather than an external one.
+///
+/// Fast path: length and mtime are identical to the post-save stat —
+/// no file read, no hashing. When the metadata disagrees (an external
+/// writer raced the save, or a filesystem with coarse mtime
+/// granularity) we fall back to a SHA-256 content comparison so a
+/// same-length external overwrite is still reported.
+fn is_ours_on_disk(path: &Path, expected: &ExpectedWrite) -> bool {
+    let meta = match std::fs::metadata(path).ok() {
+        Some(m) => m,
+        None => return false,
+    };
+    if meta.len() == expected.len && meta.modified().ok() == expected.modified {
+        return true;
+    }
+    file_fingerprint(path, expected.len) == Some(content_fingerprint(&expected.bytes))
 }
 
 /// A single externally detected file change.
@@ -103,19 +152,14 @@ impl FileWatcher {
         })
     }
 
-    /// Record the exact content from a successful editor save so its watcher
-    /// notifications are ignored. The expected bytes come from the buffer,
-    /// rather than a post-save disk read, so an external writer cannot be
-    /// mistaken for Skerry during the save-to-acknowledgement window.
-    pub fn acknowledge_write(&mut self, path: &Path, expected_bytes: &[u8]) {
+    /// Record a successful editor save so its watcher notifications are
+    /// ignored. The expected bytes come from the buffer (shared as an
+    /// `Arc` — no copy, no hashing here) and the metadata from a
+    /// post-save read, so an external writer that raced the save cannot
+    /// be mistaken for Skerry.
+    pub fn acknowledge_write(&mut self, path: &Path, expected: ExpectedWrite) {
         let path = normalize_path(path);
-        self.self_writes.insert(
-            path,
-            ExpectedWrite {
-                len: expected_bytes.len() as u64,
-                fingerprint: content_fingerprint(expected_bytes),
-            },
-        );
+        self.self_writes.insert(path, expected);
     }
 
     /// Start tracking `path`. The path's parent directory is added to the
@@ -171,16 +215,18 @@ impl FileWatcher {
     /// returns changes whose path is in the tracked set.
     pub fn poll_changes(&mut self) -> Vec<FileChange> {
         let mut changes = Vec::new();
-        let mut fingerprints = HashMap::new();
+        // An atomic save yields several events per batch, so cache the
+        // self-write decision per path to stat/hash at most once each.
+        let mut self_write_decisions: HashMap<PathBuf, bool> = HashMap::new();
         while let Ok(change) = self.receiver.try_recv() {
             let normalized = normalize_path(&change.path);
             if self.tracked_files.contains(&normalized) || self.tracked_files.contains(&change.path)
             {
-                if let Some(expected) = self.self_writes.get(&normalized).copied() {
-                    let actual = *fingerprints
+                if let Some(expected) = self.self_writes.get(&normalized).cloned() {
+                    let ours = *self_write_decisions
                         .entry(normalized.clone())
-                        .or_insert_with(|| file_fingerprint(&normalized, expected.len));
-                    if actual == Some(expected.fingerprint) {
+                        .or_insert_with(|| is_ours_on_disk(&normalized, &expected));
+                    if ours {
                         continue;
                     }
                     // A different on-disk value is genuinely external. Drop
@@ -261,7 +307,11 @@ mod tests {
 
         let saved = b"saved by editor";
         fs::write(&path, saved).unwrap();
-        watcher.acknowledge_write(&path, saved);
+        let meta = fs::metadata(&path).unwrap();
+        watcher.acknowledge_write(
+            &path,
+            ExpectedWrite::new(Arc::new(saved.to_vec()), &meta),
+        );
 
         for _ in 0..20 {
             assert!(
@@ -299,16 +349,27 @@ mod tests {
 
         let editor_bytes = b"editor123";
         fs::write(&path, editor_bytes).unwrap();
-        let editor_modified = fs::metadata(&path).unwrap().modified().unwrap();
+        // Skerry captures the metadata right after its own save, before
+        // the external writer wins the race.
+        let editor_meta = fs::metadata(&path).unwrap();
+        let editor_modified = editor_meta.modified().unwrap();
 
-        // Simulate another process winning the race before Skerry records its
-        // successful save. Keep both length and mtime unchanged to prove that
-        // suppression is based on content, not metadata.
+        // Simulate another process winning the race before Skerry records
+        // its successful save. Same length as the editor's write, but a
+        // fresh mtime — so only the metadata mismatch and the content
+        // fallback hash can expose it. (An external writer that also
+        // forged the mtime would be indistinguishable from our own save;
+        // that case is deliberately accepted.)
         fs::write(&path, "outside12").unwrap();
         let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.set_times(std::fs::FileTimes::new().set_modified(editor_modified))
-            .unwrap();
-        watcher.acknowledge_write(&path, editor_bytes);
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(editor_modified + Duration::from_secs(1)),
+        )
+        .unwrap();
+        watcher.acknowledge_write(
+            &path,
+            ExpectedWrite::new(Arc::new(editor_bytes.to_vec()), &editor_meta),
+        );
 
         let canonical = normalize_path(&path);
         let mut found = false;

@@ -31,7 +31,7 @@ pub use command_palette::{filter_commands, Command, COMMANDS};
 pub use config::Config;
 pub use document::{Document, ViewState};
 pub use errors::{EditError, SaveError};
-pub use file_watcher::{FileChange, FileWatcher};
+pub use file_watcher::{ExpectedWrite, FileChange, FileWatcher};
 pub use fold::{FoldRange, FoldState};
 pub use formatter::{formatter_for_language, run_external_formatter};
 pub use fuzzy::{filter_and_rank, fuzzy_score, FuzzyMatch};
