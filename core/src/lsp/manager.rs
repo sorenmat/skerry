@@ -4,7 +4,7 @@
 //! blocking API. The frontends call `poll()` once per frame to drain
 //! incoming messages and apply debounced document changes.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use lsp_types::{
@@ -46,6 +46,10 @@ pub struct LspManager {
     docs: HashMap<Url, DocumentState>,
     pending: HashMap<u64, PendingRequest>,
     diagnostics: HashMap<Url, Vec<Diagnostic>>,
+    /// Per-line max-severity index maintained alongside `diagnostics` so
+    /// the GUI can resolve a gutter stripe in O(1) instead of folding
+    /// every diagnostic into every visible line, every frame.
+    diag_severity: HashMap<Url, BTreeMap<usize, lsp_types::DiagnosticSeverity>>,
     completion_results: HashMap<Url, CompletionList>,
     hover_results: HashMap<Url, (Hover, Position)>,
     definition_results: HashMap<Url, (GotoDefinitionResponse, Position)>,
@@ -116,6 +120,7 @@ impl LspManager {
             docs: HashMap::new(),
             pending: HashMap::new(),
             diagnostics: HashMap::new(),
+            diag_severity: HashMap::new(),
             completion_results: HashMap::new(),
             hover_results: HashMap::new(),
             definition_results: HashMap::new(),
@@ -379,6 +384,7 @@ impl LspManager {
             return;
         };
         self.diagnostics.remove(uri);
+        self.diag_severity.remove(uri);
         self.completion_results.remove(uri);
         self.hover_results.remove(uri);
         self.definition_results.remove(uri);
@@ -403,6 +409,21 @@ impl LspManager {
             .get(uri)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Most severe diagnostic on `line` for this document, if any.
+    ///
+    /// Served from the per-line index rebuilt on every
+    /// `publishDiagnostics`, so callers pay O(1) per line instead of
+    /// scanning the full diagnostic list.
+    pub fn diagnostic_severity_on_line(
+        &self,
+        uri: &Url,
+        line: usize,
+    ) -> Option<lsp_types::DiagnosticSeverity> {
+        self.diag_severity
+            .get(uri)
+            .and_then(|by_line| by_line.get(&line).copied())
     }
 
     /// Peek at the most recently received completion list for a URI.
@@ -969,12 +990,51 @@ impl LspManager {
                     if let Ok(params) =
                         serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(notif.params)
                     {
-                        self.diagnostics.insert(params.uri, params.diagnostics);
+                        // Rebuild the per-line max-severity index.
+                        let mut by_line: BTreeMap<usize, lsp_types::DiagnosticSeverity> =
+                            BTreeMap::new();
+                        for d in &params.diagnostics {
+                            let Some(sev) = d.severity else {
+                                continue;
+                            };
+                            let start = d.range.start.line as usize;
+                            let end = d.range.end.line as usize;
+                            if end < start {
+                                continue;
+                            }
+                            for line in start..=end {
+                                // Same overlap rule the GUI uses: a
+                                // diagnostic ending at column 0 of its
+                                // final line does not mark that line.
+                                if line == end && d.range.end.character == 0 && start != end {
+                                    continue;
+                                }
+                                let replaces = by_line
+                                    .get(&line)
+                                    .map_or(true, |cur| severity_rank(*cur) < severity_rank(sev));
+                                if replaces {
+                                    by_line.insert(line, sev);
+                                }
+                            }
+                        }
+                        let uri = params.uri;
+                        self.diagnostics.insert(uri.clone(), params.diagnostics);
+                        self.diag_severity.insert(uri, by_line);
                     }
                 }
             }
             Message::Request(_) => {}
         }
+    }
+}
+
+/// Severity ordering for the per-line max-severity map: higher wins.
+fn severity_rank(sev: lsp_types::DiagnosticSeverity) -> u8 {
+    match sev {
+        lsp_types::DiagnosticSeverity::ERROR => 4,
+        lsp_types::DiagnosticSeverity::WARNING => 3,
+        lsp_types::DiagnosticSeverity::INFORMATION => 2,
+        _ => 1,
     }
 }
 

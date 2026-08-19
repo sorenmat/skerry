@@ -70,7 +70,7 @@ fn diagnostic_overlaps_line(range: &lsp_types::Range, line_idx: usize) -> bool {
 
 fn gutter_hover_info(
     app: &EditorApp,
-    diagnostics: &[lsp_types::Diagnostic],
+    uri: Option<&url::Url>,
     line_idx: usize,
 ) -> Option<GutterHoverInfo> {
     let doc = app.active_doc();
@@ -80,7 +80,7 @@ fn gutter_hover_info(
     let removed_blocks = if doc.view.git_gutter_enabled && doc.git_gutter.enabled() {
         doc.git_gutter.removed_blocks_before(line_idx)
     } else {
-        Vec::new()
+        &[]
     };
     let removed_count = removed_blocks.iter().map(|block| block.count).sum();
     let removed_lines = removed_blocks
@@ -92,6 +92,13 @@ fn gutter_hover_info(
     let blame = (doc.view.git_blame_enabled && doc.git_blame.enabled())
         .then(|| doc.git_blame.entry(line_idx).cloned())
         .flatten();
+    // All document borrows are done; only the LSP manager is borrowed
+    // from here on, so the hover reads the latest publishDiagnostics
+    // without cloning the list.
+    let diagnostics: &[lsp_types::Diagnostic] = match uri {
+        Some(uri) => app.lsp_manager.diagnostics(uri),
+        None => &[],
+    };
     let mut matching_diagnostics = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic_overlaps_line(&diagnostic.range, line_idx));
@@ -396,9 +403,9 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
 }
 
 pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
-    app.lsp_manager.poll();
-    app.lsp_open_active();
-    app.lsp_change_active();
+    // The LSP tick (poll + open + change + apply responses) already ran
+    // in `update()` before render was called; repeating it here only
+    // doubled the try_wait syscalls per server per frame.
     if let Some(status) = app.lsp_manager.take_status() {
         app.status_message = Some(status);
     }
@@ -1124,7 +1131,7 @@ fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
                 let y = rect.top() + line_idx as f32 * mini_line_height;
                 // Try the cache first.
                 if let Some(segments) = doc.syntax.lines.get(&line_idx) {
-                    for seg in segments {
+                    for seg in segments.iter() {
                         // Scale byte positions to minimap pixel positions.
                         // Approximate: 1 char ≈ 1 byte for most code.
                         // Scale factor: mini_width / max_line_width_estimate.
@@ -2281,11 +2288,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     let total_lines = app.active_buffer().line_count();
     let gutter_width = total_lines.to_string().len().max(2);
     let font_id = egui::FontId::monospace(FONT_SIZE);
-    let diagnostics: Vec<lsp_types::Diagnostic> = app
-        .active_doc()
-        .uri()
-        .map(|uri| app.lsp_manager.diagnostics(&uri).to_vec())
-        .unwrap_or_default();
+    // The active document's URI (owned). Per-line lookups borrow it to
+    // reach the LSP manager without holding a borrow of `app` across the
+    // whole line loop, which would block the loop's mutations.
+    let active_uri = app.active_doc().uri();
 
     // Detect cursor movement so we can auto-scroll the ScrollArea to
     // bring the cursor back into view. Without this, PageUp/PageDown
@@ -2323,8 +2329,6 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             char_width
         }
     };
-    let width_of = |s: &str| -> f32 { s.chars().map(advance_of).sum() };
-
     // Cursor + selection state.
     let cursor_pos = app.active_buffer().cursor();
     let (cursor_line, _cursor_byte_col) = app
@@ -2573,12 +2577,41 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // the selection rectangle.
             let y = (rect.top() + line_idx as f32 * line_height).round();
 
+            // Byte range of this line in the buffer. Bound early so the
+            // Cmd-click handler below (and the match-highlights block
+            // later) can read it without re-querying.
+            let line_byte_range = app
+                .active_buffer()
+                .line_byte_range(line_idx)
+                .unwrap_or(0..0);
+
+            // If Command is held and the pointer is on this line,
+            // identify the identifier token under the pointer. Kept
+            // before the `line_text` borrow below so the `app.cmd_link`
+            // write does not straddle that (whole-app) borrow.
+            if cmd_pointer.map(|(l, _)| l) == Some(line_idx) {
+                let (_, char_col) = cmd_pointer.unwrap();
+                let cmd_line_cow = app
+                    .active_buffer()
+                    .line_text(line_idx)
+                    .unwrap_or_default();
+                let cmd_line: &str = &cmd_line_cow;
+                let (start_char, end_char) = word_range_at_char_col(cmd_line, char_col);
+                let start_byte =
+                    line_byte_range.start + core::char_col_to_byte_col(cmd_line, start_char);
+                let end_byte =
+                    line_byte_range.start + core::char_col_to_byte_col(cmd_line, end_char);
+                if end_byte > start_byte {
+                    app.cmd_link.range = Some((start_byte, end_byte));
+                }
+            }
+
             // Each annotated gutter row is a focusable, non-interactive
             // accessibility target. Pointer hover shows the tooltip beside
             // the pointer; Tab focus shows the same details beside the row.
             // It remains non-interactive so editor click/drag selection keeps
             // using the enclosing response unchanged.
-            if let Some(info) = gutter_hover_info(app, &diagnostics, line_idx) {
+            if let Some(info) = gutter_hover_info(app, active_uri.as_ref(), line_idx) {
                 let gutter_rect = egui::Rect::from_min_size(
                     egui::pos2(rect.left(), y),
                     egui::vec2(gw + prefix_chars as f32 * char_width, line_height),
@@ -2598,11 +2631,18 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 show_gutter_tooltip(gutter_response, &info, theme);
             }
 
-            let line_text = app
+            // Borrowed from the piece table when the whole line fits one
+            // piece — no per-frame String copy for the common case. This
+            // "pre" copy feeds the gutter/column/selection math below.
+            // It must be fully consumed before the syntax cache-miss
+            // takes `&mut` doc further down, so each text-draw branch
+            // re-borrows the line after its cache lookup (same line —
+            // the buffer does not change within a frame).
+            let line_text_cow = app
                 .active_buffer()
                 .line_text(line_idx)
-                .map(|c| c.into_owned())
                 .unwrap_or_default();
+            let line_text: &str = &line_text_cow;
 
             let line_cols = line_text
                 .chars()
@@ -2658,11 +2698,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     );
                     painter.rect_filled(bar_rect, 2.0, color);
                 }
-                let removed = app.active_doc().git_gutter.removed_blocks_before(line_idx);
-                if !removed.is_empty() {
-                    let total = removed.iter().map(|b| b.count).sum::<usize>();
-                    let marker = if total > 1 {
-                        format!("▼{total}")
+                let removed = app.active_doc().git_gutter.removed_count_before(line_idx);
+                if removed > 0 {
+                    let marker = if removed > 1 {
+                        format!("▼{removed}")
                     } else {
                         "▼".to_string()
                     };
@@ -2681,22 +2720,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // diagnostic. Uses the most severe diagnostic on the line.
             // This makes errors unmissable even when the inline underline
             // is subtle.
-            let diag_severity = diagnostics.iter().fold(None, |max_sev, d| {
-                if !diagnostic_overlaps_line(&d.range, line_idx) {
-                    return max_sev;
-                }
-                match (max_sev, d.severity) {
-                    (Some(lsp_types::DiagnosticSeverity::ERROR), _) => max_sev,
-                    (_, Some(lsp_types::DiagnosticSeverity::ERROR)) => {
-                        Some(lsp_types::DiagnosticSeverity::ERROR)
-                    }
-                    (Some(lsp_types::DiagnosticSeverity::WARNING), _) => max_sev,
-                    (_, Some(lsp_types::DiagnosticSeverity::WARNING)) => {
-                        Some(lsp_types::DiagnosticSeverity::WARNING)
-                    }
-                    _ => d.severity.or(max_sev),
-                }
-            });
+            // O(1) per line: the per-line max-severity map is maintained
+            // by the LSP manager on publishDiagnostics.
+            let diag_severity = active_uri
+                .as_ref()
+                .and_then(|uri| app.lsp_manager.diagnostic_severity_on_line(uri, line_idx));
             if let Some(sev) = diag_severity {
                 let stripe_color = match sev {
                     lsp_types::DiagnosticSeverity::ERROR => theme.error,
@@ -2771,32 +2799,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 - app.active_doc().view.scroll_x_cols as f32 * char_width)
                 .round();
 
-            // Compute selection-in-this-line once. If there's no
-            // selection, `seg` stays at the default (None) and we
-            // draw the entire line as one piece. `line_byte_range`
-            // is bound in the outer scope so the match-highlights
-            // block below can read it without re-querying.
-            let line_byte_range = app
-                .active_buffer()
-                .line_byte_range(line_idx)
-                .unwrap_or(0..0);
-
-            // If Command is held and the pointer is on this line,
-            // identify the identifier token under the pointer.
-            if cmd_pointer.map(|(l, _)| l) == Some(line_idx) {
-                let (_, char_col) = cmd_pointer.unwrap();
-                let (start_char, end_char) = word_range_at_char_col(&line_text, char_col);
-                let start_byte =
-                    line_byte_range.start + core::char_col_to_byte_col(&line_text, start_char);
-                let end_byte =
-                    line_byte_range.start + core::char_col_to_byte_col(&line_text, end_char);
-                if end_byte > start_byte {
-                    app.cmd_link.range = Some((start_byte, end_byte));
-                }
-            }
-
-            // Compute all selection intersections with this line. Can be
-            // multiple with multi-cursor. Each is a char-col range.
+            // Compute all selection intersections with this line. Can
+            // be multiple with multi-cursor; each is a char-col range.
+            // If none, `sel_in_line` stays empty and the line is drawn
+            // as one piece.
             let sel_in_line: Vec<(usize, usize)> = sel_ranges
                 .iter()
                 .filter_map(|sr| {
@@ -2804,9 +2810,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     let start = line_byte_range.start;
                     let total_chars = line_text.chars().count();
                     let take_lo =
-                        byte_to_char_col(&line_text, intersect.start - start).min(total_chars);
+                        byte_to_char_col(line_text, intersect.start - start).min(total_chars);
                     let take_hi =
-                        byte_to_char_col(&line_text, intersect.end - start).min(total_chars);
+                        byte_to_char_col(line_text, intersect.end - start).min(total_chars);
                     if take_hi > take_lo {
                         Some((take_lo, take_hi))
                     } else {
@@ -2841,9 +2847,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     let start = line_byte_range.start;
                     let total_chars = line_text.chars().count();
                     let take_lo =
-                        byte_to_char_col(&line_text, intersect.start - start).min(total_chars);
+                        byte_to_char_col(line_text, intersect.start - start).min(total_chars);
                     let take_hi =
-                        byte_to_char_col(&line_text, intersect.end - start).min(total_chars);
+                        byte_to_char_col(line_text, intersect.end - start).min(total_chars);
                     if take_hi <= take_lo {
                         continue;
                     }
@@ -2862,14 +2868,18 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 // multiple selections per line (multi-cursor) cleanly
                 // without complex segment splitting.
                 for &(take_lo, take_hi) in &sel_in_line {
-                    let before: String = line_text.chars().take(take_lo).collect();
-                    let selected: String = line_text
+                    // Tab-aware widths straight from the font metrics —
+                    // no String built per selection.
+                    let sel_x = (text_x
+                        + line_text.chars().take(take_lo).map(advance_of).sum::<f32>())
+                        .round();
+                    let sel_w = line_text
                         .chars()
                         .skip(take_lo)
                         .take(take_hi - take_lo)
-                        .collect();
-                    let sel_x = (text_x + width_of(&before)).round();
-                    let sel_w = width_of(&selected).round();
+                        .map(advance_of)
+                        .sum::<f32>()
+                        .round();
                     painter.rect_filled(
                         egui::Rect::from_min_size(
                             egui::pos2(sel_x, y),
@@ -2889,29 +2899,41 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 } else {
                     None
                 };
-                let segments: Vec<core::ColorSegment> = match cached {
+                // `Rc` handle, not a copied Vec: a cache hit bumps a
+                // refcount instead of re-allocating the line's segments
+                // every frame.
+                let segments: std::rc::Rc<Vec<core::ColorSegment>> = match cached {
                     Some(s) => s,
                     None => {
                         let (per_line, complete) =
                             doc.highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
                         let segs = per_line.into_iter().next().unwrap_or_default();
+                        let cached_segs = std::rc::Rc::new(segs);
                         if complete {
                             if doc.syntax.dirty {
                                 doc.syntax.lines.clear();
                                 doc.syntax.dirty = false;
                             }
-                            doc.syntax.lines.insert(line_idx, segs.clone());
+                            doc.syntax.lines.insert(line_idx, cached_segs.clone());
                         } else {
                             ui.ctx().request_repaint();
                         }
-                        segs
+                        cached_segs
                     }
                 };
+                // Re-borrow after the cache lookup: the miss arm above
+                // took `&mut` doc, which the buffer borrow held by
+                // `line_text` above may not overlap. Same line.
+                let line_text_cow = app
+                    .active_buffer()
+                    .line_text(line_idx)
+                    .unwrap_or_default();
+                let line_text: &str = &line_text_cow;
                 if segments.is_empty() {
                     painter.text(
                         egui::pos2(text_x, y),
                         egui::Align2::LEFT_TOP,
-                        &line_text,
+                        line_text,
                         font_id.clone(),
                         theme.text,
                     );
@@ -2921,63 +2943,60 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     // painter.text doesn't advance a cursor, so drawing
                     // every chunk at text_x stacks them on top of each
                     // other (the garbled-selection bug).
+                    // `x_cursor` advances as we draw: everything before a
+                    // piece is exactly what has already been placed, so
+                    // no prefix String or per-segment width walk is
+                    // needed. Slices are zero-copy char-boundary-safe
+                    // because both column helpers clamp to the line.
                     let mut char_cursor = 0usize;
-                    for seg in &segments {
-                        let seg_lo = byte_to_char_col(&line_text, seg.range.start);
-                        let seg_hi = byte_to_char_col(&line_text, seg.range.end);
+                    let mut x_cursor = text_x;
+                    for seg in segments.iter() {
+                        let seg_lo = byte_to_char_col(line_text, seg.range.start);
+                        let seg_hi = byte_to_char_col(line_text, seg.range.end);
                         if seg_lo > char_cursor {
-                            let gap: String = line_text
-                                .chars()
-                                .skip(char_cursor)
-                                .take(seg_lo - char_cursor)
-                                .collect();
+                            let gap: &str = &line_text[
+                                core::char_col_to_byte_col(line_text, char_cursor)
+                                    ..core::char_col_to_byte_col(line_text, seg_lo)
+                            ];
                             if !gap.is_empty() {
-                                let gap_x = (text_x
-                                    + width_of(
-                                        &line_text.chars().take(char_cursor).collect::<String>(),
-                                    ))
-                                .round();
                                 painter.text(
-                                    egui::pos2(gap_x, y),
+                                    egui::pos2(x_cursor.round(), y),
                                     egui::Align2::LEFT_TOP,
                                     gap,
                                     font_id.clone(),
                                     theme.text,
                                 );
                             }
+                            x_cursor += gap.chars().map(advance_of).sum::<f32>();
+                            char_cursor = seg_lo;
                         }
-                        let text: String = line_text
-                            .chars()
-                            .skip(seg_lo)
-                            .take(seg_hi - seg_lo)
-                            .collect();
-                        if !text.is_empty() {
-                            let seg_x = (text_x
-                                + width_of(&line_text.chars().take(seg_lo).collect::<String>()))
-                            .round();
-                            let c = seg.color;
-                            painter.text(
-                                egui::pos2(seg_x, y),
-                                egui::Align2::LEFT_TOP,
-                                text,
-                                font_id.clone(),
-                                egui::Color32::from_rgb(c.r, c.g, c.b),
-                            );
+                        if seg_hi > seg_lo {
+                            let seg_text: &str = &line_text[
+                                core::char_col_to_byte_col(line_text, seg_lo)
+                                    ..core::char_col_to_byte_col(line_text, seg_hi)
+                            ];
+                            if !seg_text.is_empty() {
+                                let c = seg.color;
+                                painter.text(
+                                    egui::pos2(x_cursor.round(), y),
+                                    egui::Align2::LEFT_TOP,
+                                    seg_text,
+                                    font_id.clone(),
+                                    egui::Color32::from_rgb(c.r, c.g, c.b),
+                                );
+                                x_cursor += seg_text.chars().map(advance_of).sum::<f32>();
+                            }
+                            char_cursor = seg_hi;
                         }
-                        char_cursor = seg_hi;
                     }
                     // Trailing gap after the last segment.
                     let total_chars = line_text.chars().count();
                     if char_cursor < total_chars {
-                        let tail: String = line_text.chars().skip(char_cursor).collect();
+                        let tail: &str =
+                            &line_text[core::char_col_to_byte_col(line_text, char_cursor)..];
                         if !tail.is_empty() {
-                            let tail_x = (text_x
-                                + width_of(
-                                    &line_text.chars().take(char_cursor).collect::<String>(),
-                                ))
-                            .round();
                             painter.text(
-                                egui::pos2(tail_x, y),
+                                egui::pos2(x_cursor.round(), y),
                                 egui::Align2::LEFT_TOP,
                                 tail,
                                 font_id.clone(),
@@ -3003,7 +3022,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 } else {
                     None
                 };
-                let segments: Vec<core::ColorSegment> =
+                // `Rc` handle, not a copied Vec: a cache hit bumps a
+                // refcount instead of re-allocating the line's segments
+                // every frame.
+                let segments: std::rc::Rc<Vec<core::ColorSegment>> =
                     match cached {
                         Some(s) => s,
                         None => {
@@ -3014,26 +3036,34 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                             let (per_line, complete) = app.documents[app.active]
                                 .highlight_lines_ts(line_idx, line_idx + 1, syntax_theme);
                             let segs = per_line.into_iter().next().unwrap_or_default();
+                            let cached_segs = std::rc::Rc::new(segs);
                             let doc = &mut app.documents[app.active];
                             if complete {
                                 if doc.syntax.dirty {
                                     doc.syntax.lines.clear();
                                     doc.syntax.dirty = false;
                                 }
-                                doc.syntax.lines.insert(line_idx, segs.clone());
+                                doc.syntax.lines.insert(line_idx, cached_segs.clone());
                             } else {
                                 ui.ctx().request_repaint();
                             }
-                            segs
+                            cached_segs
                         }
                     };
+                    // Re-borrow after the cache lookup (see the selection
+                    // branch above) — the miss arm took `&mut` doc.
+                    let line_text_cow = app
+                        .active_buffer()
+                        .line_text(line_idx)
+                        .unwrap_or_default();
+                    let line_text: &str = &line_text_cow;
                 if segments.is_empty() {
                     // No syntax (unknown extension, too large, or
                     // passthrough) — draw as before.
                     painter.text(
                         egui::pos2(text_x, y),
                         egui::Align2::LEFT_TOP,
-                        &line_text,
+                        line_text,
                         font_id.clone(),
                         theme.text,
                     );
@@ -3046,7 +3076,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     // per frame and made large files unusable.
                     let mut job = egui::text::LayoutJob::default();
                     let mut byte_cursor = 0usize;
-                    for seg in &segments {
+                    for seg in segments.iter() {
                         let seg_start = seg.range.start.min(line_text.len());
                         let seg_end = seg.range.end.min(line_text.len());
                         if seg_start > byte_cursor {
@@ -3186,8 +3216,21 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 }
             }
 
+            // Re-borrow the line for the underline pass: the syntax
+            // cache miss in the branches above may have taken `&mut`
+            // doc, which the first buffer borrow cannot span. Same line.
+            let line_text_cow = app
+                .active_buffer()
+                .line_text(line_idx)
+                .unwrap_or_default();
+            let line_text: &str = &line_text_cow;
+
             // LSP diagnostic underlines.
-            for diag in &diagnostics {
+            for diag in active_uri
+                .as_ref()
+                .map(|uri| app.lsp_manager.diagnostics(uri))
+                .unwrap_or(&[])
+            {
                 let diag_start_line = diag.range.start.line as usize;
                 let diag_end_line = diag.range.end.line as usize;
                 if !diagnostic_overlaps_line(&diag.range, line_idx) {
@@ -3198,13 +3241,13 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     line_byte_range.start
                 } else {
                     line_byte_range.start
-                        + char_col_to_byte_col(&line_text, diag.range.start.character as usize)
+                        + char_col_to_byte_col(line_text, diag.range.start.character as usize)
                 };
                 let end_byte_in_line = if diag_end_line > line_idx {
                     line_byte_range.end
                 } else {
                     line_byte_range.start
-                        + char_col_to_byte_col(&line_text, diag.range.end.character as usize)
+                        + char_col_to_byte_col(line_text, diag.range.end.character as usize)
                 };
                 let start_byte =
                     start_byte_in_line.clamp(line_byte_range.start, line_byte_range.end);
@@ -3213,10 +3256,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     continue;
                 }
 
-                let start_col = byte_to_char_col(&line_text, start_byte - line_byte_range.start);
-                let end_col = byte_to_char_col(&line_text, end_byte - line_byte_range.start);
-                let x1 = text_x + width_of(&line_text.chars().take(start_col).collect::<String>());
-                let x2 = text_x + width_of(&line_text.chars().take(end_col).collect::<String>());
+                let start_col = byte_to_char_col(line_text, start_byte - line_byte_range.start);
+                let end_col = byte_to_char_col(line_text, end_byte - line_byte_range.start);
+                let x1 = text_x + line_text.chars().take(start_col).map(advance_of).sum::<f32>();
+                let x2 = text_x + line_text.chars().take(end_col).map(advance_of).sum::<f32>();
                 let color = match diag.severity {
                     Some(lsp_types::DiagnosticSeverity::ERROR) => theme.error,
                     Some(lsp_types::DiagnosticSeverity::WARNING) => theme.warning,
@@ -3238,12 +3281,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 let start = link_start.clamp(line_byte_range.start, line_byte_range.end);
                 let end = link_end.clamp(line_byte_range.start, line_byte_range.end);
                 if end > start {
-                    let start_col = byte_to_char_col(&line_text, start - line_byte_range.start);
-                    let end_col = byte_to_char_col(&line_text, end - line_byte_range.start);
-                    let x1 =
-                        text_x + width_of(&line_text.chars().take(start_col).collect::<String>());
-                    let x2 =
-                        text_x + width_of(&line_text.chars().take(end_col).collect::<String>());
+                    let start_col = byte_to_char_col(line_text, start - line_byte_range.start);
+                    let end_col = byte_to_char_col(line_text, end - line_byte_range.start);
+                    let x1 = text_x + line_text.chars().take(start_col).map(advance_of).sum::<f32>();
+                    let x2 = text_x + line_text.chars().take(end_col).map(advance_of).sum::<f32>();
                     let y_under = y + line_height - 3.0;
                     painter.line_segment(
                         [egui::pos2(x1, y_under), egui::pos2(x2, y_under)],
@@ -3274,12 +3315,12 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     if bl < start_line || bl >= end_line {
                         continue; // only draw if visible
                     }
-                    let line_text = app
+                    let line_text_cow = app
                         .active_buffer()
                         .line_text(bl)
-                        .map(|c| c.into_owned())
                         .unwrap_or_default();
-                    let char_col = byte_to_char_col(&line_text, bc);
+                    let line_text: &str = &line_text_cow;
+                    let char_col = byte_to_char_col(line_text, bc);
                     let bx = (text_x_caret + char_col as f32 * char_width).round();
                     let by = (rect.top() + bl as f32 * line_height).round();
                     painter.rect_filled(
@@ -3306,12 +3347,12 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             if cl >= total_lines {
                 continue;
             }
-            let caret_line_text = app
+            let caret_line_text_cow = app
                 .active_buffer()
                 .line_text(cl)
-                .map(|c| c.into_owned())
                 .unwrap_or_default();
-            let char_col = byte_to_char_col(&caret_line_text, bc);
+            let caret_line_text: &str = &caret_line_text_cow;
+            let char_col = byte_to_char_col(caret_line_text, bc);
             let caret_x = (text_x_caret + char_col as f32 * char_width).round();
             // The primary caret uses the animated y; additional carets
             // snap to their line (animation across N carets is a follow-up).

@@ -10,6 +10,7 @@
 //!   the renderer receives per line.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// A theme-agnostic sRGB color carried by [`ColorSegment`]. Filled from
 /// the active tree-sitter theme's capture → color map by
@@ -38,8 +39,9 @@ pub struct ColorSegment {
 pub struct SyntaxCache {
     /// Color segments keyed by line index. Empty when highlighting
     /// is disabled (file too large, unknown extension, or just
-    /// invalidated by an edit).
-    pub lines: HashMap<usize, Vec<ColorSegment>>,
+    /// invalidated by an edit). Shared by reference so renderers can
+    /// read a cached line without copying its segments.
+    pub lines: HashMap<usize, Rc<Vec<ColorSegment>>>,
     /// `true` after any buffer edit; the renderer re-highlights
     /// affected lines on next render.
     pub dirty: bool,
@@ -154,7 +156,7 @@ mod tests {
         for line in 0..10 {
             cache
                 .lines
-                .insert(line, vec![ColorSegment { range: 0..1, color }]);
+                .insert(line, Rc::new(vec![ColorSegment { range: 0..1, color }]));
         }
         cache.invalidate_from(4);
         assert!(cache.dirty, "should mark dirty");
@@ -177,8 +179,8 @@ mod tests {
     #[test]
     fn syntax_cache_invalidate_clears_and_sets_dirty() {
         let mut cache = SyntaxCache::default();
-        cache.lines.insert(0, Vec::new());
-        cache.lines.insert(1, Vec::new());
+        cache.lines.insert(0, Rc::new(Vec::new()));
+        cache.lines.insert(1, Rc::new(Vec::new()));
         assert!(!cache.dirty);
         cache.invalidate();
         assert!(cache.dirty);

@@ -42,7 +42,12 @@ tree-sitter-diff = "0.1.0"
 tree-sitter-make = "1.1.1"
 
 [dev-dependencies]
+criterion = "0.5"
 tempfile = "3"
+
+[[bench]]
+name = "hot_paths"
+harness = false
 
 [lints]
 workspace = true

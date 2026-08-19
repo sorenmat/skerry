@@ -4,12 +4,12 @@
 //! changes. It shells out to `git` only to read the `HEAD` blob and to
 //! discover the repository root.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use similar::{Algorithm, DiffOp};
-
-use crate::Buffer;
 
 /// Maximum `HEAD` blob size we are willing to diff. Files larger than
 /// this get no gutter, which keeps multi-GB log files responsive.
@@ -54,9 +54,17 @@ pub struct Hunk {
 pub struct GitGutter {
     statuses: Vec<LineStatus>,
     removed: Vec<RemovedBlock>,
+    /// Removed-line count per anchor line (`RemovedBlock::before_line`),
+    /// so the render path is one lookup per line instead of a scan of
+    /// all blocks.
+    removed_by_line: BTreeMap<usize, usize>,
     hunks: Vec<Hunk>,
     enabled: bool,
     dirty: bool,
+    /// Cached `(canonical file path, canonical repo root)`. The repo
+    /// root is invariant per file, so it is resolved once instead of
+    /// re-running `git rev-parse` on every refresh.
+    cached_root: Option<(PathBuf, PathBuf)>,
 }
 
 impl GitGutter {
@@ -65,14 +73,19 @@ impl GitGutter {
         Self {
             statuses: Vec::new(),
             removed: Vec::new(),
+            removed_by_line: BTreeMap::new(),
             hunks: Vec::new(),
             enabled: false,
             dirty: false,
+            cached_root: None,
         }
     }
 
-    /// Recompute the gutter for `path` against `buffer`.
-    pub fn refresh(&mut self, path: Option<&Path>, buffer: &dyn Buffer) {
+    /// Recompute the gutter for `path` against the document's current
+    /// source. `source` is the memoized document bytes (see
+    /// `Document::source_bytes`), borrowed — an unchanged document
+    /// costs no copy.
+    pub fn refresh(&mut self, path: Option<&Path>, source: &Arc<Vec<u8>>) {
         self.clear();
         let Some(path) = path else {
             return;
@@ -80,11 +93,15 @@ impl GitGutter {
         let Ok(path) = path.canonicalize() else {
             return;
         };
-        let Some(repo_root) = repo_root_for(&path) else {
-            return;
-        };
-        let Ok(repo_root) = repo_root.canonicalize() else {
-            return;
+        let repo_root = match self.cached_root.as_ref() {
+            Some((cached_path, root)) if cached_path == &path => root.clone(),
+            _ => match repo_root_for(&path).and_then(|r| r.canonicalize().ok()) {
+                Some(root) => {
+                    self.cached_root = Some((path.clone(), root.clone()));
+                    root
+                }
+                None => return,
+            },
         };
         let rel_path = match path.strip_prefix(&repo_root) {
             Ok(p) => p,
@@ -94,20 +111,19 @@ impl GitGutter {
             }
         };
 
-        let current = match String::from_utf8(buffer.to_bytes()) {
-            Ok(s) => s,
-            Err(_) => return,
+        let Ok(current) = std::str::from_utf8(source) else {
+            return;
         };
 
         match head_blob(&repo_root, rel_path) {
             Some(base) => {
-                self.compute_diff(&base, &current);
+                self.compute_diff(&base, current);
                 self.enabled = true;
             }
             None => {
                 // File is untracked: every line is added.
-                let current_lines: Vec<&str> = current.lines().collect();
-                self.statuses = vec![LineStatus::Added; current_lines.len()];
+                let current_line_count = current.lines().count();
+                self.statuses = vec![LineStatus::Added; current_line_count];
                 self.enabled = true;
             }
         }
@@ -122,12 +138,17 @@ impl GitGutter {
             .unwrap_or(LineStatus::Unchanged)
     }
 
-    /// Return any removed blocks that belong immediately before `line`.
-    pub fn removed_blocks_before(&self, line: usize) -> Vec<&RemovedBlock> {
-        self.removed
-            .iter()
-            .filter(|b| b.before_line == line)
-            .collect()
+    /// Return the removed blocks anchored exactly at `line` (blocks are
+    /// sorted by anchor line, so this is a slice, not a fresh vec).
+    pub fn removed_blocks_before(&self, line: usize) -> &[RemovedBlock] {
+        let end = self.removed.partition_point(|b| b.before_line <= line);
+        let start = self.removed[..end].partition_point(|b| b.before_line < line);
+        &self.removed[start..end]
+    }
+
+    /// Return the total number of removed lines anchored at `line`.
+    pub fn removed_count_before(&self, line: usize) -> usize {
+        self.removed_by_line.get(&line).copied().unwrap_or(0)
     }
 
     /// Return the computed hunks.
@@ -146,7 +167,7 @@ impl GitGutter {
                 LineStatus::Unchanged => {}
             }
         }
-        let removed: usize = self.removed.iter().map(|b| b.count).sum();
+        let removed: usize = self.removed_by_line.values().sum();
         (added, modified, removed)
     }
 
@@ -168,13 +189,24 @@ impl GitGutter {
     fn clear(&mut self) {
         self.statuses.clear();
         self.removed.clear();
+        self.removed_by_line.clear();
         self.hunks.clear();
         self.enabled = false;
+    }
+
+    fn push_removed(&mut self, before_line: usize, count: usize, lines: Vec<String>) {
+        *self.removed_by_line.entry(before_line).or_insert(0) += count;
+        self.removed.push(RemovedBlock {
+            before_line,
+            count,
+            lines,
+        });
     }
 
     fn compute_diff(&mut self, base: &str, current: &str) {
         self.statuses.clear();
         self.removed.clear();
+        self.removed_by_line.clear();
 
         let base_lines: Vec<&str> = base.lines().collect();
         let current_lines: Vec<&str> = current.lines().collect();
@@ -198,11 +230,7 @@ impl GitGutter {
                         .iter()
                         .map(|s| s.to_string())
                         .collect();
-                    self.removed.push(RemovedBlock {
-                        before_line: new_index,
-                        count,
-                        lines,
-                    });
+                    self.push_removed(new_index, count, lines);
                 }
                 DiffOp::Insert {
                     old_index: _,
@@ -240,11 +268,7 @@ impl GitGutter {
                             .iter()
                             .map(|s| s.to_string())
                             .collect();
-                        self.removed.push(RemovedBlock {
-                            before_line: new_index,
-                            count: old_len - paired,
-                            lines,
-                        });
+                        self.push_removed(new_index, old_len - paired, lines);
                     }
                 }
             }
@@ -261,13 +285,11 @@ impl GitGutter {
 
         let mut start: Option<usize> = None;
         for line in 0..=current_line_count {
-            let changed = if line < current_line_count {
-                self.statuses[line] != LineStatus::Unchanged
-                    || self.removed.iter().any(|b| b.before_line == line)
-            } else {
-                // Sentinel for a removed-only block at EOF.
-                self.removed.iter().any(|b| b.before_line == line)
-            };
+            // The `line == current_line_count` sentinel catches a
+            // removed-only block at EOF.
+            let changed = self.removed_by_line.contains_key(&line)
+                || (line < current_line_count
+                    && self.statuses[line] != LineStatus::Unchanged);
 
             if changed && start.is_none() {
                 start = Some(line);
@@ -322,7 +344,6 @@ fn head_blob(repo_root: &Path, rel_path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PieceTableBuffer;
     use std::fs;
     use std::process::Command;
 
@@ -348,8 +369,8 @@ mod tests {
         assert!(status.success(), "git {:?} failed", args);
     }
 
-    fn buffer_from(text: &str) -> Box<dyn Buffer> {
-        Box::new(PieceTableBuffer::from_bytes(text.as_bytes().to_vec()))
+    fn src(text: &str) -> Arc<Vec<u8>> {
+        Arc::new(text.as_bytes().to_vec())
     }
 
     #[test]
@@ -359,20 +380,8 @@ mod tests {
         run_git(&dir, &["add", "file.txt"]);
         run_git(&dir, &["commit", "-m", "initial"]);
 
-        let buf = buffer_from("line1\nline2\nline3\n");
-        eprintln!(
-            "line_count={} lines={:?}",
-            buf.line_count(),
-            (0..buf.line_count())
-                .map(|i| buf.line_text(i).map(|s| s.into_owned()).unwrap_or_default())
-                .collect::<Vec<_>>()
-        );
         let mut gutter = GitGutter::new();
-        gutter.refresh(Some(&path), &*buf);
-        eprintln!(
-            "statuses={:?} removed={:?} hunks={:?}",
-            gutter.statuses, gutter.removed, gutter.hunks
-        );
+        gutter.refresh(Some(&path), &src("line1\nline2\nline3\n"));
         assert!(gutter.enabled());
         assert_eq!(gutter.status(0), LineStatus::Unchanged);
         assert_eq!(gutter.status(1), LineStatus::Unchanged);
@@ -388,7 +397,7 @@ mod tests {
         run_git(&dir, &["commit", "-m", "initial"]);
 
         let mut gutter = GitGutter::new();
-        gutter.refresh(Some(&path), &*buffer_from("line1\nline2\nline3\n"));
+        gutter.refresh(Some(&path), &src("line1\nline2\nline3\n"));
         assert_eq!(gutter.status(0), LineStatus::Unchanged);
         assert_eq!(gutter.status(1), LineStatus::Added);
         assert_eq!(gutter.status(2), LineStatus::Unchanged);
@@ -403,7 +412,7 @@ mod tests {
         run_git(&dir, &["commit", "-m", "initial"]);
 
         let mut gutter = GitGutter::new();
-        gutter.refresh(Some(&path), &*buffer_from("new1\nold2\n"));
+        gutter.refresh(Some(&path), &src("new1\nold2\n"));
         assert_eq!(gutter.status(0), LineStatus::Modified);
         assert_eq!(gutter.status(1), LineStatus::Unchanged);
         assert_eq!(gutter.summary(), (0, 1, 0));
@@ -417,7 +426,7 @@ mod tests {
         run_git(&dir, &["commit", "-m", "initial"]);
 
         let mut gutter = GitGutter::new();
-        gutter.refresh(Some(&path), &*buffer_from("line1\nline3\n"));
+        gutter.refresh(Some(&path), &src("line1\nline3\n"));
         assert_eq!(gutter.status(0), LineStatus::Unchanged);
         assert_eq!(gutter.status(1), LineStatus::Unchanged);
         assert_eq!(gutter.summary(), (0, 0, 1));
@@ -434,7 +443,7 @@ mod tests {
         fs::write(&path, "a\nb\n").unwrap();
 
         let mut gutter = GitGutter::new();
-        gutter.refresh(Some(&path), &*buffer_from("a\nb\n"));
+        gutter.refresh(Some(&path), &src("a\nb\n"));
         assert!(gutter.enabled());
         assert_eq!(gutter.status(0), LineStatus::Added);
         assert_eq!(gutter.status(1), LineStatus::Added);
@@ -449,7 +458,7 @@ mod tests {
         run_git(&dir, &["commit", "-m", "initial"]);
 
         let mut gutter = GitGutter::new();
-        gutter.refresh(Some(&path), &*buffer_from("a\nB\nc\nD\ne\n"));
+        gutter.refresh(Some(&path), &src("a\nB\nc\nD\ne\n"));
         let hunks = gutter.hunks().to_vec();
         assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].start_line, 1);
@@ -468,7 +477,7 @@ mod tests {
         fs::write(&path, "hello").unwrap();
 
         let mut gutter = GitGutter::new();
-        gutter.refresh(Some(&path), &*buffer_from("hello"));
+        gutter.refresh(Some(&path), &src("hello"));
         assert!(!gutter.enabled());
     }
 }
