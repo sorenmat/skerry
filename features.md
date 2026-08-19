@@ -374,6 +374,12 @@ Skerry/
 - **LSP status indicator** — the status bar shows a filled circle
   (e.g. `● rust-analyzer`) when a language server is running and an empty
   circle (e.g. `○ rust-analyzer`) when the server failed to start.
+- **Missing-server popup** — when a language server binary isn't on
+  PATH, both frontends show a popup naming the server, an install
+  hint (e.g. `brew install taplo`), and a "Don't show again for this
+  language" checkbox (Space toggles; persisted in `config.json` under
+  `suppressed_lsp_prompts`). Shows once per failure streak — silent
+  background retries don't re-prompt.
 - **Rename symbol** (F2) — `textDocument/rename`. A prompt pre-filled
   with the current word appears; Enter dispatches the rename and applies
   the resulting `WorkspaceEdit` to the buffer.

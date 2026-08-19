@@ -851,6 +851,9 @@ pub fn render(ctx: &egui::Context, app: &mut EditorApp) {
     if app.close_confirm.is_some() {
         render_close_confirm_window(ctx, app);
     }
+    if app.lsp_missing_prompt.is_some() {
+        render_lsp_missing_window(ctx, app);
+    }
     if app.project_search.open {
         render_project_search_window(ctx, app);
     }
@@ -1214,6 +1217,61 @@ fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
 /// [`crate::app::EditorApp::cycle_close_choice`] which we call from
 /// `dispatch_modal_event`; Enter / `y` confirm via
 /// [`crate::app::EditorApp::confirm_close_choice`].
+/// Popup for a missing language server: what's disabled, how to
+/// install it, and a persistent per-language "don't show again".
+fn render_lsp_missing_window(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut open = true;
+    // Snapshot everything the window body needs so the egui closure
+    // doesn't hold a borrow on `app` (same pattern as the
+    // close-confirm window).
+    let (language, server, hint, mut checked) = match app.lsp_missing_prompt.as_ref() {
+        Some(p) => (
+            p.info.language_id.clone(),
+            p.info.server_name.clone(),
+            p.hint,
+            p.dont_show_again,
+        ),
+        None => return,
+    };
+    let mut ok_clicked = false;
+
+    egui::Window::new("Language server unavailable")
+        .collapsible(false)
+        .resizable(false)
+        .default_width(430.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "{server} is not installed, so {language} diagnostics, \
+                 completions, hover, and code actions are disabled."
+            ));
+            ui.add_space(6.0);
+            if let Some(cmd) = hint {
+                ui.label("To enable it, install the server, e.g.:");
+                ui.add_space(2.0);
+                ui.code(cmd);
+            }
+            ui.add_space(8.0);
+            ui.checkbox(&mut checked, format!("Don't show again for {language}"));
+            ui.add_space(6.0);
+            ok_clicked = ui.button("OK").clicked();
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new("Enter to close · Space toggles the checkbox")
+                    .small()
+                    .weak(),
+            );
+        });
+
+    if let Some(prompt) = app.lsp_missing_prompt.as_mut() {
+        prompt.dont_show_again = checked;
+    }
+    if ok_clicked || !open {
+        app.dismiss_lsp_missing_prompt();
+    }
+}
+
 fn render_close_confirm_window(ctx: &egui::Context, app: &mut EditorApp) {
     let mut open = true;
     // Snapshot the bits we need before opening the window so we can

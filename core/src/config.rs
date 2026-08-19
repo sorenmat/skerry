@@ -90,6 +90,25 @@ pub struct Config {
     /// Example: {"for": "for ${1:item} in ${2:collection} {\n    $0\n}"}
     #[serde(default)]
     pub snippets: HashMap<String, String>,
+    /// Language IDs whose "language server not installed" popup the
+    /// user has dismissed with "don't show again".
+    #[serde(default)]
+    pub suppressed_lsp_prompts: Vec<String>,
+}
+
+impl Config {
+    /// Record that the missing-server popup should stay hidden for
+    /// `language_id` from now on.
+    pub fn suppress_lsp_prompt(&mut self, language_id: &str) {
+        if !self.lsp_prompt_suppressed(language_id) {
+            self.suppressed_lsp_prompts.push(language_id.to_string());
+        }
+    }
+
+    /// True when the missing-server popup was silenced for `language_id`.
+    pub fn lsp_prompt_suppressed(&self, language_id: &str) -> bool {
+        self.suppressed_lsp_prompts.iter().any(|l| l == language_id)
+    }
 }
 
 fn default_git_gutter() -> bool {
@@ -142,6 +161,7 @@ impl Default for Config {
             caret_animation: false,
             formatters: default_formatters(),
             snippets: HashMap::new(),
+            suppressed_lsp_prompts: Vec::new(),
         }
     }
 }
@@ -290,6 +310,32 @@ mod tests {
 
         let loaded: Config = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn suppressed_lsp_prompts_roundtrip_and_dedup() {
+        let mut cfg = Config::default();
+        assert!(!cfg.lsp_prompt_suppressed("toml"));
+        cfg.suppress_lsp_prompt("toml");
+        cfg.suppress_lsp_prompt("toml"); // dedup — no double entries.
+        assert_eq!(cfg.suppressed_lsp_prompts, vec!["toml".to_string()]);
+        assert!(cfg.lsp_prompt_suppressed("toml"));
+        assert!(!cfg.lsp_prompt_suppressed("rust"));
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let loaded: Config = serde_json::from_str(&json).unwrap();
+        assert!(loaded.lsp_prompt_suppressed("toml"));
+        assert_eq!(loaded.suppressed_lsp_prompts.len(), 1);
+    }
+
+    #[test]
+    fn legacy_config_without_suppressed_prompts_loads() {
+        // Configs written before the field existed must keep loading
+        // (serde default kicks in).
+        let legacy = r#"{ "theme": "Ocean Dark" }"#;
+        let loaded: Config = serde_json::from_str(legacy).unwrap();
+        assert!(loaded.suppressed_lsp_prompts.is_empty());
+        assert!(!loaded.lsp_prompt_suppressed("toml"));
     }
 
     #[test]

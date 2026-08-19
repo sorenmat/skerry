@@ -9,4 +9,4 @@ mod manager;
 mod protocol;
 
 pub use client::{LspClient, LspError};
-pub use manager::{hover_text, LspManager, ServerStatus};
+pub use manager::{hover_text, LspManager, MissingServerInfo, ServerStatus};

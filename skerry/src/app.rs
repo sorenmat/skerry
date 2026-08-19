@@ -97,6 +97,8 @@ pub struct EditorApp {
     /// a 1-based line number; Enter jumps, Esc cancels.
     pub go_to_line_dialog: Option<GoToLineDialog>,
     pub rename_dialog: Option<RenameDialog>,
+    /// Missing-language-server popup. `Some` while it is up.
+    pub lsp_missing_prompt: Option<LspMissingPrompt>,
     /// Animated caret vertical position in content-space pixels
     /// (`cursor_line * line_height`). Lerps toward the target each
     /// frame so the caret slides smoothly between lines instead of
@@ -336,6 +338,15 @@ pub struct RenameDialog {
     pub new_name: String,
 }
 
+/// Popup shown when a language server binary is missing. Offers the
+/// install hint and a persistent "don't show again for this language"
+/// checkbox (stored in `Config::suppressed_lsp_prompts`).
+pub struct LspMissingPrompt {
+    pub info: core::lsp::MissingServerInfo,
+    pub hint: Option<&'static str>,
+    pub dont_show_again: bool,
+}
+
 impl EditorApp {
     /// Create an `EditorApp` around a single buffer. Wraps the buffer
     /// in a one-element document list.
@@ -371,6 +382,7 @@ impl EditorApp {
             close_confirm: None,
             go_to_line_dialog: None,
             rename_dialog: None,
+            lsp_missing_prompt: None,
             caret_anim_y: f32::NAN,
             prev_active: 0,
             syntax: SyntaxEngine::default_dark(),
@@ -1134,6 +1146,30 @@ impl EditorApp {
     /// Returns `true` when the event was consumed.
     fn dispatch_modal_event(&mut self, event: &eframe::egui::Event) -> bool {
         use eframe::egui::{Event, Key};
+
+        if self.lsp_missing_prompt.is_some() {
+            if let Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            {
+                match *key {
+                    Key::Escape | Key::Enter => self.dismiss_lsp_missing_prompt(),
+                    Key::N if !modifiers.command && !modifiers.ctrl => {
+                        self.dismiss_lsp_missing_prompt()
+                    }
+                    Key::Space => {
+                        if let Some(prompt) = self.lsp_missing_prompt.as_mut() {
+                            prompt.dont_show_again = !prompt.dont_show_again;
+                        }
+                    }
+                    _ => {} // Eat everything else.
+                }
+            }
+            return true;
+        }
 
         if self.close_confirm.is_some() {
             if let Event::Key {
@@ -2898,6 +2934,37 @@ impl EditorApp {
         self.sync_project_tree_to_active();
     }
 
+    /// Close the missing-server popup, honouring the "don't show
+    /// again" checkbox by recording the language in the persisted
+    /// config.
+    pub fn dismiss_lsp_missing_prompt(&mut self) {
+        if let Some(prompt) = self.lsp_missing_prompt.take() {
+            if prompt.dont_show_again {
+                self.config.suppress_lsp_prompt(&prompt.info.language_id);
+                self.sync_config();
+            }
+        }
+    }
+
+    /// Pick up a missing-server report from the LSP manager and open
+    /// the popup (unless one is already up or the user silenced the
+    /// language).
+    pub fn poll_lsp_missing_prompt(&mut self) {
+        if self.lsp_missing_prompt.is_some() {
+            return;
+        }
+        if let Some(info) = self.lsp_manager.take_missing_server() {
+            if !self.config.lsp_prompt_suppressed(&info.language_id) {
+                let hint = core::lsp::LspManager::install_hint(&info.language_id);
+                self.lsp_missing_prompt = Some(LspMissingPrompt {
+                    info,
+                    hint,
+                    dont_show_again: false,
+                });
+            }
+        }
+    }
+
     /// Cycle the focused choice on the close-confirm prompt. `delta`
     /// moves forward (+1) or backward (-1) through Save → Discard →
     /// Cancel. No-op when no prompt is up.
@@ -3979,6 +4046,7 @@ impl App for EditorApp {
         if let Some(status) = self.lsp_manager.take_status() {
             self.status_message = Some(status);
         }
+        self.poll_lsp_missing_prompt();
         self.process_lsp_responses();
 
         // 7. Capture the current window size for persistence. Only saved
@@ -4207,6 +4275,48 @@ mod tests {
         let buf: Box<dyn Buffer> =
             Box::new(PieceTableBuffer::from_bytes(content.as_bytes().to_vec()));
         EditorApp::new(buf)
+    }
+
+    #[test]
+    fn lsp_missing_prompt_opens_and_suppression_persists() {
+        let mut app = app_with("x");
+        // Seed the manager report; poll opens the popup with a hint.
+        app.lsp_manager.report_missing_server(
+            core::lsp::MissingServerInfo {
+                language_id: "toml".into(),
+                server_name: "taplo".into(),
+            },
+        );
+        app.poll_lsp_missing_prompt();
+        let prompt = app.lsp_missing_prompt.as_ref().expect("popup open");
+        assert_eq!(prompt.info.server_name, "taplo");
+        assert!(prompt.hint.is_some());
+        assert!(!prompt.dont_show_again);
+
+        // Tick the checkbox, dismiss → config records the suppression.
+        app.lsp_missing_prompt.as_mut().unwrap().dont_show_again = true;
+        app.dismiss_lsp_missing_prompt();
+        assert!(app.lsp_missing_prompt.is_none());
+        assert!(app.config.lsp_prompt_suppressed("toml"));
+
+        // A later report for the same language does not re-open it…
+        app.lsp_manager.report_missing_server(
+            core::lsp::MissingServerInfo {
+                language_id: "toml".into(),
+                server_name: "taplo".into(),
+            },
+        );
+        app.poll_lsp_missing_prompt();
+        assert!(app.lsp_missing_prompt.is_none());
+        // …but a different language still prompts.
+        app.lsp_manager.report_missing_server(
+            core::lsp::MissingServerInfo {
+                language_id: "rust".into(),
+                server_name: "rust-analyzer".into(),
+            },
+        );
+        app.poll_lsp_missing_prompt();
+        assert!(app.lsp_missing_prompt.is_some());
     }
 
     fn markdown_app(content: &str) -> EditorApp {
