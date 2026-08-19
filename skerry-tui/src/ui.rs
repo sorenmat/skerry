@@ -173,6 +173,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_close_confirm_overlay(f, area, confirm);
     }
 
+    // Missing-language-server popup draws on top of everything else.
+    if let Some(prompt) = &app.lsp_missing_prompt {
+        render_lsp_missing_overlay(f, area, prompt);
+    }
+
     // Project-wide search draws as a centered overlay so the results
     // list has enough room.
     if app.project_search.open {
@@ -277,6 +282,57 @@ fn render_close_confirm_overlay(f: &mut Frame, area: Rect, confirm: &crate::app:
         Span::styled(" Cancel ", cancel_style),
     ]);
     f.render_widget(Paragraph::new(prompt), overlay_rect);
+}
+
+/// Centered popup for a missing language server: what's disabled, how
+/// to install it, and a persistent per-language "don't show again"
+/// checkbox (Space toggles).
+fn render_lsp_missing_overlay(
+    f: &mut Frame,
+    area: Rect,
+    prompt: &crate::app::LspMissingPrompt,
+) {
+    let width = (area.width as f32 * 0.7).clamp(44.0, 70.0) as u16;
+    // Message + optional install hint + checkbox + footer.
+    let height = 6 + u16::from(prompt.hint.is_some());
+    let overlay_rect = centered_rect(width.min(area.width), height.min(area.height), area);
+
+    f.render_widget(Clear, overlay_rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Language server unavailable ");
+    let inner = block.inner(overlay_rect);
+    f.render_widget(block, overlay_rect);
+
+    let lang = &prompt.info.language_id;
+    let server = &prompt.info.server_name;
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(format!(
+            " {server} is not installed, so {lang} diagnostics,"
+        )),
+        Line::from(" completions, hover, and code actions are disabled."),
+    ];
+    if let Some(cmd) = prompt.hint {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(" Install with:  {cmd}")));
+    }
+    lines.push(Line::from(""));
+    let mark = if prompt.dont_show_again { 'x' } else { ' ' };
+    lines.push(Line::from(format!(
+        " [{mark}] Don't show again for {lang} (Space)"
+    )));
+    lines.push(Line::from(" Enter/Esc to close "));
+
+    // Truncate each line to the popup width so nothing spills.
+    let lines: Vec<Line<'static>> = lines
+        .into_iter()
+        .map(|l| {
+            let text = l.spans.iter().map(|s| s.content.clone()).collect::<String>();
+            Line::from(text.chars().take(inner.width as usize).collect::<String>())
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Render the project-wide search / replace overlay as a centred popup.

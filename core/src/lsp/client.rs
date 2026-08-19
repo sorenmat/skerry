@@ -19,6 +19,10 @@ use super::protocol::{decode_one, encode_message, Message};
 #[derive(Debug)]
 pub enum LspError {
     Spawn(String),
+    /// The server binary was not found on PATH (ENOENT) — surfaced
+    /// separately so the editor can offer an install hint instead of a
+    /// raw OS error string.
+    SpawnNotFound,
     MissingPipe,
     Write(std::io::Error),
     Read(std::io::Error),
@@ -28,6 +32,7 @@ impl std::fmt::Display for LspError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LspError::Spawn(s) => write!(f, "failed to spawn language server: {s}"),
+            LspError::SpawnNotFound => write!(f, "language server binary not found"),
             LspError::MissingPipe => write!(f, "stdio pipe missing from spawned server"),
             LspError::Write(e) => write!(f, "failed to write to server stdin: {e}"),
             LspError::Read(e) => write!(f, "failed to read from server stdout: {e}"),
@@ -63,7 +68,13 @@ impl LspClient {
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| LspError::Spawn(e.to_string()))?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    LspError::SpawnNotFound
+                } else {
+                    LspError::Spawn(e.to_string())
+                }
+            })?;
 
         let stdin = child.stdin.take().ok_or(LspError::MissingPipe)?;
         let stdout = child.stdout.take().ok_or(LspError::MissingPipe)?;
@@ -141,5 +152,24 @@ async fn read_loop(mut stdout: tokio::process::ChildStdout, in_tx: mpsc::Unbound
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawning_missing_binary_reports_not_found() {
+        let result = LspClient::spawn(&["skerry-no-such-binary-xyz".to_string()]).await;
+        let err = match result {
+            Ok(_) => panic!("spawning a missing binary must fail"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, LspError::SpawnNotFound),
+            "expected SpawnNotFound, got {err:?}"
+        );
+        assert!(err.to_string().contains("not found"));
     }
 }

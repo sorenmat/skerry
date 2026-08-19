@@ -21,7 +21,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use url::Url;
 
-use super::client::LspClient;
+use super::client::{LspClient, LspError};
 use super::protocol::{Id, Message};
 
 const DEBOUNCE_MS: u64 = 300;
@@ -37,6 +37,16 @@ pub struct ServerStatus {
     /// means the document was opened but the server is not present
     /// (usually a spawn failure).
     pub running: bool,
+}
+
+/// A language server binary that was not found on PATH. Reported once
+/// per failure streak so the frontend can show an install hint popup.
+#[derive(Debug, Clone)]
+pub struct MissingServerInfo {
+    /// The LSP language identifier (e.g. `"toml"`).
+    pub language_id: String,
+    /// Human-friendly server name (e.g. `"taplo"`).
+    pub server_name: String,
 }
 
 /// Synchronous manager for all LSP servers.
@@ -60,6 +70,7 @@ pub struct LspManager {
     pending_change: Option<(Url, Instant, String)>,
     last_status: Option<String>,
     server_spawn_failures: HashMap<ServerKey, Instant>,
+    missing_server: Option<MissingServerInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -131,12 +142,47 @@ impl LspManager {
             pending_change: None,
             last_status: None,
             server_spawn_failures: HashMap::new(),
+            missing_server: None,
         }
     }
 
     /// Return the last status message (error or info) and clear it.
     pub fn take_status(&mut self) -> Option<String> {
         self.last_status.take()
+    }
+
+    /// Return the most recent missing-server report and clear it. Set
+    /// once per failure streak when a server binary is not on PATH;
+    /// frontends decide whether to show a popup (respecting the user's
+    /// per-language "don't show again" choice).
+    pub fn take_missing_server(&mut self) -> Option<MissingServerInfo> {
+        self.missing_server.take()
+    }
+
+    /// Seed a missing-server report. Normally set internally when a
+    /// spawn fails with ENOENT; exposed so frontends and tests can
+    /// drive the popup deterministically.
+    pub fn report_missing_server(&mut self, info: MissingServerInfo) {
+        self.missing_server = Some(info);
+    }
+
+    /// A one-line install hint for a language server, for the missing
+    /// binary popup. Static commands — the most common channel per
+    /// server, no package-manager detection.
+    pub fn install_hint(language_id: &str) -> Option<&'static str> {
+        match language_id {
+            "rust" => Some("rustup component add rust-analyzer"),
+            "go" => Some("go install golang.org/x/tools/gopls@latest"),
+            "javascript" | "javascriptreact" | "typescript" | "typescriptreact" => {
+                Some("npm install -g typescript typescript-language-server")
+            }
+            "python" => Some("pipx install python-lsp-server"),
+            "c" | "cpp" => Some("brew install llvm   (or your system's clangd package)"),
+            "shellscript" => Some("npm install -g bash-language-server"),
+            "toml" => Some("brew install taplo   (or: cargo install taplo-cli)"),
+            "html" | "css" => Some("npm install -g vscode-langservers-extracted"),
+            _ => None,
+        }
     }
 
     /// True if the manager knows how to start a server for this language.
@@ -253,6 +299,11 @@ impl LspManager {
                 return false;
             }
         }
+        // A failure with no prior entry is the *start* of a failure
+        // streak — the only point where a missing-binary popup should
+        // fire. Cooldown-expired retries land in the Err arm too but
+        // have an existing entry and stay silent.
+        let was_new_failure = !self.server_spawn_failures.contains_key(key);
 
         match self.runtime.block_on(LspClient::spawn(&command)) {
             Ok((client, in_rx)) => {
@@ -296,7 +347,20 @@ impl LspManager {
             Err(e) => {
                 self.server_spawn_failures
                     .insert(key.clone(), Instant::now());
-                self.last_status = Some(format!("LSP spawn error: {e}"));
+                match e {
+                    LspError::SpawnNotFound if was_new_failure => {
+                        let name = LspManager::server_display_name(&key.language_id)
+                            .unwrap_or(&key.language_id);
+                        self.missing_server = Some(MissingServerInfo {
+                            language_id: key.language_id.clone(),
+                            server_name: name.to_string(),
+                        });
+                        self.last_status = Some(format!("LSP: {name} is not installed."));
+                    }
+                    other => {
+                        self.last_status = Some(format!("LSP spawn error: {other}"));
+                    }
+                }
                 false
             }
         }
@@ -1218,6 +1282,47 @@ mod tests {
         assert!(LspManager::is_language_supported("cpp"));
         assert!(!LspManager::is_language_supported("swift"));
         assert!(!LspManager::is_language_supported(""));
+    }
+
+    #[test]
+    fn install_hint_covers_every_supported_language() {
+        // Every language a server can spawn for must have an install
+        // hint — a missing hint silently degrades the popup.
+        for lang in [
+            "rust",
+            "go",
+            "javascript",
+            "javascriptreact",
+            "typescript",
+            "typescriptreact",
+            "python",
+            "c",
+            "cpp",
+            "shellscript",
+            "toml",
+            "html",
+            "css",
+        ] {
+            assert!(
+                LspManager::install_hint(lang).is_some(),
+                "missing install hint for {lang}"
+            );
+        }
+        assert!(LspManager::install_hint("swift").is_none());
+        assert!(LspManager::install_hint("").is_none());
+    }
+
+    #[test]
+    fn take_missing_server_clears_report() {
+        let mut manager = LspManager::new();
+        manager.missing_server = Some(MissingServerInfo {
+            language_id: "toml".into(),
+            server_name: "taplo".into(),
+        });
+        let info = manager.take_missing_server().unwrap();
+        assert_eq!(info.language_id, "toml");
+        assert_eq!(info.server_name, "taplo");
+        assert!(manager.take_missing_server().is_none());
     }
 
     #[test]
