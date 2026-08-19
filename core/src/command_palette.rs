@@ -258,6 +258,12 @@ pub const COMMANDS: &[Command] = &[
         event: EditorEvent::RenameSymbol,
     },
     Command {
+        id: "code_actions",
+        label: "Code actions (quick fixes)",
+        keybinding: "Ctrl+.",
+        event: EditorEvent::CodeActions,
+    },
+    Command {
         id: "format_document",
         label: "Format document",
         keybinding: "",

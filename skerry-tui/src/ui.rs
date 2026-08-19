@@ -193,6 +193,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.lsp_completion.open {
         render_lsp_completion_overlay(f, area, app);
     }
+
+    // Code-action picker draws on top of everything else.
+    if app.code_action_picker.open {
+        render_code_action_overlay(f, area, app);
+    }
 }
 
 /// Render the close-on-dirty prompt as a single line at the bottom.
@@ -457,6 +462,93 @@ fn lsp_completion_rect(area: Rect) -> Rect {
     let width = (area.width as f32 * 0.5).clamp(30.0, 60.0) as u16;
     let height = (area.height as f32 * 0.5).clamp(8.0, 20.0) as u16;
     centered_rect(width, height, area)
+}
+
+fn code_action_rect(area: Rect, item_count: usize) -> Rect {
+    let width = (area.width as f32 * 0.55).clamp(30.0, 60.0) as u16;
+    // Items + title border + hint row, clamped to half the screen.
+    let height = (item_count as u16 + 3).clamp(4, (area.height / 2).max(4));
+    centered_rect(width, height, area)
+}
+
+/// Render the code-action (quick fix) picker as a centred popup. No
+/// query row — servers return a short list for the cursor line.
+fn render_code_action_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let overlay_rect = code_action_rect(area, app.code_action_picker.items.len());
+
+    f.render_widget(Clear, overlay_rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Code Actions ");
+    let inner = block.inner(overlay_rect);
+    f.render_widget(block, overlay_rect);
+
+    if app.code_action_picker.items.is_empty() {
+        let msg = if app.code_action_picker.pending {
+            "Requesting..."
+        } else {
+            "No code actions"
+        };
+        f.render_widget(Paragraph::new(msg), inner);
+        return;
+    }
+
+    // Reserve bottom row for the hint.
+    let items_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: inner.height.saturating_sub(1),
+    };
+
+    let selected = app.code_action_picker.selected;
+    let selected_style = Style::default()
+        .bg(Color::Rgb(100, 60, 140))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, action) in app.code_action_picker.items.iter().enumerate() {
+        if lines.len() >= items_area.height as usize {
+            break;
+        }
+        let label = format!(" {}", code_action_label(action));
+        let truncated = label
+            .chars()
+            .take(items_area.width as usize)
+            .collect::<String>();
+        let line = if i == selected {
+            Line::from(Span::styled(truncated, selected_style))
+        } else {
+            Line::from(truncated)
+        };
+        lines.push(line);
+    }
+    f.render_widget(Paragraph::new(lines), items_area);
+
+    let hint_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height - 1,
+        width: inner.width,
+        height: 1,
+    };
+    f.render_widget(
+        Paragraph::new(" Enter to apply · Up/Down · Esc to close "),
+        hint_area,
+    );
+}
+
+/// Display label for a code action or command: its title, optionally
+/// suffixed with the kind ("quickfix", "refactor", ...).
+fn code_action_label(action: &lsp_types::CodeActionOrCommand) -> String {
+    match action {
+        lsp_types::CodeActionOrCommand::CodeAction(a) => match &a.kind {
+            Some(kind) => format!("{} [{}]", a.title, kind.as_str()),
+            None => a.title.clone(),
+        },
+        lsp_types::CodeActionOrCommand::Command(c) => c.title.clone(),
+    }
 }
 
 /// Render the command palette as a centred popup.

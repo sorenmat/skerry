@@ -377,6 +377,13 @@ Skerry/
 - **Rename symbol** (F2) — `textDocument/rename`. A prompt pre-filled
   with the current word appears; Enter dispatches the rename and applies
   the resulting `WorkspaceEdit` to the buffer.
+- **Code actions / quick fixes** (Cmd/Ctrl+Period) —
+  `textDocument/codeAction` with the document's diagnostics as context.
+  A picker lists the server's fixes (e.g. rust-analyzer's "Remove
+  unused import"); Enter applies the selected action's `WorkspaceEdit`
+  to the buffer. Actions that carry a command instead of an edit are
+  forwarded via `workspace/executeCommand`. Also reachable from the
+  command palette as "Code actions (quick fixes)".
 - **Format on save** — when saving, if the LSP server supports
   `documentFormattingProvider`, the editor formats the document and
   re-saves the formatted content.
@@ -404,8 +411,13 @@ Skerry/
 ## File I/O
 
 - **Open via CLI args** — `skerry path1 path2` and
-  `skerry-tui path1 path2` open one document per PATH. With no
-  paths, opens a single empty document.
+  `skerry-tui path1 path2` open one document per PATH. A PATH may
+  carry a position suffix: `path:line` or `path:line:col` (1-based,
+  `vim`/`code` style) opens the file with the cursor — and the view —
+  at that line, e.g. `sky src/main.rs:42`. If the whole argument
+  exists on disk it is treated as a literal path, so files with colons
+  in their names still open. With no paths, opens a single empty
+  document.
 - **Open via dialog** (Cmd/Ctrl+O) — text-input dialog, Enter
   submits, Esc cancels. Ctrl/Alt-modified keys are filtered out so
   control chars don't pollute the path.

@@ -182,6 +182,7 @@ fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorEvent> {
             Key::G => Some(EditorEvent::GoToLine(None)),
             Key::P => Some(EditorEvent::FuzzyFinder(None)),
             Key::W => Some(EditorEvent::CloseDoc),
+            Key::Period => Some(EditorEvent::CodeActions),
             Key::Tab => Some(EditorEvent::NextDoc),
             Key::Slash => Some(EditorEvent::ToggleComment),
             _ => None,
@@ -788,6 +789,14 @@ mod tests {
         assert_eq!(
             translate_event(&key_event(Key::N, true, primary())),
             Some(EditorEvent::NewDoc)
+        );
+    }
+
+    #[test]
+    fn primary_period_opens_code_actions() {
+        assert_eq!(
+            translate_event(&key_event(Key::Period, true, primary())),
+            Some(EditorEvent::CodeActions)
         );
     }
 
