@@ -139,6 +139,51 @@ pub(crate) fn bash() -> Grammar {
     }
 }
 
+pub(crate) fn toml() -> Grammar {
+    Grammar {
+        name: "toml",
+        language: tree_sitter_toml_ng::LANGUAGE.into(),
+        highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+        inline: None,
+    }
+}
+
+pub(crate) fn html() -> Grammar {
+    Grammar {
+        name: "html",
+        language: tree_sitter_html::LANGUAGE.into(),
+        highlights_query: tree_sitter_html::HIGHLIGHTS_QUERY,
+        inline: None,
+    }
+}
+
+pub(crate) fn css() -> Grammar {
+    Grammar {
+        name: "css",
+        language: tree_sitter_css::LANGUAGE.into(),
+        highlights_query: tree_sitter_css::HIGHLIGHTS_QUERY,
+        inline: None,
+    }
+}
+
+pub(crate) fn diff() -> Grammar {
+    Grammar {
+        name: "diff",
+        language: tree_sitter_diff::LANGUAGE.into(),
+        highlights_query: tree_sitter_diff::HIGHLIGHTS_QUERY,
+        inline: None,
+    }
+}
+
+pub(crate) fn make() -> Grammar {
+    Grammar {
+        name: "make",
+        language: tree_sitter_make::LANGUAGE.into(),
+        highlights_query: tree_sitter_make::HIGHLIGHTS_QUERY,
+        inline: None,
+    }
+}
+
 pub(crate) fn markdown() -> Grammar {
     Grammar {
         name: "markdown",
@@ -156,8 +201,19 @@ pub(crate) fn markdown() -> Grammar {
 /// cached in a process-global table so the `Language` is constructed at
 /// most once per grammar.
 pub fn grammar_for_path(path: Option<&Path>) -> Option<Grammar> {
-    let ext = path?.extension()?.to_str()?.to_ascii_lowercase();
-    grammar_for_extension(&ext)
+    let path = path?;
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if let Some(g) = grammar_for_extension(&ext.to_ascii_lowercase()) {
+            return Some(g);
+        }
+    }
+    // Extensionless files common enough to highlight by name (Makefile
+    // and friends have no extension by convention).
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_ascii_lowercase)?;
+    grammar_for_basename(&name)
 }
 
 /// One row in the extension → grammar table.
@@ -196,6 +252,13 @@ pub fn grammar_for_extension(ext: &str) -> Option<Grammar> {
             ("sh", bash),
             ("bash", bash),
             ("zsh", bash),
+            ("toml", toml),
+            ("html", html),
+            ("htm", html),
+            ("css", css),
+            ("diff", diff),
+            ("patch", diff),
+            ("make", make),
             ("md", markdown),
             ("markdown", markdown),
         ]
@@ -204,6 +267,16 @@ pub fn grammar_for_extension(ext: &str) -> Option<Grammar> {
         .iter()
         .find(|(e, _)| *e == ext)
         .map(|(_, ctor)| constructor_or_cached(ext, *ctor))
+}
+
+/// Resolve a `Grammar` by lowercase file name for the extensionless
+/// files that conventionally carry no suffix.
+fn grammar_for_basename(name: &str) -> Option<Grammar> {
+    let ctor = match name {
+        "makefile" | "gnumakefile" => make,
+        _ => return None,
+    };
+    Some(ctor())
 }
 
 /// Build a grammar via its constructor. The per-extension constructors are
@@ -223,11 +296,25 @@ mod tests {
     fn known_extensions_resolve() {
         for ext in [
             "rs", "go", "js", "ts", "tsx", "py", "c", "cpp", "json", "yaml", "yml", "sh", "bash",
-            "zsh", "md", "markdown",
+            "zsh", "toml", "html", "htm", "css", "diff", "patch", "make", "md", "markdown",
         ] {
             let g = grammar_for_extension(ext);
             assert!(g.is_some(), "extension .{ext} should resolve to a grammar");
         }
+    }
+
+    #[test]
+    fn extensionless_makefiles_resolve_by_basename() {
+        for name in ["Makefile", "makefile", "GNUmakefile"] {
+            let g = grammar_for_path(Some(&PathBuf::from(name)));
+            assert!(g.is_some(), "{name} should resolve to the make grammar");
+        }
+        // Unrelated extensionless files stay plain text, and an explicit
+        // extension always wins over the basename table.
+        assert!(grammar_for_path(Some(&PathBuf::from("Dockerfile"))).is_none());
+        assert!(grammar_for_path(Some(&PathBuf::from("README"))).is_none());
+        let g = grammar_for_path(Some(&PathBuf::from("rules.make")));
+        assert!(g.is_some());
     }
 
     #[test]

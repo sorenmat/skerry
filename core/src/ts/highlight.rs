@@ -253,7 +253,8 @@ fn compiled_query(grammar: &Grammar) -> Option<&'static Query> {
 /// module owns its query compilation without grammar.rs depending on it.
 fn all_grammars() -> Vec<Grammar> {
     use super::grammar::{
-        bash, c, go, javascript, json, markdown, python, rust, tsx, typescript, yaml,
+        bash, c, css, diff, go, html, javascript, json, make, markdown, python, rust, toml, tsx,
+        typescript, yaml,
     };
     vec![
         rust(),
@@ -266,6 +267,11 @@ fn all_grammars() -> Vec<Grammar> {
         json(),
         yaml(),
         bash(),
+        toml(),
+        html(),
+        css(),
+        diff(),
+        make(),
         markdown(),
     ]
 }
@@ -459,6 +465,68 @@ mod tests {
         let (tree, g) = parse(src, "sh");
         let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
         assert!(!segs.is_empty(), "sh should highlight");
+        for s in &segs {
+            assert!(s.range.start < s.range.end, "segment must be non-empty");
+            assert!(s.range.end <= src.len(), "segment must be in bounds");
+        }
+    }
+
+    #[test]
+    fn highlight_toml_document() {
+        let src = "[package]\nname = \"skerry\"\nversion = 42\n";
+        let (tree, g) = parse(src, "toml");
+        let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
+        assert!(!segs.is_empty(), "toml should highlight");
+        for s in &segs {
+            assert!(s.range.start < s.range.end, "segment must be non-empty");
+            assert!(s.range.end <= src.len(), "segment must be in bounds");
+        }
+    }
+
+    #[test]
+    fn highlight_html_document() {
+        let src = "<!DOCTYPE html>\n<html><body><h1 class=\"t\">Hi</h1></body></html>\n";
+        let (tree, g) = parse(src, "html");
+        let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
+        assert!(!segs.is_empty(), "html should highlight");
+        for s in &segs {
+            assert!(s.range.start < s.range.end, "segment must be non-empty");
+            assert!(s.range.end <= src.len(), "segment must be in bounds");
+        }
+    }
+
+    #[test]
+    fn highlight_css_document() {
+        let src = "body { color: #fff; margin: 0 auto; }\n";
+        let (tree, g) = parse(src, "css");
+        let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
+        assert!(!segs.is_empty(), "css should highlight");
+        for s in &segs {
+            assert!(s.range.start < s.range.end, "segment must be non-empty");
+            assert!(s.range.end <= src.len(), "segment must be in bounds");
+        }
+    }
+
+    #[test]
+    fn highlight_diff_patch() {
+        let src = "--- a/foo.rs\n+++ b/foo.rs\n@@ -1,3 +1,4 @@\n old\n+added\n-removed\n";
+        let (tree, g) = parse(src, "diff");
+        let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
+        assert!(!segs.is_empty(), "diff should highlight");
+        for s in &segs {
+            assert!(s.range.start < s.range.end, "segment must be non-empty");
+            assert!(s.range.end <= src.len(), "segment must be in bounds");
+        }
+    }
+
+    #[test]
+    fn highlight_makefile() {
+        // "make" extension form (Makefile proper is resolved by basename
+        // and covered in grammar.rs tests).
+        let src = "CC = gcc\nall: build\n\t$(CC) -o app main.c\n";
+        let (tree, g) = parse(src, "make");
+        let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
+        assert!(!segs.is_empty(), "make should highlight");
         for s in &segs {
             assert!(s.range.start < s.range.end, "segment must be non-empty");
             assert!(s.range.end <= src.len(), "segment must be in bounds");

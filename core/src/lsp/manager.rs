@@ -144,6 +144,9 @@ impl LspManager {
             "python" => Some("pylsp"),
             "c" | "cpp" => Some("clangd"),
             "shellscript" => Some("bash-language-server"),
+            "toml" => Some("taplo"),
+            "html" => Some("vscode-html-language-server"),
+            "css" => Some("vscode-css-language-server"),
             _ => None,
         }
     }
@@ -899,6 +902,15 @@ fn server_command(language_id: &str) -> Option<Vec<String>> {
         "python" => Some(vec!["pylsp".to_string()]),
         "c" | "cpp" => Some(vec!["clangd".to_string()]),
         "shellscript" => Some(vec!["bash-language-server".to_string(), "start".to_string()]),
+        "toml" => Some(vec!["taplo".to_string(), "lsp".to_string(), "stdio".to_string()]),
+        "html" => Some(vec![
+            "vscode-html-language-server".to_string(),
+            "--stdio".to_string(),
+        ]),
+        "css" => Some(vec![
+            "vscode-css-language-server".to_string(),
+            "--stdio".to_string(),
+        ]),
         _ => None,
     }
 }
