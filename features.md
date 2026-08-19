@@ -483,7 +483,9 @@ is open.
   via `InputEdit`, and viewport-scoped highlight queries
   (`QueryCursor::set_byte_range`) so only visible lines are tokenised.
   Languages: Rust, Go, JavaScript/TypeScript (incl. TSX/JSX), Python,
-  C/C++, JSON. Files over 32 MB skip the tree to keep load fast;
+  C/C++, JSON, YAML, Shell (sh/bash/zsh), TOML, HTML, CSS, Diff/patch,
+  Makefile (by extension or `Makefile` basename). Files over 32 MB skip
+  the tree to keep load fast;
   queries carry a 15 ms cancellation budget so a pathological region
   can't stall a frame.
 - **Settings window** — the GUI status bar keeps a cog button in its
@@ -630,7 +632,9 @@ use different conventions without re-configuring.
 - **Project-wide search is literal only.** Single-file search supports
   regex; project-wide search still uses `memmem` substring matching.
 - **LSP is opt-in per language.** Rust, Go, JavaScript/TypeScript,
-  Python, and C/C++ are wired. Other languages need a one-line addition
+  Python, C/C++, Shell (`bash-language-server`), TOML (`taplo`), and
+  HTML/CSS (`vscode-langservers-extracted`) are wired. Other
+  languages need a one-line addition
   in `core::lsp::manager::server_command` plus an extension mapping in
   `core::Document::language_id`.
 - **LSP sync is full-text.** Every debounced change sends the whole
