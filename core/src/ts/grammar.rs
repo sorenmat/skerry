@@ -130,6 +130,15 @@ pub(crate) fn yaml() -> Grammar {
     }
 }
 
+pub(crate) fn bash() -> Grammar {
+    Grammar {
+        name: "bash",
+        language: tree_sitter_bash::LANGUAGE.into(),
+        highlights_query: tree_sitter_bash::HIGHLIGHT_QUERY,
+        inline: None,
+    }
+}
+
 pub(crate) fn markdown() -> Grammar {
     Grammar {
         name: "markdown",
@@ -181,6 +190,12 @@ pub fn grammar_for_extension(ext: &str) -> Option<Grammar> {
             ("jsonc", json),
             ("yaml", yaml),
             ("yml", yaml),
+            // Shell: the bash grammar covers POSIX sh and, in practice,
+            // most zsh (shared core syntax); plain text is the fallback
+            // for anything it can't color.
+            ("sh", bash),
+            ("bash", bash),
+            ("zsh", bash),
             ("md", markdown),
             ("markdown", markdown),
         ]
@@ -207,8 +222,8 @@ mod tests {
     #[test]
     fn known_extensions_resolve() {
         for ext in [
-            "rs", "go", "js", "ts", "tsx", "py", "c", "cpp", "json", "yaml", "yml", "md",
-            "markdown",
+            "rs", "go", "js", "ts", "tsx", "py", "c", "cpp", "json", "yaml", "yml", "sh", "bash",
+            "zsh", "md", "markdown",
         ] {
             let g = grammar_for_extension(ext);
             assert!(g.is_some(), "extension .{ext} should resolve to a grammar");

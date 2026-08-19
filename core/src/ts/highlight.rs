@@ -252,7 +252,9 @@ fn compiled_query(grammar: &Grammar) -> Option<&'static Query> {
 /// Mirrors the constructors in `grammar.rs`; kept here so the highlight
 /// module owns its query compilation without grammar.rs depending on it.
 fn all_grammars() -> Vec<Grammar> {
-    use super::grammar::{c, go, javascript, json, markdown, python, rust, tsx, typescript, yaml};
+    use super::grammar::{
+        bash, c, go, javascript, json, markdown, python, rust, tsx, typescript, yaml,
+    };
     vec![
         rust(),
         go(),
@@ -263,6 +265,7 @@ fn all_grammars() -> Vec<Grammar> {
         c(),
         json(),
         yaml(),
+        bash(),
         markdown(),
     ]
 }
@@ -442,6 +445,20 @@ mod tests {
         let (tree, g) = parse(src, "yaml");
         let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
         assert!(!segs.is_empty(), "yaml should highlight");
+        for s in &segs {
+            assert!(s.range.start < s.range.end, "segment must be non-empty");
+            assert!(s.range.end <= src.len(), "segment must be in bounds");
+        }
+    }
+
+    #[test]
+    fn highlight_bash_script() {
+        // Same guard as the yaml test: extension → grammar → compiled
+        // query → non-empty segments.
+        let src = "#!/usr/bin/env bash\nset -euo pipefail\nfor f in *.txt; do\n  echo \"$f\"\ndone\n";
+        let (tree, g) = parse(src, "sh");
+        let segs = highlight_range(&tree, &g, &OCEAN_DARK, 0..src.len(), src.as_bytes());
+        assert!(!segs.is_empty(), "sh should highlight");
         for s in &segs {
             assert!(s.range.start < s.range.end, "segment must be non-empty");
             assert!(s.range.end <= src.len(), "segment must be in bounds");

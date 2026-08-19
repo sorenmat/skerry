@@ -450,6 +450,7 @@ fn language_id_from_extension(ext: &str) -> Option<&'static str> {
         "h" => Some("c"),
         "json" => Some("json"),
         "yaml" | "yml" => Some("yaml"),
+        "sh" | "bash" | "zsh" => Some("shellscript"),
         "toml" => Some("toml"),
         "md" | "markdown" => Some("markdown"),
         "csv" => Some("csv"),
@@ -519,6 +520,9 @@ mod tests {
             ("README.md", Some("markdown")),
             ("notes.markdown", Some("markdown")),
             ("data.csv", Some("csv")),
+            ("deploy.sh", Some("shellscript")),
+            ("run.bash", Some("shellscript")),
+            (".zshrc", None), // dotfile: no extension to map
             ("readme.txt", None),
         ];
         for (name, expected) in cases {
