@@ -51,24 +51,6 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-/// Load each path into its own [`Document`]. Existing files are
-/// memory-mapped via [`PieceTableBuffer::from_path`] (ADR 0002 — the
-/// multi-GB-file path); paths that don't exist yet get a fresh empty
-/// buffer that will save back to that path. With no paths, returns a
-/// single empty document so the editor still has somewhere to land.
-fn load_documents(paths: &[PathBuf], config: &core::Config) -> Vec<Document> {
-    if paths.is_empty() {
-        return vec![Document::new_with_config(
-            Box::new(PieceTableBuffer::new()),
-            config,
-        )];
-    }
-    paths
-        .iter()
-        .map(|p| load_document(p, None, config))
-        .collect()
-}
-
 /// Parse a CLI argument as `path`, `path:line`, or `path:line:col`
 /// (1-based, `vim`/`code` style). A literal path always wins: if the
 /// whole argument exists on disk it is treated as a plain path, so
