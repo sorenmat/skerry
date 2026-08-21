@@ -2591,10 +2591,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // write does not straddle that (whole-app) borrow.
             if cmd_pointer.map(|(l, _)| l) == Some(line_idx) {
                 let (_, char_col) = cmd_pointer.unwrap();
-                let cmd_line_cow = app
-                    .active_buffer()
-                    .line_text(line_idx)
-                    .unwrap_or_default();
+                let cmd_line_cow = app.active_buffer().line_text(line_idx).unwrap_or_default();
                 let cmd_line: &str = &cmd_line_cow;
                 let (start_char, end_char) = word_range_at_char_col(cmd_line, char_col);
                 let start_byte =
@@ -2638,10 +2635,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // takes `&mut` doc further down, so each text-draw branch
             // re-borrows the line after its cache lookup (same line —
             // the buffer does not change within a frame).
-            let line_text_cow = app
-                .active_buffer()
-                .line_text(line_idx)
-                .unwrap_or_default();
+            let line_text_cow = app.active_buffer().line_text(line_idx).unwrap_or_default();
             let line_text: &str = &line_text_cow;
 
             let line_cols = line_text
@@ -2872,7 +2866,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     // no String built per selection.
                     let sel_x = (text_x
                         + line_text.chars().take(take_lo).map(advance_of).sum::<f32>())
-                        .round();
+                    .round();
                     let sel_w = line_text
                         .chars()
                         .skip(take_lo)
@@ -2924,10 +2918,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 // Re-borrow after the cache lookup: the miss arm above
                 // took `&mut` doc, which the buffer borrow held by
                 // `line_text` above may not overlap. Same line.
-                let line_text_cow = app
-                    .active_buffer()
-                    .line_text(line_idx)
-                    .unwrap_or_default();
+                let line_text_cow = app.active_buffer().line_text(line_idx).unwrap_or_default();
                 let line_text: &str = &line_text_cow;
                 if segments.is_empty() {
                     painter.text(
@@ -2954,10 +2945,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                         let seg_lo = byte_to_char_col(line_text, seg.range.start);
                         let seg_hi = byte_to_char_col(line_text, seg.range.end);
                         if seg_lo > char_cursor {
-                            let gap: &str = &line_text[
-                                core::char_col_to_byte_col(line_text, char_cursor)
-                                    ..core::char_col_to_byte_col(line_text, seg_lo)
-                            ];
+                            let gap: &str =
+                                &line_text[core::char_col_to_byte_col(line_text, char_cursor)
+                                    ..core::char_col_to_byte_col(line_text, seg_lo)];
                             if !gap.is_empty() {
                                 painter.text(
                                     egui::pos2(x_cursor.round(), y),
@@ -2971,10 +2961,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                             char_cursor = seg_lo;
                         }
                         if seg_hi > seg_lo {
-                            let seg_text: &str = &line_text[
-                                core::char_col_to_byte_col(line_text, seg_lo)
-                                    ..core::char_col_to_byte_col(line_text, seg_hi)
-                            ];
+                            let seg_text: &str =
+                                &line_text[core::char_col_to_byte_col(line_text, seg_lo)
+                                    ..core::char_col_to_byte_col(line_text, seg_hi)];
                             if !seg_text.is_empty() {
                                 let c = seg.color;
                                 painter.text(
@@ -3050,13 +3039,10 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                             cached_segs
                         }
                     };
-                    // Re-borrow after the cache lookup (see the selection
-                    // branch above) — the miss arm took `&mut` doc.
-                    let line_text_cow = app
-                        .active_buffer()
-                        .line_text(line_idx)
-                        .unwrap_or_default();
-                    let line_text: &str = &line_text_cow;
+                // Re-borrow after the cache lookup (see the selection
+                // branch above) — the miss arm took `&mut` doc.
+                let line_text_cow = app.active_buffer().line_text(line_idx).unwrap_or_default();
+                let line_text: &str = &line_text_cow;
                 if segments.is_empty() {
                     // No syntax (unknown extension, too large, or
                     // passthrough) — draw as before.
@@ -3219,10 +3205,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // Re-borrow the line for the underline pass: the syntax
             // cache miss in the branches above may have taken `&mut`
             // doc, which the first buffer borrow cannot span. Same line.
-            let line_text_cow = app
-                .active_buffer()
-                .line_text(line_idx)
-                .unwrap_or_default();
+            let line_text_cow = app.active_buffer().line_text(line_idx).unwrap_or_default();
             let line_text: &str = &line_text_cow;
 
             // LSP diagnostic underlines.
@@ -3258,7 +3241,12 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
 
                 let start_col = byte_to_char_col(line_text, start_byte - line_byte_range.start);
                 let end_col = byte_to_char_col(line_text, end_byte - line_byte_range.start);
-                let x1 = text_x + line_text.chars().take(start_col).map(advance_of).sum::<f32>();
+                let x1 = text_x
+                    + line_text
+                        .chars()
+                        .take(start_col)
+                        .map(advance_of)
+                        .sum::<f32>();
                 let x2 = text_x + line_text.chars().take(end_col).map(advance_of).sum::<f32>();
                 let color = match diag.severity {
                     Some(lsp_types::DiagnosticSeverity::ERROR) => theme.error,
@@ -3283,7 +3271,12 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 if end > start {
                     let start_col = byte_to_char_col(line_text, start - line_byte_range.start);
                     let end_col = byte_to_char_col(line_text, end - line_byte_range.start);
-                    let x1 = text_x + line_text.chars().take(start_col).map(advance_of).sum::<f32>();
+                    let x1 = text_x
+                        + line_text
+                            .chars()
+                            .take(start_col)
+                            .map(advance_of)
+                            .sum::<f32>();
                     let x2 = text_x + line_text.chars().take(end_col).map(advance_of).sum::<f32>();
                     let y_under = y + line_height - 3.0;
                     painter.line_segment(
@@ -3315,10 +3308,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     if bl < start_line || bl >= end_line {
                         continue; // only draw if visible
                     }
-                    let line_text_cow = app
-                        .active_buffer()
-                        .line_text(bl)
-                        .unwrap_or_default();
+                    let line_text_cow = app.active_buffer().line_text(bl).unwrap_or_default();
                     let line_text: &str = &line_text_cow;
                     let char_col = byte_to_char_col(line_text, bc);
                     let bx = (text_x_caret + char_col as f32 * char_width).round();
@@ -3347,10 +3337,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             if cl >= total_lines {
                 continue;
             }
-            let caret_line_text_cow = app
-                .active_buffer()
-                .line_text(cl)
-                .unwrap_or_default();
+            let caret_line_text_cow = app.active_buffer().line_text(cl).unwrap_or_default();
             let caret_line_text: &str = &caret_line_text_cow;
             let char_col = byte_to_char_col(caret_line_text, bc);
             let caret_x = (text_x_caret + char_col as f32 * char_width).round();

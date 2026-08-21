@@ -183,9 +183,7 @@ fn capture_own_window_to_png(path: &Path) -> Result<(), String> {
         if image.is_null() {
             return Err("CGWindowListCreateImage returned null".into());
         }
-        let bytes = path
-            .as_os_str()
-            .as_encoded_bytes();
+        let bytes = path.as_os_str().as_encoded_bytes();
         let url = CFURLCreateFromFileSystemRepresentation(
             std::ptr::null(),
             bytes.as_ptr(),
@@ -291,11 +289,5 @@ fn cf_str(s: &str) -> CFStringRef {
     // literals are not NUL-terminated, so the bytes must be copied into
     // a CString first or the created string swallows adjacent memory.
     let c = std::ffi::CString::new(s).expect("no interior NUL");
-    unsafe {
-        CFStringCreateWithCString(
-            std::ptr::null(),
-            c.as_ptr(),
-            K_CF_STRING_ENCODING_UTF8,
-        )
-    }
+    unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), K_CF_STRING_ENCODING_UTF8) }
 }

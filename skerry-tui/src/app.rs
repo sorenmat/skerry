@@ -3874,18 +3874,20 @@ mod tests {
                 kind: Some(lsp_types::CodeActionKind::QUICKFIX),
                 diagnostics: None,
                 edit: Some(lsp_types::WorkspaceEdit {
-                    changes: Some([(
-                        uri,
-                        vec![lsp_types::TextEdit {
-                            range: lsp_types::Range::new(
-                                lsp_types::Position::new(0, 0),
-                                lsp_types::Position::new(0, 11),
-                            ),
-                            new_text: "goodbye".into(),
-                        }],
-                    )]
-                    .into_iter()
-                    .collect()),
+                    changes: Some(
+                        [(
+                            uri,
+                            vec![lsp_types::TextEdit {
+                                range: lsp_types::Range::new(
+                                    lsp_types::Position::new(0, 0),
+                                    lsp_types::Position::new(0, 11),
+                                ),
+                                new_text: "goodbye".into(),
+                            }],
+                        )]
+                        .into_iter()
+                        .collect(),
+                    ),
                     document_changes: None,
                     change_annotations: None,
                 }),
@@ -5578,7 +5580,10 @@ mod tests {
     fn cycle_theme_changes_theme_and_invalidates_cache() {
         let mut app = app_with("let x = 42;");
         // Pre-warm the cache.
-        app.active_doc_mut().syntax.lines.insert(0, std::rc::Rc::new(Vec::new()));
+        app.active_doc_mut()
+            .syntax
+            .lines
+            .insert(0, std::rc::Rc::new(Vec::new()));
         app.active_doc_mut().syntax.dirty = false;
         assert!(!app.active_doc().syntax.lines.is_empty());
 

@@ -69,7 +69,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         )?
     } else {
         load_documents(
-            &args.iter()
+            &args
+                .iter()
                 .map(|arg| {
                     let (path, line, col) = parse_position_arg(arg);
                     (path, line.map(|l| (l, col)))

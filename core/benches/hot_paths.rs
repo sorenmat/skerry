@@ -65,7 +65,10 @@ fn session_buffer(content: Vec<u8>, edits: usize) -> PieceTableBuffer {
 fn fragmented_buffer(kb: usize) -> PieceTableBuffer {
     let mut content = String::new();
     for i in 0..kb {
-        content.push_str(&format!("line {:04} some padding text to fill the byte budget here\n", i));
+        content.push_str(&format!(
+            "line {:04} some padding text to fill the byte budget here\n",
+            i
+        ));
     }
     let mut buf = PieceTableBuffer::from_bytes(content.into_bytes());
     let mut pos = 250;
@@ -184,10 +187,8 @@ fn search_benches(c: &mut Criterion) {
 // ---------- tree-sitter highlighting ----------
 
 fn make_doc(content: &[u8]) -> core::Document {
-    let buf = PieceTableBuffer::from_bytes_with_path(
-        content.to_vec(),
-        PathBuf::from("bench_fixture.rs"),
-    );
+    let buf =
+        PieceTableBuffer::from_bytes_with_path(content.to_vec(), PathBuf::from("bench_fixture.rs"));
     core::Document::new(Box::new(buf))
 }
 
@@ -249,5 +250,10 @@ fn highlight_benches(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, piece_table_benches, search_benches, highlight_benches);
+criterion_group!(
+    benches,
+    piece_table_benches,
+    search_benches,
+    highlight_benches
+);
 criterion_main!(benches);

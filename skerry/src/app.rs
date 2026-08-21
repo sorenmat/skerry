@@ -3514,8 +3514,10 @@ impl EditorApp {
             lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
                 if let Some(edit) = &code_action.edit {
                     let count = self.apply_workspace_edit(edit);
-                    self.status_message =
-                        Some(format!("Code action applied ({count} edit{}).", if count == 1 { "" } else { "s" }));
+                    self.status_message = Some(format!(
+                        "Code action applied ({count} edit{}).",
+                        if count == 1 { "" } else { "s" }
+                    ));
                 } else if let Some(command) = &code_action.command {
                     if let Some((uri, _)) = self.lsp_cursor_position() {
                         self.lsp_manager.request_execute_command(&uri, command);
@@ -3531,7 +3533,8 @@ impl EditorApp {
                 if let Some((uri, _)) = self.lsp_cursor_position() {
                     self.lsp_manager.request_execute_command(&uri, &command);
                 }
-                self.status_message = Some(format!("Sent code action command: {}.", command.command));
+                self.status_message =
+                    Some(format!("Sent code action command: {}.", command.command));
             }
         }
     }
@@ -4880,18 +4883,20 @@ mod tests {
                 kind: Some(lsp_types::CodeActionKind::QUICKFIX),
                 diagnostics: None,
                 edit: Some(lsp_types::WorkspaceEdit {
-                    changes: Some([(
-                        uri,
-                        vec![lsp_types::TextEdit {
-                            range: lsp_types::Range::new(
-                                lsp_types::Position::new(0, 0),
-                                lsp_types::Position::new(0, 11),
-                            ),
-                            new_text: "goodbye".into(),
-                        }],
-                    )]
-                    .into_iter()
-                    .collect()),
+                    changes: Some(
+                        [(
+                            uri,
+                            vec![lsp_types::TextEdit {
+                                range: lsp_types::Range::new(
+                                    lsp_types::Position::new(0, 0),
+                                    lsp_types::Position::new(0, 11),
+                                ),
+                                new_text: "goodbye".into(),
+                            }],
+                        )]
+                        .into_iter()
+                        .collect(),
+                    ),
                     document_changes: None,
                     change_annotations: None,
                 }),
@@ -4941,7 +4946,8 @@ mod tests {
         // With an explicit selection the needle matches exactly,
         // including inside larger words ("cat" in "catalog").
         let mut app = app_with("cat hat catalog");
-        app.active_buffer_mut().set_selection(Selection { anchor: 0, head: 3 });
+        app.active_buffer_mut()
+            .set_selection(Selection { anchor: 0, head: 3 });
         app.handle_event(EditorEvent::SelectAllOccurrences);
         let sels = app.active_buffer().selections();
         assert_eq!(sels.len(), 2);
@@ -5592,7 +5598,10 @@ mod tests {
     fn cycle_theme_changes_theme_and_invalidates_cache() {
         let mut app = app_with("let x = 42;");
         // Pre-warm the cache.
-        app.active_doc_mut().syntax.lines.insert(0, std::rc::Rc::new(Vec::new()));
+        app.active_doc_mut()
+            .syntax
+            .lines
+            .insert(0, std::rc::Rc::new(Vec::new()));
         app.active_doc_mut().syntax.dirty = false;
         assert!(!app.active_doc().syntax.lines.is_empty());
 

@@ -63,10 +63,7 @@ mod tests {
                 Box::new(PieceTableBuffer::from_path(root.join(rel)).unwrap());
             Document::new_with_config(buffer, &config)
         };
-        let docs = vec![
-            make("core/src/keymap.rs"),
-            make("features.md"),
-        ];
+        let docs = vec![make("core/src/keymap.rs"), make("features.md")];
         let mut app = App::new_with_documents(docs, config);
 
         let backend = TestBackend::new(WIDTH, HEIGHT);

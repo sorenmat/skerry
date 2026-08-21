@@ -288,8 +288,7 @@ impl GitGutter {
             // The `line == current_line_count` sentinel catches a
             // removed-only block at EOF.
             let changed = self.removed_by_line.contains_key(&line)
-                || (line < current_line_count
-                    && self.statuses[line] != LineStatus::Unchanged);
+                || (line < current_line_count && self.statuses[line] != LineStatus::Unchanged);
 
             if changed && start.is_none() {
                 start = Some(line);
