@@ -73,6 +73,33 @@ This trust decision applies only to the current installed copy. A later
 Homebrew upgrade may require it again until releases are Developer ID signed
 and notarized.
 
+### Avoiding the quarantine dance on every upgrade
+
+If you install or upgrade via Homebrew, let brew strip the flag as part of
+the install instead of doing it by hand:
+
+```sh
+echo 'export HOMEBREW_CASK_OPTS="--no-quarantine"' >> ~/.zshrc
+```
+
+New shells (and the `brew upgrade --cask skerry` you run from them) no
+longer apply quarantine to Skerry — or to any other cask, so skip this if
+you would rather keep Gatekeeper checks for other apps.
+
+To also cover manual installs from a downloaded release tarball, the repo
+ships a per-user LaunchAgent installer. It generates a launchd job that
+checks Skerry.app every 15 seconds and strips quarantine whenever it
+reappears (macOS does not deliver filesystem events on `/Applications` to
+user agents, so event-driven watching is not possible):
+
+```sh
+git clone https://github.com/sorenmat/skerry
+./skerry/scripts/install-dequarantine-agent.sh
+```
+
+Each strip is recorded in `~/Library/Logs/skerry-dequarantine.log`. Undo
+with the `launchctl bootout` command printed by the installer.
+
 Skerry publishes native Apple Silicon, Intel macOS, and Linux x86_64 builds. A
 maintainer creates those release assets by pushing a version tag such as
 `v0.1.0`.
