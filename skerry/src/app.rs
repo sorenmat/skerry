@@ -77,6 +77,10 @@ pub struct EditorApp {
     pub active: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    /// Set when an overlay (fuzzy finder, palette, picker, dialog) closes
+    /// or executes; the editor surface consumes it on the next frame to
+    /// take keyboard focus, so typing lands in the document.
+    pub(crate) focus_editor: bool,
     /// Shared transient state for the active built-in keyboard preset.
     pub keymap: core::KeymapState,
     /// Number of lines that fit in the current viewport. Updated each
@@ -372,6 +376,7 @@ impl EditorApp {
             go_to_line_dialog: None,
             rename_dialog: None,
             caret_anim_y: f32::NAN,
+            focus_editor: false,
             prev_active: 0,
             syntax: SyntaxEngine::default_dark(),
             project_tree_open: config.project_tree_open.unwrap_or(true),
@@ -927,7 +932,10 @@ impl EditorApp {
                     } = event
                     {
                         match *key {
-                            eframe::egui::Key::Escape => self.symbol_picker.open = false,
+                            eframe::egui::Key::Escape => {
+                                self.symbol_picker.open = false;
+                                self.focus_editor = true;
+                            }
                             eframe::egui::Key::ArrowUp => {
                                 self.symbol_picker.selected =
                                     self.symbol_picker.selected.saturating_sub(1);
@@ -948,6 +956,7 @@ impl EditorApp {
                                 if let Some(line) = selected {
                                     self.go_to_line(line);
                                     self.symbol_picker.open = false;
+                                    self.focus_editor = true;
                                 }
                             }
                             _ => {}
@@ -1920,10 +1929,12 @@ impl EditorApp {
             }
             EditorEvent::CodeActionsExecute => {
                 self.execute_selected_code_action();
+                self.focus_editor = true;
             }
             EditorEvent::CodeActionsClose => {
                 self.code_action_picker.open = false;
                 self.code_action_picker.pending = false;
+                self.focus_editor = true;
             }
             EditorEvent::ToggleProjectTree => {
                 self.toggle_project_tree();
@@ -1951,9 +1962,11 @@ impl EditorApp {
             }
             EditorEvent::ProjectSearchOpenResult => {
                 self.open_selected_project_search_result();
+                self.focus_editor = true;
             }
             EditorEvent::ProjectSearchClose => {
                 self.project_search.open = false;
+                self.focus_editor = true;
             }
             EditorEvent::ProjectSearchReplaceQueryChanged(q) => {
                 self.project_search.replace_query = q;
@@ -1987,6 +2000,7 @@ impl EditorApp {
             }
             EditorEvent::FuzzyFinderClose => {
                 self.fuzzy_finder.open = false;
+                self.focus_editor = true;
             }
             EditorEvent::ToggleKeybindingsHelp => {
                 self.keybindings_help_open = !self.keybindings_help_open;
@@ -2094,6 +2108,7 @@ impl EditorApp {
             }
             EditorEvent::RenameApply { new_name } => {
                 self.rename_dialog = None;
+                self.focus_editor = true;
                 if let Some((uri, pos)) = self.lsp_cursor_position() {
                     self.lsp_manager.request_rename(&uri, pos, &new_name);
                     self.status_message = Some("LSP: requesting rename...".to_string());
@@ -2123,9 +2138,11 @@ impl EditorApp {
             }
             EditorEvent::CommandPaletteExecute => {
                 self.execute_selected_command();
+                self.focus_editor = true;
             }
             EditorEvent::CommandPaletteClose => {
                 self.command_palette.open = false;
+                self.focus_editor = true;
             }
             EditorEvent::Quit => {
                 self.sync_config();
@@ -3623,6 +3640,7 @@ impl EditorApp {
         let path = self.fuzzy_finder.items[*idx].path.clone();
         self.fuzzy_finder.open = false;
         self.open_or_switch_to_path(&path);
+        self.focus_editor = true;
     }
 
     /// Move the project-search selection by `delta` rows, wrapping at
@@ -3931,6 +3949,7 @@ impl EditorApp {
     pub fn cancel_go_to_line_dialog(&mut self) {
         if self.go_to_line_dialog.take().is_some() {
             self.status_message = Some("Go-to-line cancelled.".to_string());
+            self.focus_editor = true;
         }
     }
 
@@ -3940,6 +3959,7 @@ impl EditorApp {
         let Some(dialog) = self.go_to_line_dialog.take() else {
             return;
         };
+        self.focus_editor = true;
         if dialog.query.is_empty() {
             self.status_message = Some("Go-to-line cancelled.".to_string());
             return;

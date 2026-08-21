@@ -2480,10 +2480,25 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
 
     scroll_area.show(ui, |ui| {
         let total_height = total_lines as f32 * line_height;
-        let response = ui.allocate_response(
+        let alloc = ui.allocate_response(
             egui::vec2(ui.available_width(), total_height),
             egui::Sense::click_and_drag(),
         );
+        // The text surface carries a stable, focusable id so overlays
+        // (fuzzy finder, command palette, …) can hand keyboard focus
+        // back to the editor when they close.
+        let response = ui.interact(
+            alloc.rect,
+            egui::Id::new(("editor_surface", app.active)),
+            egui::Sense {
+                focusable: true,
+                ..egui::Sense::click_and_drag()
+            },
+        );
+        if app.focus_editor {
+            response.request_focus();
+            app.focus_editor = false;
+        }
         let rect = response.rect;
         let painter = ui.painter_at(rect);
 
