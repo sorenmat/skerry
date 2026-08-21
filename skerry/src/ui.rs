@@ -24,6 +24,12 @@ use crate::app::{CloseChoice, CsvPreviewMode, EditorApp, MarkdownPreviewMode};
 use crate::theme::GuiTheme;
 
 const FONT_SIZE: f32 = 14.0;
+
+/// Extra leading between editor lines: the drawn line box is the font's
+/// row height times this. Glyphs are centered in the box (see
+/// `half_leading` in `render_text`) so the extra space splits evenly
+/// above and below each line.
+const LINE_SPACING: f32 = 1.5;
 const CARET_WIDTH: f32 = 2.0;
 /// Width of the dedicated git-gutter column (in pixels) drawn left of
 /// the line numbers. Kept separate from the line-number gutter so the
@@ -324,9 +330,11 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
     }
 
     // Multi-doc tab strip. Each tab is its own label so egui tracks
-    // click responses per-tab. The active tab uses the accent color;
-    // inactive tabs are dimmed. Clicking an inactive tab switches
-    // `app.active`; clicking the × closes that tab.
+    // click responses per-tab. The active tab fills with the editor
+    // background — it reads as punched through into the editor — plus
+    // an accent underline and bright text; inactive tabs are dimmed.
+    // Clicking an inactive tab switches `app.active`; clicking the ×
+    // closes that tab.
     ui.horizontal(|ui| {
         ui.add_space(4.0);
         let mut close_idx: Option<usize> = None;
@@ -338,19 +346,19 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
             let stale = if doc.external_change { "!" } else { "" };
 
             let bg = if is_active {
-                theme.accent
+                theme.editor_bg
             } else {
                 theme.panel_bg
             };
             let text_color = if is_active {
-                theme.accent_text
+                theme.text
             } else {
                 theme.dim_text
             };
 
-            egui::Frame::none()
+            let tab = egui::Frame::none()
                 .fill(bg)
-                .inner_margin(egui::vec2(6.0, 3.0))
+                .inner_margin(egui::vec2(8.0, 3.0))
                 .rounding(4.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -386,14 +394,22 @@ fn render_header_strip(ui: &mut egui::Ui, app: &mut EditorApp) {
                         }
                     });
                 });
+            if is_active {
+                // Accent underline tying the active tab to the editor
+                // surface below it.
+                let r = tab.response.rect;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(r.left(), r.bottom() - 2.0),
+                        egui::vec2(r.width(), 2.0),
+                    ),
+                    0.0,
+                    theme.accent,
+                );
+            }
 
             if i + 1 < app.doc_count() {
-                // Thin separator between tabs. egui's add_space gives
-                // us a uniform gap; the visual separator char keeps the
-                // tab boundary obvious.
-                ui.add_space(2.0);
-                ui.label(egui::RichText::new("│").monospace().color(theme.separator));
-                ui.add_space(2.0);
+                ui.add_space(6.0);
             }
         }
         if let Some(idx) = close_idx {
@@ -1104,7 +1120,7 @@ fn render_minimap(ctx: &egui::Context, app: &mut EditorApp) {
 
             // Measure the editor's line_height to compute the scale ratio.
             let font_id = egui::FontId::monospace(FONT_SIZE);
-            let editor_line_height = ui.fonts(|f| f.row_height(&font_id));
+            let editor_line_height = ui.fonts(|f| f.row_height(&font_id)) * LINE_SPACING;
 
             let _total_height = total_lines as f32 * mini_line_height;
             let (rect, response) = ui.allocate_exact_size(
@@ -2315,12 +2331,16 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
     // `glyph_width` per character (including `'\t'`) when computing
     // segment widths so positions match what `painter.text` actually
     // renders.
-    let (char_width, tab_width, line_height) = ui.fonts(|f| {
+    let (char_width, tab_width, font_row_height, line_height) = ui.fonts(|f| {
         let cw = f.glyph_width(&font_id, 'M');
         let tw = f.glyph_width(&font_id, '\t');
-        let lh = f.row_height(&font_id);
-        (cw, tw, lh)
+        let rh = f.row_height(&font_id);
+        (cw, tw, rh, rh * LINE_SPACING)
     });
+    // Glyph tops sit half a leading below each line-box top so the extra
+    // spacing splits evenly above and below the text. Backgrounds
+    // (selection, line highlight, stripes) keep filling the full box.
+    let half_leading = (line_height - font_row_height) / 2.0;
 
     let advance_of = |c: char| -> f32 {
         if c == '\t' {
@@ -2576,6 +2596,9 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             // Round y to integer pixels so glyphs align cleanly with
             // the selection rectangle.
             let y = (rect.top() + line_idx as f32 * line_height).round();
+            // Glyph band top: text, gutter numbers, carets and underlines
+            // anchor here; full-height backgrounds still use `y`.
+            let text_y = y + half_leading;
 
             // Byte range of this line in the buffer. Bound early so the
             // Cmd-click handler below (and the match-highlights block
@@ -2746,7 +2769,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                         entry.short_hash, entry.author, entry.relative_time
                     );
                     painter.text(
-                        egui::pos2((rect.left() + BLAME_WIDTH - 4.0).round(), y),
+                        egui::pos2((rect.left() + BLAME_WIDTH - 4.0).round(), text_y),
                         egui::Align2::RIGHT_TOP,
                         blame_text,
                         egui::FontId::monospace(FONT_SIZE - 1.0),
@@ -2766,7 +2789,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 painter.text(
                     egui::pos2(
                         (rect.left() + gw + gutter_width as f32 * char_width + char_width).round(),
-                        y,
+                        text_y,
                     ),
                     egui::Align2::RIGHT_TOP,
                     marker,
@@ -2782,7 +2805,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 theme.gutter_text
             };
             painter.text(
-                egui::pos2((rect.left() + gw).round(), y),
+                egui::pos2((rect.left() + gw).round(), text_y),
                 egui::Align2::LEFT_TOP,
                 gutter,
                 font_id.clone(),
@@ -2922,7 +2945,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                 let line_text: &str = &line_text_cow;
                 if segments.is_empty() {
                     painter.text(
-                        egui::pos2(text_x, y),
+                        egui::pos2(text_x, text_y),
                         egui::Align2::LEFT_TOP,
                         line_text,
                         font_id.clone(),
@@ -2950,7 +2973,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                                     ..core::char_col_to_byte_col(line_text, seg_lo)];
                             if !gap.is_empty() {
                                 painter.text(
-                                    egui::pos2(x_cursor.round(), y),
+                                    egui::pos2(x_cursor.round(), text_y),
                                     egui::Align2::LEFT_TOP,
                                     gap,
                                     font_id.clone(),
@@ -2967,7 +2990,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                             if !seg_text.is_empty() {
                                 let c = seg.color;
                                 painter.text(
-                                    egui::pos2(x_cursor.round(), y),
+                                    egui::pos2(x_cursor.round(), text_y),
                                     egui::Align2::LEFT_TOP,
                                     seg_text,
                                     font_id.clone(),
@@ -3047,7 +3070,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     // No syntax (unknown extension, too large, or
                     // passthrough) — draw as before.
                     painter.text(
-                        egui::pos2(text_x, y),
+                        egui::pos2(text_x, text_y),
                         egui::Align2::LEFT_TOP,
                         line_text,
                         font_id.clone(),
@@ -3166,7 +3189,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                         if !plain.is_empty() {
                             let galley = painter.layout_no_wrap(plain, font_id.clone(), theme.text);
                             let width = galley.size().x;
-                            painter.galley(egui::pos2(segment_x, y), galley, theme.text);
+                            painter.galley(egui::pos2(segment_x, text_y), galley, theme.text);
                             segment_x += width;
                         }
                     }
@@ -3188,7 +3211,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                             0.0,
                             color,
                         );
-                        painter.galley(egui::pos2(segment_x, y), galley, match_text_color);
+                        painter.galley(egui::pos2(segment_x, text_y), galley, match_text_color);
                         segment_x += matched_w;
                     }
                     cursor = hi;
@@ -3253,7 +3276,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     Some(lsp_types::DiagnosticSeverity::WARNING) => theme.warning,
                     _ => theme.dim_text,
                 };
-                let y_under = y + line_height - 3.0;
+                let y_under = text_y + font_row_height - 3.0;
                 painter.rect_filled(
                     egui::Rect::from_min_max(
                         egui::pos2(x1, y_under),
@@ -3278,7 +3301,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                             .map(advance_of)
                             .sum::<f32>();
                     let x2 = text_x + line_text.chars().take(end_col).map(advance_of).sum::<f32>();
-                    let y_under = y + line_height - 3.0;
+                    let y_under = text_y + font_row_height - 3.0;
                     painter.line_segment(
                         [egui::pos2(x1, y_under), egui::pos2(x2, y_under)],
                         egui::Stroke::new(1.5_f32, theme.accent),
@@ -3312,11 +3335,11 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     let line_text: &str = &line_text_cow;
                     let char_col = byte_to_char_col(line_text, bc);
                     let bx = (text_x_caret + char_col as f32 * char_width).round();
-                    let by = (rect.top() + bl as f32 * line_height).round();
+                    let by = (rect.top() + bl as f32 * line_height + half_leading).round();
                     painter.rect_filled(
                         egui::Rect::from_min_size(
                             egui::pos2(bx, by),
-                            egui::vec2(char_width, line_height),
+                            egui::vec2(char_width, font_row_height),
                         ),
                         0.0,
                         theme.selection_bg,
@@ -3343,10 +3366,12 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
             let caret_x = (text_x_caret + char_col as f32 * char_width).round();
             // The primary caret uses the animated y; additional carets
             // snap to their line (animation across N carets is a follow-up).
+            // `half_leading` keeps the caret on the glyph band, and its
+            // height is the font's row — not the taller line box.
             let caret_y = if cl == cursor_line {
-                (rect.top() + app.caret_anim_y).round()
+                (rect.top() + app.caret_anim_y + half_leading).round()
             } else {
-                (rect.top() + cl as f32 * line_height).round()
+                (rect.top() + cl as f32 * line_height + half_leading).round()
             };
             let block_caret = matches!(
                 app.keymap.vim_mode(),
@@ -3357,7 +3382,7 @@ fn render_text(ui: &mut egui::Ui, app: &mut EditorApp, theme: &GuiTheme) {
                     egui::pos2(caret_x, caret_y),
                     egui::vec2(
                         if block_caret { char_width } else { CARET_WIDTH },
-                        line_height,
+                        font_row_height,
                     ),
                 ),
                 0.0,

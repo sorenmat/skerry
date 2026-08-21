@@ -419,10 +419,27 @@ impl EditorApp {
             app.set_color_theme_by_name(&theme);
         } else if let Some(theme) = app.config.theme.clone() {
             app.syntax.set_theme_by_name(&theme);
+        } else {
+            // Fresh config: the GUI theme field already holds the default
+            // (see the struct literal); align the syntax engine with it
+            // without persisting a choice the user never made.
+            app.syntax
+                .set_theme_by_name(Self::syntax_name_for(GuiTheme::default_dark().name));
         }
         app.refresh_project_tree();
         app.sync_watcher();
         app
+    }
+
+    /// The bundled syntax theme paired with a GUI theme name. Names match
+    /// one-to-one except the legacy `Dark`/`Light` chrome themes, which
+    /// predate coordinated pairing.
+    fn syntax_name_for(gui_name: &str) -> &str {
+        match gui_name {
+            "Dark" => "Ocean Dark",
+            "Light" => "Solarized Light",
+            other => other,
+        }
     }
 
     /// Apply a coordinated GUI and syntax palette. The two color systems
@@ -432,11 +449,7 @@ impl EditorApp {
         let Some(gui_theme) = GuiTheme::by_name(name) else {
             return false;
         };
-        let syntax_name = match gui_theme.name {
-            "Dark" => "Ocean Dark",
-            "Light" => "Solarized Light",
-            other => other,
-        };
+        let syntax_name = Self::syntax_name_for(gui_theme.name);
         if !self.syntax.set_theme_by_name(syntax_name) {
             return false;
         }
@@ -5945,15 +5958,18 @@ mod tests {
     #[test]
     fn default_ui_theme_is_dark() {
         let app = app_with("hello");
-        assert_eq!(app.theme.name, "Dark");
+        assert_eq!(app.theme.name, "Skerry Dark");
+        // The default is not persisted as a user choice.
         assert_eq!(app.config.ui_theme, None);
+        // Chrome and syntax start coordinated on the same palette.
+        assert_eq!(app.syntax.theme_name(), "Skerry Dark");
     }
 
     #[test]
     fn set_color_theme_by_name_unknown_is_noop() {
         let mut app = app_with("hello");
         assert!(!app.set_color_theme_by_name("Neon"));
-        assert_eq!(app.theme.name, "Dark");
+        assert_eq!(app.theme.name, "Skerry Dark");
         assert_eq!(app.config.ui_theme, None);
     }
 

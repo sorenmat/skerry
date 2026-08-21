@@ -495,9 +495,12 @@ is open.
   caret animation, git annotations, auto-save, project-tree visibility,
   Markdown presentation, and keyboard-shortcut help. Changes apply
   immediately and persist in the Skerry config.
-- **Expanded built-in themes** — the GUI includes Dark, Light, One Dark,
-  Fjord Night, Aubergine, Sandstone, and High Contrast palettes, each pairing
-  interface chrome with syntax colors selected for the same background.
+- **Expanded built-in themes** — the GUI defaults to Skerry Dark (a deep
+  charcoal-blue canvas with lifted panels, quiet gutters, Tokyo-Night-style
+  pastel syntax colors, 1.5× line spacing, and accent-underlined tabs) and
+  also includes Dark, Light, One Dark, Fjord Night, Aubergine, Sandstone,
+  and High Contrast palettes, each pairing interface chrome with syntax
+  colors selected for the same background.
   The shared highlighter also retains Gruvbox Dark for the TUI. F5 cycles
   complete themes in the GUI and syntax colors in the TUI; changing colors
   invalidates the highlight cache so they update immediately.
