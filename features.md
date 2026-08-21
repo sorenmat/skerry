@@ -506,9 +506,10 @@ is open.
 - **TUI pane focus** — the visible project tree and editor have distinct
   keyboard focus. `Shift+Tab` focuses the tree; `Tab` or `Esc` returns to the
   editor. Tree-focused input never falls through into the document.
-- **GUI: monospace 14 pt font**, 2 px caret. Tab characters render
-  with a 4× char-width advance (per egui's default monospace
-  behaviour — see ADR-context below).
+- **GUI: JetBrains Mono 14 pt** (bundled under SIL OFL 1.1, embedded via
+  egui with Hack and emoji fallbacks for glyphs it lacks), 2 px caret. Tab
+  characters render with a 4× char-width advance (per egui's default
+  monospace behaviour — see ADR-context below).
 - **TUI: ANSI color spans via ratatui.** Selection renders as
   reverse-video. Match highlights get distinct fg/bg styles.
 - **Tab advance accounting** — both renderers use per-glyph advance

@@ -8,6 +8,7 @@
 pub mod app;
 mod csv_preview;
 pub mod event;
+pub mod fonts;
 mod markdown;
 #[cfg(target_os = "macos")]
 pub mod screenshot;

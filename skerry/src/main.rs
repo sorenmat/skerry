@@ -44,7 +44,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Skerry",
         native_options,
-        Box::new(|_cc| Ok(Box::new(EditorApp::new_with_documents(documents, config)))),
+        Box::new(|cc| {
+            skerry::fonts::install(&cc.egui_ctx);
+            Ok(Box::new(EditorApp::new_with_documents(documents, config)))
+        }),
     )
 }
 
@@ -180,7 +183,10 @@ mod tests {
         let doc = load_document(&path, Some((3, None)), &config);
         let text = doc.buffer.line_text(2).unwrap().into_owned();
         assert_eq!(text, "three");
-        assert_eq!(doc.buffer.cursor(), doc.buffer.line_byte_range(2).unwrap().start);
+        assert_eq!(
+            doc.buffer.cursor(),
+            doc.buffer.line_byte_range(2).unwrap().start
+        );
         let _ = std::fs::remove_file(&path);
     }
 }
