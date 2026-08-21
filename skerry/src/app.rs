@@ -77,6 +77,10 @@ pub struct EditorApp {
     pub active: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    /// Set when an overlay (fuzzy finder, palette, picker, dialog) closes
+    /// or executes; the editor surface consumes it on the next frame to
+    /// take keyboard focus, so typing lands in the document.
+    pub(crate) focus_editor: bool,
     /// Shared transient state for the active built-in keyboard preset.
     pub keymap: core::KeymapState,
     /// Number of lines that fit in the current viewport. Updated each
@@ -384,6 +388,7 @@ impl EditorApp {
             rename_dialog: None,
             lsp_missing_prompt: None,
             caret_anim_y: f32::NAN,
+            focus_editor: false,
             prev_active: 0,
             syntax: SyntaxEngine::default_dark(),
             project_tree_open: config.project_tree_open.unwrap_or(true),
@@ -431,10 +436,27 @@ impl EditorApp {
             app.set_color_theme_by_name(&theme);
         } else if let Some(theme) = app.config.theme.clone() {
             app.syntax.set_theme_by_name(&theme);
+        } else {
+            // Fresh config: the GUI theme field already holds the default
+            // (see the struct literal); align the syntax engine with it
+            // without persisting a choice the user never made.
+            app.syntax
+                .set_theme_by_name(Self::syntax_name_for(GuiTheme::default_dark().name));
         }
         app.refresh_project_tree();
         app.sync_watcher();
         app
+    }
+
+    /// The bundled syntax theme paired with a GUI theme name. Names match
+    /// one-to-one except the legacy `Dark`/`Light` chrome themes, which
+    /// predate coordinated pairing.
+    fn syntax_name_for(gui_name: &str) -> &str {
+        match gui_name {
+            "Dark" => "Ocean Dark",
+            "Light" => "Solarized Light",
+            other => other,
+        }
     }
 
     /// Apply a coordinated GUI and syntax palette. The two color systems
@@ -444,11 +466,7 @@ impl EditorApp {
         let Some(gui_theme) = GuiTheme::by_name(name) else {
             return false;
         };
-        let syntax_name = match gui_theme.name {
-            "Dark" => "Ocean Dark",
-            "Light" => "Solarized Light",
-            other => other,
-        };
+        let syntax_name = Self::syntax_name_for(gui_theme.name);
         if !self.syntax.set_theme_by_name(syntax_name) {
             return false;
         }
@@ -926,7 +944,10 @@ impl EditorApp {
                     } = event
                     {
                         match *key {
-                            eframe::egui::Key::Escape => self.symbol_picker.open = false,
+                            eframe::egui::Key::Escape => {
+                                self.symbol_picker.open = false;
+                                self.focus_editor = true;
+                            }
                             eframe::egui::Key::ArrowUp => {
                                 self.symbol_picker.selected =
                                     self.symbol_picker.selected.saturating_sub(1);
@@ -947,6 +968,7 @@ impl EditorApp {
                                 if let Some(line) = selected {
                                     self.go_to_line(line);
                                     self.symbol_picker.open = false;
+                                    self.focus_editor = true;
                                 }
                             }
                             _ => {}
@@ -1943,10 +1965,12 @@ impl EditorApp {
             }
             EditorEvent::CodeActionsExecute => {
                 self.execute_selected_code_action();
+                self.focus_editor = true;
             }
             EditorEvent::CodeActionsClose => {
                 self.code_action_picker.open = false;
                 self.code_action_picker.pending = false;
+                self.focus_editor = true;
             }
             EditorEvent::ToggleProjectTree => {
                 self.toggle_project_tree();
@@ -1974,9 +1998,11 @@ impl EditorApp {
             }
             EditorEvent::ProjectSearchOpenResult => {
                 self.open_selected_project_search_result();
+                self.focus_editor = true;
             }
             EditorEvent::ProjectSearchClose => {
                 self.project_search.open = false;
+                self.focus_editor = true;
             }
             EditorEvent::ProjectSearchReplaceQueryChanged(q) => {
                 self.project_search.replace_query = q;
@@ -2010,6 +2036,7 @@ impl EditorApp {
             }
             EditorEvent::FuzzyFinderClose => {
                 self.fuzzy_finder.open = false;
+                self.focus_editor = true;
             }
             EditorEvent::ToggleKeybindingsHelp => {
                 self.keybindings_help_open = !self.keybindings_help_open;
@@ -2117,6 +2144,7 @@ impl EditorApp {
             }
             EditorEvent::RenameApply { new_name } => {
                 self.rename_dialog = None;
+                self.focus_editor = true;
                 if let Some((uri, pos)) = self.lsp_cursor_position() {
                     self.lsp_manager.request_rename(&uri, pos, &new_name);
                     self.status_message = Some("LSP: requesting rename...".to_string());
@@ -2146,9 +2174,11 @@ impl EditorApp {
             }
             EditorEvent::CommandPaletteExecute => {
                 self.execute_selected_command();
+                self.focus_editor = true;
             }
             EditorEvent::CommandPaletteClose => {
                 self.command_palette.open = false;
+                self.focus_editor = true;
             }
             EditorEvent::Quit => {
                 self.sync_config();
@@ -3581,8 +3611,10 @@ impl EditorApp {
             lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
                 if let Some(edit) = &code_action.edit {
                     let count = self.apply_workspace_edit(edit);
-                    self.status_message =
-                        Some(format!("Code action applied ({count} edit{}).", if count == 1 { "" } else { "s" }));
+                    self.status_message = Some(format!(
+                        "Code action applied ({count} edit{}).",
+                        if count == 1 { "" } else { "s" }
+                    ));
                 } else if let Some(command) = &code_action.command {
                     if let Some((uri, _)) = self.lsp_cursor_position() {
                         self.lsp_manager.request_execute_command(&uri, command);
@@ -3598,7 +3630,8 @@ impl EditorApp {
                 if let Some((uri, _)) = self.lsp_cursor_position() {
                     self.lsp_manager.request_execute_command(&uri, &command);
                 }
-                self.status_message = Some(format!("Sent code action command: {}.", command.command));
+                self.status_message =
+                    Some(format!("Sent code action command: {}.", command.command));
             }
         }
     }
@@ -3674,6 +3707,7 @@ impl EditorApp {
         let path = self.fuzzy_finder.items[*idx].path.clone();
         self.fuzzy_finder.open = false;
         self.open_or_switch_to_path(&path);
+        self.focus_editor = true;
     }
 
     /// Move the project-search selection by `delta` rows, wrapping at
@@ -3982,6 +4016,7 @@ impl EditorApp {
     pub fn cancel_go_to_line_dialog(&mut self) {
         if self.go_to_line_dialog.take().is_some() {
             self.status_message = Some("Go-to-line cancelled.".to_string());
+            self.focus_editor = true;
         }
     }
 
@@ -3991,6 +4026,7 @@ impl EditorApp {
         let Some(dialog) = self.go_to_line_dialog.take() else {
             return;
         };
+        self.focus_editor = true;
         if dialog.query.is_empty() {
             self.status_message = Some("Go-to-line cancelled.".to_string());
             return;
@@ -4990,18 +5026,20 @@ mod tests {
                 kind: Some(lsp_types::CodeActionKind::QUICKFIX),
                 diagnostics: None,
                 edit: Some(lsp_types::WorkspaceEdit {
-                    changes: Some([(
-                        uri,
-                        vec![lsp_types::TextEdit {
-                            range: lsp_types::Range::new(
-                                lsp_types::Position::new(0, 0),
-                                lsp_types::Position::new(0, 11),
-                            ),
-                            new_text: "goodbye".into(),
-                        }],
-                    )]
-                    .into_iter()
-                    .collect()),
+                    changes: Some(
+                        [(
+                            uri,
+                            vec![lsp_types::TextEdit {
+                                range: lsp_types::Range::new(
+                                    lsp_types::Position::new(0, 0),
+                                    lsp_types::Position::new(0, 11),
+                                ),
+                                new_text: "goodbye".into(),
+                            }],
+                        )]
+                        .into_iter()
+                        .collect(),
+                    ),
                     document_changes: None,
                     change_annotations: None,
                 }),
@@ -5051,7 +5089,8 @@ mod tests {
         // With an explicit selection the needle matches exactly,
         // including inside larger words ("cat" in "catalog").
         let mut app = app_with("cat hat catalog");
-        app.active_buffer_mut().set_selection(Selection { anchor: 0, head: 3 });
+        app.active_buffer_mut()
+            .set_selection(Selection { anchor: 0, head: 3 });
         app.handle_event(EditorEvent::SelectAllOccurrences);
         let sels = app.active_buffer().selections();
         assert_eq!(sels.len(), 2);
@@ -5702,7 +5741,10 @@ mod tests {
     fn cycle_theme_changes_theme_and_invalidates_cache() {
         let mut app = app_with("let x = 42;");
         // Pre-warm the cache.
-        app.active_doc_mut().syntax.lines.insert(0, std::rc::Rc::new(Vec::new()));
+        app.active_doc_mut()
+            .syntax
+            .lines
+            .insert(0, std::rc::Rc::new(Vec::new()));
         app.active_doc_mut().syntax.dirty = false;
         assert!(!app.active_doc().syntax.lines.is_empty());
 
@@ -6046,15 +6088,18 @@ mod tests {
     #[test]
     fn default_ui_theme_is_dark() {
         let app = app_with("hello");
-        assert_eq!(app.theme.name, "Dark");
+        assert_eq!(app.theme.name, "Skerry Dark");
+        // The default is not persisted as a user choice.
         assert_eq!(app.config.ui_theme, None);
+        // Chrome and syntax start coordinated on the same palette.
+        assert_eq!(app.syntax.theme_name(), "Skerry Dark");
     }
 
     #[test]
     fn set_color_theme_by_name_unknown_is_noop() {
         let mut app = app_with("hello");
         assert!(!app.set_color_theme_by_name("Neon"));
-        assert_eq!(app.theme.name, "Dark");
+        assert_eq!(app.theme.name, "Skerry Dark");
         assert_eq!(app.config.ui_theme, None);
     }
 

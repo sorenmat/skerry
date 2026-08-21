@@ -308,10 +308,7 @@ mod tests {
         let saved = b"saved by editor";
         fs::write(&path, saved).unwrap();
         let meta = fs::metadata(&path).unwrap();
-        watcher.acknowledge_write(
-            &path,
-            ExpectedWrite::new(Arc::new(saved.to_vec()), &meta),
-        );
+        watcher.acknowledge_write(&path, ExpectedWrite::new(Arc::new(saved.to_vec()), &meta));
 
         for _ in 0..20 {
             assert!(

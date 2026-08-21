@@ -13,16 +13,15 @@ use eframe::egui;
 const LINE: &str = "let alpha = beta;";
 
 fn render_selected_line() -> Vec<egui::epaint::ClippedShape> {
-    let path = std::env::temp_dir().join(format!(
-        "skerry_sel_render_{}.rs",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("skerry_sel_render_{}.rs", std::process::id()));
     std::fs::write(&path, format!("{LINE}\n")).expect("write temp .rs file");
     let buf: Box<dyn Buffer> = Box::new(PieceTableBuffer::from_path(path.clone()).expect("load"));
     let mut app = skerry::app::EditorApp::new(buf);
     // Select the whole line so render_text takes the selection branch.
-    app.active_buffer_mut()
-        .set_selection(Selection { anchor: 0, head: LINE.len() });
+    app.active_buffer_mut().set_selection(Selection {
+        anchor: 0,
+        head: LINE.len(),
+    });
 
     let ctx = egui::Context::default();
     let shapes = ctx

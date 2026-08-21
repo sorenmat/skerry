@@ -11,11 +11,10 @@ use lsp_types::{
     ClientCapabilities, ClientInfo, CodeActionContext, CodeActionParams, CodeActionResponse,
     CodeActionTriggerKind, Command as LspCommand, CompletionList, CompletionParams, Diagnostic,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentSymbolParams, ExecuteCommandParams,
-    GotoDefinitionResponse, Hover, HoverContents, InitializeParams, MarkedString, Position, Range,
-    RenameParams, ServerCapabilities, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
-    VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceFolder,
+    DidSaveTextDocumentParams, DocumentSymbolParams, ExecuteCommandParams, GotoDefinitionResponse,
+    Hover, HoverContents, InitializeParams, MarkedString, Position, Range, RenameParams,
+    ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceFolder,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -1136,8 +1135,15 @@ fn server_command(language_id: &str) -> Option<Vec<String>> {
         ]),
         "python" => Some(vec!["pylsp".to_string()]),
         "c" | "cpp" => Some(vec!["clangd".to_string()]),
-        "shellscript" => Some(vec!["bash-language-server".to_string(), "start".to_string()]),
-        "toml" => Some(vec!["taplo".to_string(), "lsp".to_string(), "stdio".to_string()]),
+        "shellscript" => Some(vec![
+            "bash-language-server".to_string(),
+            "start".to_string(),
+        ]),
+        "toml" => Some(vec![
+            "taplo".to_string(),
+            "lsp".to_string(),
+            "stdio".to_string(),
+        ]),
         "html" => Some(vec![
             "vscode-html-language-server".to_string(),
             "--stdio".to_string(),

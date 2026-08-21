@@ -69,7 +69,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         )?
     } else {
         load_documents(
-            &args.iter()
+            &args
+                .iter()
                 .map(|arg| {
                     let (path, line, col) = parse_position_arg(arg);
                     (path, line.map(|l| (l, col)))
@@ -127,6 +128,10 @@ fn parse_position_arg(arg: &str) -> (PathBuf, Option<usize>, Option<usize>) {
     (PathBuf::from(arg), None, None)
 }
 
+/// A resolved CLI argument: the path plus its optional 1-based
+/// `line`/`col` position from the `path:line[:col]` form.
+type PathArg = (PathBuf, Option<(usize, Option<usize>)>);
+
 /// Load each path into its own [`Document`]. Existing files are
 /// memory-mapped via [`PieceTableBuffer::from_path`] (ADR 0002 — the
 /// multi-GB-file path); paths that don't exist yet get a fresh empty
@@ -135,7 +140,7 @@ fn parse_position_arg(arg: &str) -> (PathBuf, Option<usize>, Option<usize>) {
 /// `path.1` optionally carries a 1-based `line`/`col` pair
 /// (`file:line[:col]` CLI form) that becomes the initial cursor.
 fn load_documents(
-    paths: &[(PathBuf, Option<(usize, Option<usize>)>)],
+    paths: &[PathArg],
     config: &core::Config,
 ) -> Result<Vec<Document>, Box<dyn Error>> {
     if paths.is_empty() {

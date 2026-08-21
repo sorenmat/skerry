@@ -113,9 +113,11 @@ fn cursor_down_at_viewport_center_with_default_margin_does_not_scroll() {
 
     let mut app = app_with_lines(200);
     // Default scroll_margin_lines is 3 (configured in
-    // `ViewState::default`).
+    // `ViewState::default`). The screen is tall enough that the safe
+    // zone comfortably contains the walked rows regardless of the
+    // rendered line height (font metrics + LINE_SPACING).
     let screen_w = 800.0;
-    let screen_h = 400.0;
+    let screen_h = 600.0;
 
     // Probe the actual values used by the auto-scroll code so a
     // future regression is obvious in the log even when the test
@@ -132,9 +134,10 @@ fn cursor_down_at_viewport_center_with_default_margin_does_not_scroll() {
     let caret0_y = caret0.min.y;
 
     // Walk the cursor from line 4 to line 13 — those are deep in
-    // the safe zone (vh-1-margin = 16). Pressing Down within this
-    // band MUST leave the caret's screen-y position advancing by ~1
-    // line per press — NOT pinned, NOT triggering scroll.
+    // the safe zone (vh-1-margin ≥ 16 at any plausible line height).
+    // Pressing Down within this band MUST leave the caret's screen-y
+    // position advancing by ~1 line per press — NOT pinned, NOT
+    // triggering scroll.
     let mut prev_cy = caret0_y;
     for line in 4..13 {
         let cy = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line)
@@ -146,9 +149,10 @@ fn cursor_down_at_viewport_center_with_default_margin_does_not_scroll() {
         );
         assert!(
             (cy - prev_cy).abs() > 1.0,
-            "BUG: cursor at line {line} should be in safe zone rows 3..16 (vh≈20, margin=3) \
-             and free to advance; instead caret moved by only {} px from prev_cy, meaning a \
-             scroll fired at the centre",
+            "BUG: cursor at line {line} should be inside the margin-safe zone \
+             (viewport_lines={}, margin=3) and free to advance; instead caret moved by only \
+             {} px from prev_cy, meaning a scroll fired at the centre",
+            app.viewport_lines,
             (cy - prev_cy).abs()
         );
         prev_cy = cy;
@@ -171,7 +175,13 @@ fn cursor_up_at_viewport_center_with_default_margin_does_not_scroll() {
 
     // Establish baseline at line 0 then march the cursor far down so
     // the view scrolls to follow.
-    let _ = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 0);
+    // Establish baseline at line 0 then march the cursor far down so
+    // the view scrolls to follow. Along the way, measure the drawn
+    // line-box height from two adjacent carets so the centre-line
+    // math below doesn't hardcode font metrics.
+    let caret0 = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 0);
+    let caret1 = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 1);
+    let line_h = (caret1.min.y - caret0.min.y).abs().max(1.0);
     let _ = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, 100);
 
     // Now jump the cursor back UP to a position in the centre of the
@@ -187,7 +197,7 @@ fn cursor_up_at_viewport_center_with_default_margin_does_not_scroll() {
         })
         .unwrap_or(0.0);
     let viewport_lines = app.viewport_lines.max(1);
-    let centre_line = (cursor_top_y_initial / 16.0) as usize + viewport_lines / 2;
+    let centre_line = (cursor_top_y_initial / line_h) as usize + viewport_lines / 2;
 
     // Walk the cursor back down to centre_line from a position below
     // it (so we have a known starting offset). Each Up press should
@@ -649,16 +659,16 @@ fn scroll_margin_falls_back_to_legacy_when_viewport_too_small() {
     });
 
     let mut app = app_with_lines(200);
-    // Mid-margin with vh≈20 → safe zone exists (rows 3..16).
+    // Mid-margin with a comfortable viewport → safe zone exists.
     app.active_doc_mut().view.scroll_margin_lines = 3;
     let screen_w = 800.0;
-    let screen_h = 400.0;
+    let screen_h = 600.0;
 
     // Walk the cursor down and look for the first sign of a SCROLL
-    // (caret stops advancing). With margin=3 + vh≈20 we expect
-    // margin to actually apply at line ~17. The point of THIS test
-    // is the OPPOSITE: it should NOT have triggered earlier (at the
-    // "center of the screen").
+    // (caret stops advancing). With margin=3 and a tall viewport we
+    // expect margin to actually apply near the bottom. The point of
+    // THIS test is the OPPOSITE: it should NOT have triggered earlier
+    // (at the "center of the screen").
     let mut prev_cy = 28.0_f32;
     for line in 1..12 {
         let cy = render_with_cursor_at(&ctx, &mut app, screen_w, screen_h, line)
@@ -667,9 +677,10 @@ fn scroll_margin_falls_back_to_legacy_when_viewport_too_small() {
         assert!(
             (cy - prev_cy).abs() > 1.0,
             "BUG: scroll triggered at line {line} (cy stayed put from line {}-ish); \
-             with vh≈20 and margin=3 the cursor should freely advance through at \
-             least the first ~12 lines before the margin kicks in at row ~17",
-            line - 1
+             with viewport_lines={} and margin=3 the cursor should freely advance through \
+             at least the first ~12 lines before the margin kicks in near the bottom",
+            line - 1,
+            app.viewport_lines
         );
         prev_cy = cy;
     }

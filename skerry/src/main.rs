@@ -44,26 +44,11 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Skerry",
         native_options,
-        Box::new(|_cc| Ok(Box::new(EditorApp::new_with_documents(documents, config)))),
+        Box::new(|cc| {
+            skerry::fonts::install(&cc.egui_ctx);
+            Ok(Box::new(EditorApp::new_with_documents(documents, config)))
+        }),
     )
-}
-
-/// Load each path into its own [`Document`]. Existing files are
-/// memory-mapped via [`PieceTableBuffer::from_path`] (ADR 0002 — the
-/// multi-GB-file path); paths that don't exist yet get a fresh empty
-/// buffer that will save back to that path. With no paths, returns a
-/// single empty document so the editor still has somewhere to land.
-fn load_documents(paths: &[PathBuf], config: &core::Config) -> Vec<Document> {
-    if paths.is_empty() {
-        return vec![Document::new_with_config(
-            Box::new(PieceTableBuffer::new()),
-            config,
-        )];
-    }
-    paths
-        .iter()
-        .map(|p| load_document(p, None, config))
-        .collect()
 }
 
 /// Parse a CLI argument as `path`, `path:line`, or `path:line:col`
@@ -180,7 +165,10 @@ mod tests {
         let doc = load_document(&path, Some((3, None)), &config);
         let text = doc.buffer.line_text(2).unwrap().into_owned();
         assert_eq!(text, "three");
-        assert_eq!(doc.buffer.cursor(), doc.buffer.line_byte_range(2).unwrap().start);
+        assert_eq!(
+            doc.buffer.cursor(),
+            doc.buffer.line_byte_range(2).unwrap().start
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

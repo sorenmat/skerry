@@ -158,12 +158,13 @@ impl GuiTheme {
 
     /// Default fallback theme.
     pub fn default_dark() -> &'static Self {
-        &DARK
+        &SKERRY_DARK
     }
 
     /// All built-in themes.
     pub fn all() -> &'static [Self] {
         &[
+            SKERRY_DARK,
             DARK,
             ONE_DARK,
             FJORD_NIGHT,
@@ -174,6 +175,59 @@ impl GuiTheme {
         ]
     }
 }
+
+/// The flagship scheme: a deep charcoal-blue editor canvas with lifted
+/// panels and quiet gutters, so regions separate by tone instead of
+/// borders. Paired with the `Skerry Dark` tree-sitter syntax theme in
+/// core (the two are selected together by name).
+pub const SKERRY_DARK: GuiTheme = GuiTheme {
+    name: "Skerry Dark",
+    is_dark: true,
+
+    editor_bg: Color32::from_rgb(16, 21, 28),
+    text: Color32::from_rgb(214, 221, 232),
+    caret: Color32::from_rgb(122, 162, 247),
+    line_highlight: Color32::from_rgb(24, 30, 40),
+    selection_bg: Color32::from_rgb(42, 63, 95),
+
+    gutter_bg: Color32::from_rgb(19, 25, 34),
+    gutter_text: Color32::from_rgb(69, 80, 97),
+    line_number_active: Color32::from_rgb(200, 210, 224),
+
+    panel_bg: Color32::from_rgb(26, 32, 42),
+    panel_text: Color32::from_rgb(200, 210, 224),
+    dim_text: Color32::from_rgb(125, 138, 156),
+    status_bg: Color32::from_rgb(23, 29, 38),
+    status_text: Color32::from_rgb(200, 210, 224),
+    sidebar_bg: Color32::from_rgb(22, 28, 37),
+
+    accent: Color32::from_rgb(122, 162, 247),
+    accent_text: Color32::from_rgb(13, 18, 32),
+    accent_hover: Color32::from_rgb(143, 178, 249),
+    error: Color32::from_rgb(224, 108, 117),
+    warning: Color32::from_rgb(229, 192, 123),
+
+    button_bg: Color32::from_rgb(36, 44, 56),
+    button_text: Color32::from_rgb(214, 221, 232),
+    input_bg: Color32::from_rgb(12, 17, 24),
+    border: Color32::from_rgb(44, 54, 70),
+    separator: Color32::from_rgb(35, 44, 58),
+    indent_guide: Color32::from_rgb(28, 35, 46),
+
+    popup_bg: Color32::from_rgb(28, 35, 46),
+    popup_border: Color32::from_rgb(51, 64, 82),
+
+    match_current: Color32::from_rgb(224, 175, 104),
+    match_current_text: Color32::from_rgb(16, 21, 28),
+    match_other: Color32::from_rgb(74, 64, 48),
+    match_other_text: Color32::WHITE,
+
+    selected_bg: Color32::from_rgb(42, 63, 95),
+
+    git_added: Color32::from_rgb(158, 206, 106),
+    git_modified: Color32::from_rgb(224, 175, 104),
+    git_deleted: Color32::from_rgb(224, 108, 117),
+};
 
 /// Modern dark editor chrome.
 pub const DARK: GuiTheme = GuiTheme {
@@ -524,6 +578,7 @@ mod tests {
     #[test]
     fn curated_interface_themes_have_matching_syntax_palettes() {
         for name in [
+            "Skerry Dark",
             "One Dark",
             "Fjord Night",
             "Aubergine",

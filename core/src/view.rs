@@ -283,8 +283,7 @@ pub fn auto_pair_action(buffer: &dyn Buffer, pos: usize, ch: char) -> AutoPairAc
 
     if matching_open(ch).is_some() && after == Some(ch) {
         if is_quote {
-            let closing_intent =
-                before == Some(ch) || before.is_some_and(|c| c.is_alphanumeric());
+            let closing_intent = before == Some(ch) || before.is_some_and(|c| c.is_alphanumeric());
             return if closing_intent {
                 AutoPairAction::SkipOver
             } else {
@@ -471,11 +470,7 @@ pub fn column_selections(
 /// Capped at [`crate::search::MAX_STORED_MATCHES`] so a pathological
 /// needle (e.g. selecting one space in an indented file) can't build a
 /// million-selection list.
-pub fn all_occurrence_selections(
-    text: &str,
-    needle: &str,
-    whole_word: bool,
-) -> Vec<Selection> {
+pub fn all_occurrence_selections(text: &str, needle: &str, whole_word: bool) -> Vec<Selection> {
     if needle.is_empty() {
         return Vec::new();
     }
@@ -500,8 +495,7 @@ pub fn all_occurrence_selections(
 /// followed by a word character.
 fn word_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
     let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
-    (start == 0 || !is_word(bytes[start - 1]))
-        && (end == bytes.len() || !is_word(bytes[end]))
+    (start == 0 || !is_word(bytes[start - 1])) && (end == bytes.len() || !is_word(bytes[end]))
 }
 
 /// The line-comment prefix for a language ID, if known.

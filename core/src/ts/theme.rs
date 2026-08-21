@@ -70,6 +70,7 @@ impl TsTheme {
 pub const fn bundled_themes() -> &'static [TsTheme] {
     &[
         OCEAN_DARK,
+        SKERRY_DARK,
         ONE_DARK,
         FJORD_NIGHT,
         AUBERGINE,
@@ -127,6 +128,43 @@ pub const OCEAN_DARK: TsTheme = TsTheme {
         ("escape", c(208, 135, 112)),
         ("punctuation", c(171, 178, 191)),
         ("embedded", c(229, 233, 240)),
+    ],
+};
+
+/// The editor's flagship dark scheme: a deep charcoal-blue canvas with
+/// Tokyo-Night-inspired pastel tokens. Paired with the `Skerry Dark`
+/// GUI chrome theme (skerry/src/theme.rs) — the two must stay in sync
+/// so syntax colors keep their contrast against the editor background.
+pub const SKERRY_DARK: TsTheme = TsTheme {
+    name: "Skerry Dark",
+    colors: &[
+        ("comment", c(90, 100, 126)),
+        ("comment.documentation", c(90, 100, 126)),
+        ("string", c(158, 206, 106)),
+        ("string.special", c(187, 154, 247)),
+        ("string.special.key", c(187, 154, 247)),
+        ("number", c(255, 158, 116)),
+        ("constant", c(255, 158, 116)),
+        ("constant.builtin", c(255, 158, 116)),
+        ("keyword", c(187, 154, 247)),
+        ("operator", c(137, 220, 235)),
+        ("function", c(122, 162, 247)),
+        ("function.builtin", c(122, 162, 247)),
+        ("function.method", c(122, 162, 247)),
+        ("function.macro", c(187, 154, 247)),
+        ("function.special", c(122, 162, 247)),
+        ("type", c(42, 195, 222)),
+        ("type.builtin", c(42, 195, 222)),
+        ("constructor", c(224, 175, 104)),
+        ("variable", c(192, 202, 224)),
+        ("variable.builtin", c(255, 158, 116)),
+        ("variable.parameter", c(192, 202, 224)),
+        ("property", c(115, 220, 202)),
+        ("label", c(187, 154, 247)),
+        ("attribute", c(115, 220, 202)),
+        ("escape", c(255, 158, 116)),
+        ("punctuation", c(120, 130, 150)),
+        ("embedded", c(214, 221, 232)),
     ],
 };
 
